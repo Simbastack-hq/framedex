@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# macOS
+.DS_Store
+
+# framedex runtime data — never committed (generated next to users' own media)
+.framedex/
+*.description.md
+_INDEX.json
+_INDEX.md
+_folder-summary.md
+.video-context.md

@@ -55,7 +55,7 @@ people_count: 3               # vision model's estimate
 keywords: [drone, landscape, construction, golden-hour, wide-shot, speech, workers]
 notable_timestamp: ""         # MM:SS of peak moment if clip ≥ 30s
 faces:                        # from insightface, separate from people_count
-  - cluster_id: tmp_a3f78c    # temporary until vidx-faces labels it 'alex' / 'sam' / etc
+  - cluster_id: tmp_a3f78c    # temporary until fdx-faces labels it 'alex' / 'sam' / etc
     frame_time: 1.2
     bbox: [120, 80, 180, 240]
     detection_quality: high
@@ -77,7 +77,7 @@ Body follows: `## Description` (Scene/Subjects/Action/Mood/Shot type/Use cases p
 
 ## Face detection
 
-Always on by default. `~/.framedex/faces.db` is the single shared face database across all drives. Per-clip embeddings stored as 512 float32 vectors + bbox + detection score. Temporary cluster IDs (`tmp_<hash>`) get replaced with real names by the (not-yet-built) `vidx-faces` clustering tool — that tool will be a follow-up that doesn't require re-running the indexing pass, because all embeddings are captured here.
+Always on by default. `~/.framedex/faces.db` is the single shared face database across all drives. Per-clip embeddings stored as 512 float32 vectors + bbox + detection score. Temporary cluster IDs (`tmp_<hash>`) get replaced with real names by the (not-yet-built) `fdx-faces` clustering tool — that tool will be a follow-up that doesn't require re-running the indexing pass, because all embeddings are captured here.
 
 Skip with `--no-faces` if you don't want face data.
 
@@ -85,10 +85,10 @@ Skip with `--no-faces` if you don't want face data.
 
 | Alias | Script | Purpose |
 |---|---|---|
-| `vidx` | `index_videos.py` | Main indexer (this skill) |
-| `vidx-summary` | `trip_summary.py` | Recursive folder summaries (`_folder-summary.md` in each ≥5-clip folder) |
-| `vidx-master` | `master_index.py` | Drive-level `_INDEX.md` + `_INDEX.json` |
-| `vidx-query` | `query.py` | Filter sidecars by metadata (rating, lighting, person, keyword, etc.) |
+| `fdx` | `index_videos.py` | Main indexer (this skill) |
+| `fdx-summary` | `trip_summary.py` | Recursive folder summaries (`_folder-summary.md` in each ≥5-clip folder) |
+| `fdx-master` | `master_index.py` | Drive-level `_INDEX.md` + `_INDEX.json` |
+| `fdx-query` | `query.py` | Filter sidecars by metadata (rating, lighting, person, keyword, etc.) |
 
 ## Set up once
 
@@ -105,46 +105,46 @@ export HF_TOKEN=hf_...
 # export ANTHROPIC_API_KEY=sk-ant-...
 
 # Aliases for ~/.zshrc
-alias vidx="python3 $HOME/.claude/skills/framedex/scripts/index_videos.py"
-alias vidx-summary="python3 $HOME/.claude/skills/framedex/scripts/trip_summary.py"
-alias vidx-master="python3 $HOME/.claude/skills/framedex/scripts/master_index.py"
-alias vidx-query="python3 $HOME/.claude/skills/framedex/scripts/query.py"
+alias fdx="python3 $HOME/.claude/skills/framedex/scripts/index_videos.py"
+alias fdx-summary="python3 $HOME/.claude/skills/framedex/scripts/trip_summary.py"
+alias fdx-master="python3 $HOME/.claude/skills/framedex/scripts/master_index.py"
+alias fdx-query="python3 $HOME/.claude/skills/framedex/scripts/query.py"
 ```
 
 ## Common run patterns
 
 ```bash
 # Test 5 clips first — always
-vidx /Volumes/SSD-2024 --max-files 5
+fdx /Volumes/SSD-2024 --max-files 5
 
 # Full drive on default (Max CLI + Haiku)
-vidx /Volumes/SSD-2024
+fdx /Volumes/SSD-2024
 
 # Higher accuracy via Max — slower, $0
-vidx /Volumes/SSD-2024 --vision-model sonnet
+fdx /Volumes/SSD-2024 --vision-model sonnet
 
 # Local Gemma — fully offline
-vidx /Volumes/SSD-2024 --backend local
+fdx /Volumes/SSD-2024 --backend local
 
 # Skip movies (default cuts at 30 min)
-vidx /Volumes/SSD-2024 --max-duration 30
+fdx /Volumes/SSD-2024 --max-duration 30
 
 # Re-process everything with new model
-vidx /Volumes/SSD-2024 --force --vision-model sonnet
+fdx /Volumes/SSD-2024 --force --vision-model sonnet
 
 # After indexing: per-folder summaries
-vidx-summary /Volumes/SSD-2024
+fdx-summary /Volumes/SSD-2024
 
 # Drive overview
-vidx-master /Volumes/SSD-2024
+fdx-master /Volumes/SSD-2024
 
 # Query examples
-vidx-query /Volumes/SSD-2024 --rating keep --time-of-day golden_hour
-vidx-query /Volumes/SSD-2024 --rating cull              # cull pile
-vidx-query /Volumes/SSD-2024 --place-contains California --language es
-vidx-query /Volumes/SSD-2024 --keyword drone --keyword landscape
-vidx-query /Volumes/SSD-2024 --stability smooth --people-count 0
-vidx-query /Volumes/SSD-2024 --rating keep --json | jq '.[] | .path'
+fdx-query /Volumes/SSD-2024 --rating keep --time-of-day golden_hour
+fdx-query /Volumes/SSD-2024 --rating cull              # cull pile
+fdx-query /Volumes/SSD-2024 --place-contains California --language es
+fdx-query /Volumes/SSD-2024 --keyword drone --keyword landscape
+fdx-query /Volumes/SSD-2024 --stability smooth --people-count 0
+fdx-query /Volumes/SSD-2024 --rating keep --json | jq '.[] | .path'
 ```
 
 ## Optional folder context
@@ -170,7 +170,7 @@ Run on each drive separately. Sidecars travel with the data; the face DB is cent
 - Frame sampling is evenly-spaced, not scene-detected (future: ffmpeg `select=gt(scene,0.4)`)
 - pyannote diarization degrades on heavy ambient noise (wind, music, crowd)
 - WhisperX runs on CPU on Apple Silicon (CTranslate2 doesn't have M-series GPU acceleration yet; 64GB CPU is still plenty)
-- `vidx-faces` (clustering + labeling tool) not built yet — face embeddings are captured but cluster IDs are temporary hashes until that tool ships
+- `fdx-faces` (clustering + labeling tool) not built yet — face embeddings are captured but cluster IDs are temporary hashes until that tool ships
 - RAW image format support not yet (videos only; photos are coming)
 
 ## File layout
@@ -181,9 +181,9 @@ Run on each drive separately. Sidecars travel with the data; the face DB is cent
 ├── README.md
 └── scripts/
     ├── setup.py                   # one-time deps installer
-    ├── index_videos.py            # main worker (vidx)
+    ├── index_videos.py            # main worker (fdx)
     ├── face_db.py                 # face detection + SQLite face DB module
-    ├── trip_summary.py            # recursive folder summaries (vidx-summary)
-    ├── master_index.py            # drive-level KB (vidx-master)
-    └── query.py                   # filter sidecars (vidx-query)
+    ├── trip_summary.py            # recursive folder summaries (fdx-summary)
+    ├── master_index.py            # drive-level KB (fdx-master)
+    └── query.py                   # filter sidecars (fdx-query)
 ```

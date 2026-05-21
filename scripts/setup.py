@@ -164,8 +164,8 @@ def main() -> int:
     print_anthropic_instructions()
 
     print("\nSetup complete. Try:")
-    print("  vidx /Volumes/YOUR-SSD --dry-run         # see count, no API calls")
-    print("  vidx /Volumes/YOUR-SSD --max-files 5     # test batch of 5")
+    print("  fdx /Volumes/YOUR-SSD --dry-run         # see count, no API calls")
+    print("  fdx /Volumes/YOUR-SSD --max-files 5     # test batch of 5")
     print()
     return 0
 

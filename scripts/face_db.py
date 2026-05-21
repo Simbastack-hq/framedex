@@ -13,7 +13,7 @@ Pipeline integration:
     2. For each frame: detect faces, generate embeddings
     3. INSERT each face row into faces.db with a temporary cluster_id
     4. Sidecar gets list of {cluster_id, frame_time, bbox, detection_quality}
-    5. Later, vidx-faces clusters embeddings and replaces temp IDs with names
+    5. Later, fdx-faces clusters embeddings and replaces temp IDs with names
 """
 
 from __future__ import annotations
@@ -132,7 +132,7 @@ def detect_faces_in_frame(
             continue
         # Temp cluster ID is a hash of the embedding's first 8 bytes — gives a
         # short stable ref per face *for this run*. Real clustering happens
-        # later via vidx-faces.
+        # later via fdx-faces.
         emb_list = [float(v) for v in emb.tolist()]
         cid = "tmp_" + hashlib.sha1(
             ",".join(f"{v:.4f}" for v in emb_list[:8]).encode()
@@ -164,7 +164,7 @@ SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS faces (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     cluster_id      TEXT NOT NULL,          -- temp like 'tmp_a3f7' until labeled
-    person_name     TEXT,                    -- NULL until vidx-faces labels it
+    person_name     TEXT,                    -- NULL until fdx-faces labels it
     video_path      TEXT NOT NULL,
     sidecar_path    TEXT NOT NULL,
     frame_time      REAL NOT NULL,

@@ -8,12 +8,12 @@ frontmatter, applies filters, prints matching file paths (one per line).
 Pipe into mpv, vlc, ffplay, or just `xargs open`.
 
 Usage:
-    vidx-query /Volumes/SSD-2024 --rating keep
-    vidx-query /Volumes/SSD-2024 --rating keep --time-of-day golden_hour --stability smooth
-    vidx-query /Volumes/SSD-2024 --place-contains California --language es
-    vidx-query /Volumes/SSD-2024 --keyword drone --keyword landscape
-    vidx-query /Volumes/SSD-2024 --rating cull            # what to delete
-    vidx-query /Volumes/SSD-2024 --json                   # full records as JSON
+    fdx-query /Volumes/SSD-2024 --rating keep
+    fdx-query /Volumes/SSD-2024 --rating keep --time-of-day golden_hour --stability smooth
+    fdx-query /Volumes/SSD-2024 --place-contains California --language es
+    fdx-query /Volumes/SSD-2024 --keyword drone --keyword landscape
+    fdx-query /Volumes/SSD-2024 --rating cull            # what to delete
+    fdx-query /Volumes/SSD-2024 --json                   # full records as JSON
 
 Filters AND together. Multiple --keyword flags AND together (all must match).
 Multiple values within a single flag (e.g. --rating keep,review) OR together.
@@ -136,7 +136,7 @@ def matches(rec: dict, args) -> bool:
         # Search face cluster_ids in this clip for matching name (case-insensitive)
         faces = rec.get("faces") or []
         names = {(f.get("cluster_id") or "").lower() for f in faces}
-        # Once vidx-faces relabels, cluster_id will be like "alex" or "sam"
+        # Once fdx-faces relabels, cluster_id will be like "alex" or "sam"
         if args.person.lower() not in names:
             return False
     if args.keyword:
@@ -174,7 +174,7 @@ def main() -> int:
     parser.add_argument("--face-count", dest="face_count",
                         help="Exact int, or 'N+' for ≥ N.")
     parser.add_argument("--person",
-                        help="Filter by face cluster name (after vidx-faces labels).")
+                        help="Filter by face cluster name (after fdx-faces labels).")
     parser.add_argument("--keyword", action="append", default=[],
                         help="Required keyword (repeatable; all must match).")
     parser.add_argument("--dominant-color", dest="dominant_color")

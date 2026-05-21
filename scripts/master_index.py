@@ -11,7 +11,7 @@ Writes:
 Idempotent. Safe to re-run after any new indexing.
 
 Usage:
-    vidx-master /Volumes/SSD-2024
+    fdx-master /Volumes/SSD-2024
 """
 
 from __future__ import annotations
@@ -139,7 +139,7 @@ def main() -> int:
                 f"{name} ({n})" for name, n in named_people.most_common(10)))
             lines.append(f"- **Faces detected:** {face_total} total ({sum(named_people.values())} named)")
         else:
-            lines.append(f"- **Faces detected:** {face_total} total — run vidx-faces to label clusters")
+            lines.append(f"- **Faces detected:** {face_total} total — run fdx-faces to label clusters")
     if keyword_freq:
         lines.append("- **Top keywords:** " + ", ".join(
             f"`{k}` ({n})" for k, n in keyword_freq.most_common(15)))
@@ -168,7 +168,7 @@ def main() -> int:
                          for c in clips if (c.get("location") or {}).get("place")})
         summary_file = root / trip / "_folder-summary.md"
         link = (f"[`{trip}/_folder-summary.md`]({trip}/_folder-summary.md)"
-                if summary_file.exists() else "_no summary yet — run vidx-summary_")
+                if summary_file.exists() else "_no summary yet — run fdx-summary_")
         lines += [
             f"### {trip}",
             f"- Clips: {len(clips)} ({ratings.get('keep', 0)} keep / "

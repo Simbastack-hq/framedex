@@ -17,17 +17,17 @@ Pipeline per clip:
 
 Output: per-clip .description.md sidecars + ~/.framedex/faces.db.
 Idempotent + resumable. Run on any folder/drive. Sidecars travel with the data.
-Use vidx-summary for folder summaries, vidx-master for drive-level overview,
-vidx-query for filtering.
+Use fdx-summary for folder summaries, fdx-master for drive-level overview,
+fdx-query for filtering.
 
 Usage:
-    vidx /Volumes/SSD-2024                           # default Max CLI + Haiku
-    vidx /Volumes/SSD-2024 --backend local           # local LM Studio (Gemma etc)
-    vidx /Volumes/SSD-2024 --vision-model sonnet     # Sonnet for harder clips
-    vidx /Volumes/SSD-2024 --no-faces                # skip face detection
-    vidx /Volumes/SSD-2024 --max-files 5             # test on first 5
-    vidx /Volumes/SSD-2024 --dry-run                 # count only
-    vidx /Volumes/SSD-2024 --whisper-model large-v3  # higher Hindi accuracy
+    fdx /Volumes/SSD-2024                           # default Max CLI + Haiku
+    fdx /Volumes/SSD-2024 --backend local           # local LM Studio (Gemma etc)
+    fdx /Volumes/SSD-2024 --vision-model sonnet     # Sonnet for harder clips
+    fdx /Volumes/SSD-2024 --no-faces                # skip face detection
+    fdx /Volumes/SSD-2024 --max-files 5             # test on first 5
+    fdx /Volumes/SSD-2024 --dry-run                 # count only
+    fdx /Volumes/SSD-2024 --whisper-model large-v3  # higher Hindi accuracy
 """
 
 from __future__ import annotations
@@ -1210,7 +1210,7 @@ def main() -> int:
                              "'google/gemma-4-26b') if your server has multiple.")
     parser.add_argument("--no-faces", action="store_true",
                         help="Skip face detection step (faster; no embeddings "
-                             "captured for later vidx-faces clustering).")
+                             "captured for later fdx-faces clustering).")
     parser.add_argument("--face-db", default=str(face_db.DB_PATH_DEFAULT),
                         help=f"Path to face DB SQLite file (default: "
                              f"{face_db.DB_PATH_DEFAULT}).")
@@ -1440,7 +1440,7 @@ def main() -> int:
             # Frames need to outlive the temp dir when we're using the CLI
             # backend (claude subprocess reads them by path). Use a per-clip
             # persistent tmpdir we clean up after the vision call returns.
-            tmp_frames = Path(tempfile.mkdtemp(prefix="vidx-frames-"))
+            tmp_frames = Path(tempfile.mkdtemp(prefix="fdx-frames-"))
             try:
                 frames = extract_frames(video, tmp_frames, num_frames=5)
                 # Compute frame timestamps to pass to face detection
@@ -1520,7 +1520,7 @@ def main() -> int:
     if face_conn is not None:
         s = face_db.db_stats(face_conn)
         print(f"Face DB: {s['faces']} total faces, {s['clusters']} clusters "
-              f"({s['named_clusters']} named). Next: run vidx-faces to label "
+              f"({s['named_clusters']} named). Next: run fdx-faces to label "
               "clusters (once it's built).")
         face_conn.close()
     return 0 if errors == 0 else 2

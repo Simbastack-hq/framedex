@@ -11,9 +11,9 @@ Recursive — every nested folder with enough clips gets its own summary, so
 you can browse the archive at any depth.
 
 Usage:
-    vidx-summary /Volumes/SSD-2024
-    vidx-summary /Volumes/SSD-2024 --force
-    vidx-summary /Volumes/SSD-2024 --min-clips 10
+    fdx-summary /Volumes/SSD-2024
+    fdx-summary /Volumes/SSD-2024 --force
+    fdx-summary /Volumes/SSD-2024 --min-clips 10
 """
 
 from __future__ import annotations
@@ -215,7 +215,7 @@ def summarize_folder(client: anthropic.Anthropic, folder: Path,
 
     ## People in this folder
     Use the named_people stats. If empty (no named clusters yet), write
-    "Faces detected but not yet labeled — run vidx-faces to identify."
+    "Faces detected but not yet labeled — run fdx-faces to identify."
     Otherwise list each named person and their clip count.
 
     ## Gaps

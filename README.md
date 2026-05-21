@@ -6,7 +6,7 @@ Turn a scattered video archive — across multiple SSDs and years — into a por
 
 Sidecars live next to the videos. Originals are never modified. Local-first, non-destructive, resumable.
 
-framedex is a [Claude Code](https://docs.claude.com/en/docs/claude-code) skill. It installs the `vidx` command-line tool.
+framedex is a [Claude Code](https://docs.claude.com/en/docs/claude-code) skill. It installs the `fdx` command-line tool.
 
 ## Install
 
@@ -31,20 +31,20 @@ export HF_TOKEN=hf_yourTokenHere
 export ANTHROPIC_API_KEY=sk-ant-...
 
 # 3. Add aliases to ~/.zshrc
-alias vidx="python3 $HOME/.claude/skills/framedex/scripts/index_videos.py"
-alias vidx-summary="python3 $HOME/.claude/skills/framedex/scripts/trip_summary.py"
-alias vidx-master="python3 $HOME/.claude/skills/framedex/scripts/master_index.py"
-alias vidx-query="python3 $HOME/.claude/skills/framedex/scripts/query.py"
+alias fdx="python3 $HOME/.claude/skills/framedex/scripts/index_videos.py"
+alias fdx-summary="python3 $HOME/.claude/skills/framedex/scripts/trip_summary.py"
+alias fdx-master="python3 $HOME/.claude/skills/framedex/scripts/master_index.py"
+alias fdx-query="python3 $HOME/.claude/skills/framedex/scripts/query.py"
 
 # 4. Test on 5 clips before unleashing on a full drive
-vidx /Volumes/SSD-2024 --max-files 5
+fdx /Volumes/SSD-2024 --max-files 5
 
 # 5. Inspect the sidecars. If happy, run the full drive.
-vidx /Volumes/SSD-2024
+fdx /Volumes/SSD-2024
 
 # 6. After indexing, generate folder summaries + a master index
-vidx-summary /Volumes/SSD-2024
-vidx-master  /Volumes/SSD-2024
+fdx-summary /Volumes/SSD-2024
+fdx-master  /Volumes/SSD-2024
 ```
 
 ## Per-clip pipeline
@@ -138,9 +138,9 @@ These get passed to Whisper as `initial_prompt` + `hotwords` so place names and 
 Run on each drive separately:
 
 ```bash
-vidx /Volumes/SSD-2023
-vidx /Volumes/SSD-2024
-vidx /Volumes/SSD-2025
+fdx /Volumes/SSD-2023
+fdx /Volumes/SSD-2024
+fdx /Volumes/SSD-2025
 ```
 
 Each drive ends up self-contained with its own sidecars + `_INDEX.json`. Knowledge travels with the data. The face DB at `~/.framedex/faces.db` is centralized so cross-drive person queries work.
@@ -190,7 +190,7 @@ For huge archives, `api` is fastest. For routine indexing on a Max plan, `cli` i
 Whisper supports 99 languages with auto-detection. For non-English clips the script automatically runs a second translate-mode pass and stores the English version alongside the original transcript. For best quality on important non-English footage:
 
 ```bash
-vidx /Volumes/SSD-2024 --whisper-model large-v3 --force
+fdx /Volumes/SSD-2024 --whisper-model large-v3 --force
 ```
 
 ## Speaker diarization
@@ -222,16 +222,16 @@ Already-indexed clips are skipped on re-runs (a sidecar existing = done). Ctrl-C
 
 | Command | Script | Purpose |
 |---|---|---|
-| `vidx` | `index_videos.py` | Main indexer |
-| `vidx-summary` | `trip_summary.py` | Recursive per-folder summaries |
-| `vidx-master` | `master_index.py` | Drive-level `_INDEX.md` + `_INDEX.json` |
-| `vidx-query` | `query.py` | Filter sidecars by rating, lighting, person, keyword, location, language |
+| `fdx` | `index_videos.py` | Main indexer |
+| `fdx-summary` | `trip_summary.py` | Recursive per-folder summaries |
+| `fdx-master` | `master_index.py` | Drive-level `_INDEX.md` + `_INDEX.json` |
+| `fdx-query` | `query.py` | Filter sidecars by rating, lighting, person, keyword, location, language |
 
 ```bash
-vidx-query /Volumes/SSD-2024 --rating keep --time-of-day golden_hour
-vidx-query /Volumes/SSD-2024 --rating cull                  # the cull pile
-vidx-query /Volumes/SSD-2024 --keyword drone --keyword landscape
-vidx-query /Volumes/SSD-2024 --place-contains California --language es
+fdx-query /Volumes/SSD-2024 --rating keep --time-of-day golden_hour
+fdx-query /Volumes/SSD-2024 --rating cull                  # the cull pile
+fdx-query /Volumes/SSD-2024 --keyword drone --keyword landscape
+fdx-query /Volumes/SSD-2024 --place-contains California --language es
 ```
 
 ## Known limitations
@@ -239,7 +239,7 @@ vidx-query /Volumes/SSD-2024 --place-contains California --language es
 - Frame sampling is evenly-spaced, not scene-detected
 - pyannote diarization degrades on heavy ambient noise (wind, music, crowd)
 - WhisperX runs on CPU on Apple Silicon
-- Face cluster IDs are temporary hashes until the `vidx-faces` labeling tool ships — embeddings are captured now, so no re-indexing will be needed
+- Face cluster IDs are temporary hashes until the `fdx-faces` labeling tool ships — embeddings are captured now, so no re-indexing will be needed
 - RAW photo support not yet (videos only)
 
 ## License

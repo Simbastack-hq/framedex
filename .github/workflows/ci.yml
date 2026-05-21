@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dev deps only
+        run: uv sync --no-default-groups --group dev
+
+      - name: ruff check  
+        run: uv run ruff check src/framedex
+
+      - name: ruff format
+        run: uv run ruff format --check src/framedex
+
+      - name: mypy
+        run: uv run mypy src/framedex --ignore-missing-imports

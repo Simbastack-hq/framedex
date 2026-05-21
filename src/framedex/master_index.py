@@ -22,6 +22,7 @@ import sys
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 try:
     import yaml
@@ -30,7 +31,7 @@ except ImportError:
     sys.exit(1)
 
 
-def parse_sidecar(path: Path) -> dict | None:
+def parse_sidecar(path: Path) -> dict[str, Any] | None:
     try:
         text = path.read_text()
     except Exception:
@@ -46,6 +47,7 @@ def parse_sidecar(path: Path) -> dict | None:
             # Try to pull the description prose for completeness
             body = parts[2].strip()
             import re
+
             m = re.search(r"##\s*Description\s*\n+(.+?)(?=\n##|\Z)", body, re.S | re.I)
             fm["description"] = m.group(1).strip() if m else ""
             fm["sidecar_path"] = str(path)
@@ -69,10 +71,12 @@ def main() -> int:
         print(f"No sidecars found under {root}. Run index_videos.py first.")
         return 0
 
-    records: list[dict] = [r for r in (parse_sidecar(s) for s in sidecars) if r]
+    records: list[dict[str, Any]] = [
+        r for r in (parse_sidecar(s) for s in sidecars) if r
+    ]
 
     # Group by top-level subfolder
-    trips: dict[str, list[dict]] = {}
+    trips: dict[str, list[dict[str, Any]]] = {}
     for r in records:
         vpath = Path(r.get("path", ""))
         try:
@@ -84,33 +88,39 @@ def main() -> int:
 
     # ---- JSON ----
     json_out = root / "_INDEX.json"
-    json_out.write_text(json.dumps({
-        "drive_root": str(root),
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "clip_count": len(records),
-        "trip_count": len(trips),
-        "clips": records,
-    }, indent=2, default=str))
+    json_out.write_text(
+        json.dumps(
+            {
+                "drive_root": str(root),
+                "generated_at": datetime.now().isoformat(timespec="seconds"),
+                "clip_count": len(records),
+                "trip_count": len(trips),
+                "clips": records,
+            },
+            indent=2,
+            default=str,
+        )
+    )
     print(f"Wrote {json_out.name} ({len(records)} clips)")
 
     # ---- Markdown ----
     total_dur_min = sum((r.get("duration_seconds") or 0) for r in records) / 60
     rating_counter = Counter(r.get("rating", "review") for r in records)
     languages = Counter(r.get("language_detected") or "none" for r in records)
-    keyword_freq = Counter()
+    keyword_freq: Counter[str] = Counter()
     for r in records:
-        for k in (r.get("keywords") or []):
+        for k in r.get("keywords") or []:
             keyword_freq[k] += 1
-    place_freq = Counter()
+    place_freq: Counter[str] = Counter()
     for r in records:
         place = (r.get("location") or {}).get("place")
         if place:
             place_freq[place] += 1
 
     face_total = sum(r.get("face_count") or 0 for r in records)
-    named_people = Counter()
+    named_people: Counter[str] = Counter()
     for r in records:
-        for f in (r.get("faces") or []):
+        for f in r.get("faces") or []:
             cid = f.get("cluster_id", "")
             if cid and not cid.startswith("tmp_"):
                 named_people[cid] += 1
@@ -128,27 +138,40 @@ def main() -> int:
         f"{rating_counter.get('keep', 0)} keep, "
         f"{rating_counter.get('review', 0)} review, "
         f"{rating_counter.get('cull', 0)} cull",
-        f"- **Languages:** " + ", ".join(f"{lang} ({n})" for lang, n in languages.most_common(5)),
+        "- **Languages:** "
+        + ", ".join(f"{lang} ({n})" for lang, n in languages.most_common(5)),
     ]
     if place_freq:
-        lines.append("- **Top locations:** " + "; ".join(
-            f"{p} ({n})" for p, n in place_freq.most_common(5)))
+        lines.append(
+            "- **Top locations:** "
+            + "; ".join(f"{p} ({n})" for p, n in place_freq.most_common(5))
+        )
     if face_total:
         if named_people:
-            lines.append("- **Recognized people:** " + ", ".join(
-                f"{name} ({n})" for name, n in named_people.most_common(10)))
-            lines.append(f"- **Faces detected:** {face_total} total ({sum(named_people.values())} named)")
+            lines.append(
+                "- **Recognized people:** "
+                + ", ".join(f"{name} ({n})" for name, n in named_people.most_common(10))
+            )
+            lines.append(
+                f"- **Faces detected:** {face_total} total ({sum(named_people.values())} named)"
+            )
         else:
-            lines.append(f"- **Faces detected:** {face_total} total — run fdx-faces to label clusters")
+            lines.append(
+                f"- **Faces detected:** {face_total} total — run fdx-faces to label clusters"
+            )
     if keyword_freq:
-        lines.append("- **Top keywords:** " + ", ".join(
-            f"`{k}` ({n})" for k, n in keyword_freq.most_common(15)))
+        lines.append(
+            "- **Top keywords:** "
+            + ", ".join(f"`{k}` ({n})" for k, n in keyword_freq.most_common(15))
+        )
 
     cull_clips = [r for r in records if r.get("rating") == "cull"]
     if cull_clips:
         cull_dur = sum((c.get("duration_seconds") or 0) for c in cull_clips) / 60
         lines.append("")
-        lines.append(f"## Cull pile — {len(cull_clips)} clips, {cull_dur:.1f} min total")
+        lines.append(
+            f"## Cull pile — {len(cull_clips)} clips, {cull_dur:.1f} min total"
+        )
         lines.append("")
         lines.append("Safe to delete (AI-flagged + spot-check first):")
         lines.append("")
@@ -163,17 +186,31 @@ def main() -> int:
         clips = trips[trip]
         total = sum((c.get("duration_seconds") or 0) for c in clips)
         ratings = Counter(c.get("rating", "review") for c in clips)
-        langs = sorted({c.get("language_detected", "") for c in clips if c.get("language_detected")})
-        places = sorted({(c.get("location") or {}).get("place", "")
-                         for c in clips if (c.get("location") or {}).get("place")})
+        langs = sorted(
+            {
+                c.get("language_detected", "")
+                for c in clips
+                if c.get("language_detected")
+            }
+        )
+        places = sorted(
+            {
+                (c.get("location") or {}).get("place", "")
+                for c in clips
+                if (c.get("location") or {}).get("place")
+            }
+        )
         summary_file = root / trip / "_folder-summary.md"
-        link = (f"[`{trip}/_folder-summary.md`]({trip}/_folder-summary.md)"
-                if summary_file.exists() else "_no summary yet — run fdx-summary_")
+        link = (
+            f"[`{trip}/_folder-summary.md`]({trip}/_folder-summary.md)"
+            if summary_file.exists()
+            else "_no summary yet — run fdx-summary_"
+        )
         lines += [
             f"### {trip}",
             f"- Clips: {len(clips)} ({ratings.get('keep', 0)} keep / "
             f"{ratings.get('review', 0)} review / {ratings.get('cull', 0)} cull)",
-            f"- Duration: {total/60:.1f} min",
+            f"- Duration: {total / 60:.1f} min",
         ]
         if langs:
             lines.append(f"- Languages: {', '.join(langs)}")

@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
-import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -42,18 +41,18 @@ HIGH_QUALITY_DETECTION = 0.75
 
 @dataclass
 class DetectedFace:
-    cluster_id: str           # temporary; replaced post-clustering
+    cluster_id: str  # temporary; replaced post-clustering
     frame_time_seconds: float
-    bbox: list[int]           # [x, y, w, h]
+    bbox: list[int]  # [x, y, w, h]
     detection_score: float
-    embedding: list[float] = field(default_factory=list)   # 512 floats
+    embedding: list[float] = field(default_factory=list)  # 512 floats
     source_frame_index: int = 0
 
     @property
     def detection_quality(self) -> str:
         return "high" if self.detection_score >= HIGH_QUALITY_DETECTION else "low"
 
-    def to_sidecar_dict(self) -> dict:
+    def to_sidecar_dict(self) -> dict[str, Any]:
         return {
             "cluster_id": self.cluster_id,
             "frame_time": round(self.frame_time_seconds, 2),
@@ -66,11 +65,12 @@ class DetectedFace:
 # Insightface lifecycle
 # ---------------------------------------------------------------------------
 
+
 def init_face_app(model_pack: str = "buffalo_l") -> tuple[bool, str]:
     """Lazy-initialize the insightface FaceAnalysis app. Returns (ok, info_or_error)."""
     global _face_app, _face_app_init_attempted, _init_error
     if _face_app is not None:
-        return True, "already loaded"
+        return True, "already loaded"  # type: ignore[unreachable]
     if _face_app_init_attempted and _init_error:
         return False, _init_error
     _face_app_init_attempted = True
@@ -107,12 +107,13 @@ def detect_faces_in_frame(
 
     # cv2 is pulled in by insightface
     import cv2
+
     img = cv2.imread(str(frame_path))
     if img is None:
         return []
 
     try:
-        faces = _face_app.get(img)
+        faces = _face_app.get(img)  # type: ignore[union-attr]
     except Exception:
         return []
 
@@ -125,7 +126,7 @@ def detect_faces_in_frame(
         if bbox_raw is None:
             continue
         # bbox is [x1, y1, x2, y2] floats — convert to [x, y, w, h] ints
-        x1, y1, x2, y2 = [int(round(v)) for v in bbox_raw]
+        x1, y1, x2, y2 = [round(v) for v in bbox_raw]
         bbox = [x1, y1, x2 - x1, y2 - y1]
         emb = getattr(f, "normed_embedding", None)
         if emb is None or len(emb) != EMBEDDING_DIM:
@@ -134,24 +135,31 @@ def detect_faces_in_frame(
         # short stable ref per face *for this run*. Real clustering happens
         # later via fdx-faces.
         emb_list = [float(v) for v in emb.tolist()]
-        cid = "tmp_" + hashlib.sha1(
-            ",".join(f"{v:.4f}" for v in emb_list[:8]).encode()
-        ).hexdigest()[:8]
-        out.append(DetectedFace(
-            cluster_id=cid,
-            frame_time_seconds=frame_time_seconds,
-            bbox=bbox,
-            detection_score=score,
-            embedding=emb_list,
-            source_frame_index=frame_index,
-        ))
+        cid = (
+            "tmp_"
+            + hashlib.sha1(
+                ",".join(f"{v:.4f}" for v in emb_list[:8]).encode()
+            ).hexdigest()[:8]
+        )
+        out.append(
+            DetectedFace(
+                cluster_id=cid,
+                frame_time_seconds=frame_time_seconds,
+                bbox=bbox,
+                detection_score=score,
+                embedding=emb_list,
+                source_frame_index=frame_index,
+            )
+        )
     return out
 
 
-def detect_faces_in_frames(frame_paths: list[Path], frame_timestamps: list[float]) -> list[DetectedFace]:
+def detect_faces_in_frames(
+    frame_paths: list[Path], frame_timestamps: list[float]
+) -> list[DetectedFace]:
     """Run face detection on a batch of frames; collect all DetectedFaces."""
     all_faces: list[DetectedFace] = []
-    for i, (fp, ts) in enumerate(zip(frame_paths, frame_timestamps)):
+    for i, (fp, ts) in enumerate(zip(frame_paths, frame_timestamps, strict=True)):
         all_faces.extend(detect_faces_in_frame(fp, ts, i))
     return all_faces
 
@@ -208,6 +216,7 @@ def write_faces(
     """Insert detected faces for a clip into the DB. Removes any prior entries
     for this video first so re-running with --force replaces cleanly."""
     import struct
+
     now = datetime.now().isoformat(timespec="seconds")
     cur = conn.cursor()
     cur.execute("DELETE FROM faces WHERE video_path = ?", (str(video_path),))
@@ -217,10 +226,19 @@ def write_faces(
             "INSERT INTO faces (cluster_id, video_path, sidecar_path, frame_time, "
             "bbox_x, bbox_y, bbox_w, bbox_h, det_score, embedding, inserted_at) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (f.cluster_id, str(video_path), str(sidecar_path),
-             f.frame_time_seconds,
-             f.bbox[0], f.bbox[1], f.bbox[2], f.bbox[3],
-             f.detection_score, emb_blob, now)
+            (
+                f.cluster_id,
+                str(video_path),
+                str(sidecar_path),
+                f.frame_time_seconds,
+                f.bbox[0],
+                f.bbox[1],
+                f.bbox[2],
+                f.bbox[3],
+                f.detection_score,
+                emb_blob,
+                now,
+            ),
         )
         # Upsert cluster row
         cur.execute(
@@ -228,12 +246,12 @@ def write_faces(
             "VALUES (?, 1, ?, ?) "
             "ON CONFLICT(cluster_id) DO UPDATE SET "
             "member_count = member_count + 1, last_seen_at = excluded.last_seen_at",
-            (f.cluster_id, now, now)
+            (f.cluster_id, now, now),
         )
     conn.commit()
 
 
-def db_stats(conn: sqlite3.Connection) -> dict:
+def db_stats(conn: sqlite3.Connection) -> dict[str, int]:
     cur = conn.cursor()
     cur.execute("SELECT COUNT(*) FROM faces")
     n_faces = cur.fetchone()[0]

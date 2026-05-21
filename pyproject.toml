@@ -1,0 +1,72 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "framedex"
+version = "0.1.0"
+description = "A queryable knowledge base for your video archive"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "whisperx>=3.1.0",
+    "anthropic>=0.40.0",
+    "requests>=2.31.0",
+    "PyYAML>=6.0",
+    "insightface>=0.7.3",
+    "onnxruntime>=1.18.0",
+    "opencv-python-headless>=4.9.0",
+]
+
+[dependency-groups]
+dev = ["ruff>=0.15.0", "mypy>=1.14.0", "types-PyYAML", "types-requests"]
+
+[project.scripts]
+fdx = "framedex.index_videos:main"
+fdx-summary = "framedex.trip_summary:main"
+fdx-master = "framedex.master_index:main"
+fdx-query = "framedex.query:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/framedex"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+src = ["src"]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "F",     # pyflakes
+    "I",     # isort
+    "W",     # pycodestyle warnings
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    "RUF",   # ruff-specific rules
+]
+ignore = [
+    "E501",  # line length (handled by formatter)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["framedex"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+ignore_missing_imports = true
+exclude = ["setup.py"]

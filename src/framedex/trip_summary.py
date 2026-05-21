@@ -24,6 +24,7 @@ import sys
 import textwrap
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 try:
     import anthropic
@@ -49,7 +50,7 @@ def find_sidecars_recursive(folder: Path) -> list[Path]:
     return sorted(folder.rglob("*.description.md"))
 
 
-def parse_sidecar(path: Path) -> dict | None:
+def parse_sidecar(path: Path) -> dict[str, Any] | None:
     try:
         text = path.read_text()
     except Exception:
@@ -80,7 +81,7 @@ def resolve_api_key() -> str:
     sys.exit("No Anthropic API key. Set ANTHROPIC_API_KEY for summarization.")
 
 
-def compute_stats(records: list[dict]) -> dict:
+def compute_stats(records: list[dict[str, Any]]) -> dict[str, Any]:
     """Aggregate quick stats from records — used to inject ground-truth facts
     into the summary prompt so Claude doesn't have to count by hand."""
     total_duration = sum(r.get("duration_seconds") or 0 for r in records)
@@ -91,7 +92,7 @@ def compute_stats(records: list[dict]) -> dict:
     audio_q = Counter(r.get("audio_quality", "unclear") for r in records)
 
     # Locations
-    places = Counter()
+    places: Counter[str] = Counter()
     for r in records:
         place = (r.get("location") or {}).get("place")
         if place:
@@ -106,20 +107,20 @@ def compute_stats(records: list[dict]) -> dict:
     date_range = (min(dates), max(dates)) if dates else ("", "")
 
     # Keywords
-    keyword_freq = Counter()
+    keyword_freq: Counter[str] = Counter()
     for r in records:
-        for k in (r.get("keywords") or []):
+        for k in r.get("keywords") or []:
             keyword_freq[k] += 1
 
     # Color palette
-    color_freq = Counter()
+    color_freq: Counter[str] = Counter()
     for r in records:
-        for c in (r.get("dominant_colors") or []):
+        for c in r.get("dominant_colors") or []:
             color_freq[c] += 1
 
     # Stability + focus
-    stab = Counter()
-    foc = Counter()
+    stab: Counter[str] = Counter()
+    foc: Counter[str] = Counter()
     for r in records:
         t = r.get("technical") or {}
         stab[t.get("stability", "unclear")] += 1
@@ -127,9 +128,9 @@ def compute_stats(records: list[dict]) -> dict:
 
     # Faces
     face_total = sum(r.get("face_count") or 0 for r in records)
-    face_named = Counter()
+    face_named: Counter[str] = Counter()
     for r in records:
-        for f in (r.get("faces") or []):
+        for f in r.get("faces") or []:
             cid = f.get("cluster_id", "")
             if cid and not cid.startswith("tmp_"):
                 face_named[cid] += 1
@@ -153,8 +154,12 @@ def compute_stats(records: list[dict]) -> dict:
     }
 
 
-def summarize_folder(client: anthropic.Anthropic, folder: Path,
-                     sidecars: list[Path], records: list[dict]) -> str:
+def summarize_folder(
+    client: anthropic.Anthropic,
+    folder: Path,
+    sidecars: list[Path],
+    records: list[dict[str, Any]],
+) -> str:
     """One Claude call: feed it the precomputed stats + a sample of sidecars,
     ask for a structured markdown summary."""
     stats = compute_stats(records)
@@ -164,7 +169,9 @@ def summarize_folder(client: anthropic.Anthropic, folder: Path,
     keep_recs = [r for r in records if r.get("rating") == "keep"]
     review_recs = [r for r in records if r.get("rating") == "review"]
     cull_recs = [r for r in records if r.get("rating") == "cull"]
-    sample = (keep_recs[:30] + review_recs[:15] + cull_recs[:8])[:MAX_SIDECARS_PER_PROMPT]
+    sample = (keep_recs[:30] + review_recs[:15] + cull_recs[:8])[
+        :MAX_SIDECARS_PER_PROMPT
+    ]
 
     sample_text = "\n\n---\n\n".join(
         f"### {Path(r['_sidecar_path']).name}\n\n{Path(r['_sidecar_path']).read_text()}"
@@ -241,7 +248,7 @@ def summarize_folder(client: anthropic.Anthropic, folder: Path,
     )
     for block in msg.content:
         if getattr(block, "type", None) == "text":
-            return block.text.strip()
+            return str(getattr(block, "text", "")).strip()
     return ""
 
 
@@ -264,14 +271,22 @@ def find_summarizable_folders(root: Path, min_clips: int) -> list[Path]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__,
-                                      formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("root", help="Drive/folder root")
-    parser.add_argument("--force", action="store_true",
-                        help="Regenerate summaries even if _folder-summary.md exists")
-    parser.add_argument("--min-clips", type=int, default=DEFAULT_MIN_CLIPS,
-                        help=f"Minimum sidecars in a folder to generate a "
-                             f"summary (default: {DEFAULT_MIN_CLIPS}).")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Regenerate summaries even if _folder-summary.md exists",
+    )
+    parser.add_argument(
+        "--min-clips",
+        type=int,
+        default=DEFAULT_MIN_CLIPS,
+        help=f"Minimum sidecars in a folder to generate a "
+        f"summary (default: {DEFAULT_MIN_CLIPS}).",
+    )
     args = parser.parse_args()
 
     root = Path(args.root).expanduser().resolve()
@@ -294,8 +309,10 @@ def main() -> int:
         if not sidecars:
             continue
         records = [r for r in (parse_sidecar(s) for s in sidecars) if r]
-        print(f"  summarizing {folder.relative_to(root) if folder != root else '.'} "
-              f"({len(records)} clips)...")
+        print(
+            f"  summarizing {folder.relative_to(root) if folder != root else '.'} "
+            f"({len(records)} clips)..."
+        )
         try:
             summary = summarize_folder(client, folder, sidecars, records)
         except Exception as e:

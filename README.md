@@ -13,9 +13,13 @@ framedex is a [Claude Code](https://docs.claude.com/en/docs/claude-code) skill. 
 ```bash
 # Clone into your Claude Code skills directory
 git clone git@github.com:Simbastack-hq/framedex.git ~/.claude/skills/framedex
+cd ~/.claude/skills/framedex
 
-# Install deps + pre-download the Whisper + face-detection models
-python3 ~/.claude/skills/framedex/scripts/setup.py
+# Install Python deps (editable — changes take effect immediately)
+uv pip install -e .
+
+# Verify system binaries + pre-download models
+python3 scripts/setup.py
 ```
 
 ## Quick start
@@ -30,11 +34,7 @@ export HF_TOKEN=hf_yourTokenHere
 # 2. (Optional) Set an Anthropic API key — only needed for --backend api
 export ANTHROPIC_API_KEY=sk-ant-...
 
-# 3. Add aliases to ~/.zshrc
-alias fdx="python3 $HOME/.claude/skills/framedex/scripts/index_videos.py"
-alias fdx-summary="python3 $HOME/.claude/skills/framedex/scripts/trip_summary.py"
-alias fdx-master="python3 $HOME/.claude/skills/framedex/scripts/master_index.py"
-alias fdx-query="python3 $HOME/.claude/skills/framedex/scripts/query.py"
+# 3. Commands are on PATH after editable install. Use fdx, fdx-summary, fdx-master, fdx-query.
 
 # 4. Test on 5 clips before unleashing on a full drive
 fdx /Volumes/SSD-2024 --max-files 5

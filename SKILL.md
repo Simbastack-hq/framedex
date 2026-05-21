@@ -85,16 +85,21 @@ Skip with `--no-faces` if you don't want face data.
 
 | Alias | Script | Purpose |
 |---|---|---|
-| `fdx` | `index_videos.py` | Main indexer (this skill) |
-| `fdx-summary` | `trip_summary.py` | Recursive folder summaries (`_folder-summary.md` in each ≥5-clip folder) |
-| `fdx-master` | `master_index.py` | Drive-level `_INDEX.md` + `_INDEX.json` |
-| `fdx-query` | `query.py` | Filter sidecars by metadata (rating, lighting, person, keyword, etc.) |
+| `fdx` | `framedex.index_videos` | Main indexer (this skill) |
+| `fdx-summary` | `framedex.trip_summary` | Recursive folder summaries (`_folder-summary.md` in each ≥5-clip folder) |
+| `fdx-master` | `framedex.master_index` | Drive-level `_INDEX.md` + `_INDEX.json` |
+| `fdx-query` | `framedex.query` | Filter sidecars by metadata (rating, lighting, person, keyword, etc.) |
 
 ## Set up once
 
 ```bash
-python3 ~/.claude/skills/framedex/scripts/setup.py
-# Installs deps + pre-downloads Whisper turbo + insightface buffalo_l models
+cd ~/.claude/skills/framedex
+
+# Install Python deps (editable — changes take effect immediately)
+uv pip install -e .
+
+# Verify system binaries + pre-download models
+python3 scripts/setup.py
 
 # HF token for pyannote diarization (one-time)
 # Accept terms on https://huggingface.co/pyannote/speaker-diarization-3.1
@@ -104,11 +109,8 @@ export HF_TOKEN=hf_...
 # Only if using --backend api:
 # export ANTHROPIC_API_KEY=sk-ant-...
 
-# Aliases for ~/.zshrc
-alias fdx="python3 $HOME/.claude/skills/framedex/scripts/index_videos.py"
-alias fdx-summary="python3 $HOME/.claude/skills/framedex/scripts/trip_summary.py"
-alias fdx-master="python3 $HOME/.claude/skills/framedex/scripts/master_index.py"
-alias fdx-query="python3 $HOME/.claude/skills/framedex/scripts/query.py"
+# Commands are now on PATH after editable install:
+#   fdx, fdx-summary, fdx-master, fdx-query
 ```
 
 ## Common run patterns
@@ -179,8 +181,13 @@ Run on each drive separately. Sidecars travel with the data; the face DB is cent
 ~/.claude/skills/framedex/
 ├── SKILL.md                       # this file
 ├── README.md
-└── scripts/
-    ├── setup.py                   # one-time deps installer
+├── pyproject.toml                 # deps, ruff/mypy config, entry points
+├── .pre-commit-config.yaml        # pre-commit hooks
+├── .github/workflows/ci.yml       # CI (ruff + mypy)
+├── scripts/
+│   └── setup.py                   # system binaries + model pre-download
+└── src/framedex/
+    ├── __init__.py                # package init, version from pyproject.toml
     ├── index_videos.py            # main worker (fdx)
     ├── face_db.py                 # face detection + SQLite face DB module
     ├── trip_summary.py            # recursive folder summaries (fdx-summary)

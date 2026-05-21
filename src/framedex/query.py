@@ -25,6 +25,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 try:
     import yaml
@@ -33,7 +34,7 @@ except ImportError:
     sys.exit(1)
 
 
-def parse_sidecar(path: Path) -> dict | None:
+def parse_sidecar(path: Path) -> dict[str, Any] | None:
     """Read sidecar, return parsed frontmatter dict (or None on parse failure)."""
     try:
         text = path.read_text()
@@ -54,7 +55,7 @@ def parse_sidecar(path: Path) -> dict | None:
     return None
 
 
-def matches(rec: dict, args) -> bool:
+def matches(rec: dict[str, Any], args: argparse.Namespace) -> bool:
     """Apply all filters. Returns True if record passes all."""
     # Rating (csv → OR within flag)
     if args.rating:
@@ -77,15 +78,15 @@ def matches(rec: dict, args) -> bool:
         wanted = {v.strip() for v in args.language.split(",")}
         if rec.get("language_detected") not in wanted:
             return False
-    if args.focus:
-        if (rec.get("technical") or {}).get("focus") != args.focus:
-            return False
-    if args.stability:
-        if (rec.get("technical") or {}).get("stability") != args.stability:
-            return False
-    if args.exposure:
-        if (rec.get("technical") or {}).get("exposure") != args.exposure:
-            return False
+    if args.focus and (rec.get("technical") or {}).get("focus") != args.focus:
+        return False
+    if (
+        args.stability
+        and (rec.get("technical") or {}).get("stability") != args.stability
+    ):
+        return False
+    if args.exposure and (rec.get("technical") or {}).get("exposure") != args.exposure:
+        return False
     if args.people_count is not None:
         pc = rec.get("people_count")
         # Allow exact match or "+" suffix for >=
@@ -156,8 +157,9 @@ def matches(rec: dict, args) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__,
-                                      formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("root", help="Drive/folder root to query")
 
     # Filter flags
@@ -169,33 +171,65 @@ def main() -> int:
     parser.add_argument("--focus", choices=["sharp", "acceptable", "soft"])
     parser.add_argument("--stability", choices=["smooth", "handheld", "jittery"])
     parser.add_argument("--exposure", choices=["strong", "adequate", "poor", "clipped"])
-    parser.add_argument("--people-count", dest="people_count",
-                        help="Exact int, or 'N+' for ≥ N (e.g. '3+').")
-    parser.add_argument("--face-count", dest="face_count",
-                        help="Exact int, or 'N+' for ≥ N.")
-    parser.add_argument("--person",
-                        help="Filter by face cluster name (after fdx-faces labels).")
-    parser.add_argument("--keyword", action="append", default=[],
-                        help="Required keyword (repeatable; all must match).")
+    parser.add_argument(
+        "--people-count",
+        dest="people_count",
+        help="Exact int, or 'N+' for ≥ N (e.g. '3+').",
+    )
+    parser.add_argument(
+        "--face-count", dest="face_count", help="Exact int, or 'N+' for ≥ N."
+    )
+    parser.add_argument(
+        "--person", help="Filter by face cluster name (after fdx-faces labels)."
+    )
+    parser.add_argument(
+        "--keyword",
+        action="append",
+        default=[],
+        help="Required keyword (repeatable; all must match).",
+    )
     parser.add_argument("--dominant-color", dest="dominant_color")
-    parser.add_argument("--place-contains", dest="place_contains",
-                        help="Substring match on reverse-geocoded place name.")
-    parser.add_argument("--min-duration", type=float, dest="min_duration",
-                        help="Minimum clip duration in seconds.")
-    parser.add_argument("--max-duration", type=float, dest="max_duration",
-                        help="Maximum clip duration in seconds.")
-    parser.add_argument("--has-speech", action="store_true", dest="has_speech",
-                        help="Only clips with detected speech (speaker_count ≥ 1).")
+    parser.add_argument(
+        "--place-contains",
+        dest="place_contains",
+        help="Substring match on reverse-geocoded place name.",
+    )
+    parser.add_argument(
+        "--min-duration",
+        type=float,
+        dest="min_duration",
+        help="Minimum clip duration in seconds.",
+    )
+    parser.add_argument(
+        "--max-duration",
+        type=float,
+        dest="max_duration",
+        help="Maximum clip duration in seconds.",
+    )
+    parser.add_argument(
+        "--has-speech",
+        action="store_true",
+        dest="has_speech",
+        help="Only clips with detected speech (speaker_count ≥ 1).",
+    )
 
     # Output flags
-    parser.add_argument("--json", action="store_true",
-                        help="Emit full records as JSON instead of paths.")
-    parser.add_argument("--with-description", action="store_true",
-                        help="Show the rating + description preview alongside the path.")
-    parser.add_argument("--count", action="store_true",
-                        help="Only print the count of matches.")
-    parser.add_argument("--limit", type=int, default=None,
-                        help="Show at most N results.")
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit full records as JSON instead of paths.",
+    )
+    parser.add_argument(
+        "--with-description",
+        action="store_true",
+        help="Show the rating + description preview alongside the path.",
+    )
+    parser.add_argument(
+        "--count", action="store_true", help="Only print the count of matches."
+    )
+    parser.add_argument(
+        "--limit", type=int, default=None, help="Show at most N results."
+    )
 
     args = parser.parse_args()
 
@@ -204,7 +238,7 @@ def main() -> int:
         sys.exit(f"Not a directory: {root}")
 
     sidecars = sorted(root.rglob("*.description.md"))
-    matched: list[dict] = []
+    matched: list[dict[str, Any]] = []
     for s in sidecars:
         rec = parse_sidecar(s)
         if rec is None:

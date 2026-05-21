@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import json
 import os
 import re
@@ -45,8 +46,10 @@ import time
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+if TYPE_CHECKING:
+    import anthropic
 
 # Defer heavy imports until after we know setup.py has been run.
 try:
@@ -55,29 +58,42 @@ try:
     import yaml
 except ImportError as e:
     print(f"Missing dependency: {e}", file=sys.stderr)
-    print("Run: python3 ~/.claude/skills/framedex/scripts/setup.py", file=sys.stderr)
+    print("Run: uv pip install -e .", file=sys.stderr)
     sys.exit(1)
 
 # anthropic is only required for --backend api; import lazily inside that path.
 # insightface is loaded lazily by face_db (heavy module).
 
-# Local module
-sys.path.insert(0, str(Path(__file__).parent))
-import face_db  # type: ignore
+from framedex import face_db
 
-
-VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".mkv", ".avi", ".webm", ".hevc", ".mts", ".m2ts"}
+VIDEO_EXTENSIONS = {
+    ".mp4",
+    ".mov",
+    ".m4v",
+    ".mkv",
+    ".avi",
+    ".webm",
+    ".hevc",
+    ".mts",
+    ".m2ts",
+}
 SIDECAR_SUFFIX = ".description.md"
 CONTEXT_FILE = ".video-context.md"
 
 # Default models — overridable via --vision-model. Map common shorthand to the
 # full IDs that the API expects, and to the shorthand the CLI accepts.
-VISION_MODEL_DEFAULT = "haiku"   # 'haiku' or 'sonnet'
-VISION_MODELS = {
-    "haiku":  {"api": "claude-haiku-4-5-20251001",  "cli": "claude-haiku-4-5",
-               "cost_per_call_api": 0.002},
-    "sonnet": {"api": "claude-sonnet-4-6-20251001", "cli": "claude-sonnet-4-6",
-               "cost_per_call_api": 0.008},   # ~4× Haiku for short prompts + 5 frames
+VISION_MODEL_DEFAULT = "haiku"  # 'haiku' or 'sonnet'
+VISION_MODELS: dict[str, dict[str, str | float]] = {
+    "haiku": {
+        "api": "claude-haiku-4-5-20251001",
+        "cli": "claude-haiku-4-5",
+        "cost_per_call_api": 0.002,
+    },
+    "sonnet": {
+        "api": "claude-sonnet-4-6-20251001",
+        "cli": "claude-sonnet-4-6",
+        "cost_per_call_api": 0.008,
+    },  # ~4x Haiku for short prompts + 5 frames
 }
 
 # Frame extraction cap — wider is more informative for the vision model on
@@ -86,10 +102,10 @@ VISION_MODELS = {
 # that base64-encoding 5 frames keeps the API request reasonable.
 FRAME_MAX_WIDTH = 1920
 
-COST_PER_CALL_USD_CLI = 0.0      # Max subscription: marginal cost is $0 to user
-COST_PER_CALL_USD_LOCAL = 0.0    # Local model: $0, just electricity
+COST_PER_CALL_USD_CLI = 0.0  # Max subscription: marginal cost is $0 to user
+COST_PER_CALL_USD_LOCAL = 0.0  # Local model: $0, just electricity
 USER_AGENT = "framedex/1.0 (personal archive indexer)"
-CLI_INTER_CALL_DELAY = 0.4       # seconds, to be polite to Max TPM caps
+CLI_INTER_CALL_DELAY = 0.4  # seconds, to be polite to Max TPM caps
 
 DEFAULT_LOCAL_BASE_URL = "http://localhost:1234/v1"
 LOCAL_TIMEOUT_SEC = 180
@@ -98,6 +114,7 @@ LOCAL_TIMEOUT_SEC = 180
 # ---------------------------------------------------------------------------
 # Discovery
 # ---------------------------------------------------------------------------
+
 
 def find_videos(root: Path, exclude_patterns: list[str]) -> list[Path]:
     """Recursively find all videos under root. Skip hidden, sidecars, _output dirs."""
@@ -269,7 +286,7 @@ def _build_whisper_prompt(names: list[str]) -> tuple[str, str]:
 WHISPER_FIXES_DEFAULT = Path.home() / ".framedex" / "whisper_fixes.json"
 
 
-def load_whisper_fixes(path: Path) -> list[tuple[re.Pattern, str]]:
+def load_whisper_fixes(path: Path) -> list[tuple[re.Pattern[str], str]]:
     if not path.exists():
         return []
     try:
@@ -277,7 +294,7 @@ def load_whisper_fixes(path: Path) -> list[tuple[re.Pattern, str]]:
     except Exception as e:
         print(f"  (warn) failed to parse whisper fixes at {path}: {e}")
         return []
-    fixes: list[tuple[re.Pattern, str]] = []
+    fixes: list[tuple[re.Pattern[str], str]] = []
     for entry in data.get("fixes", []):
         pat = entry.get("pattern")
         rep = entry.get("replace")
@@ -291,7 +308,7 @@ def load_whisper_fixes(path: Path) -> list[tuple[re.Pattern, str]]:
     return fixes
 
 
-def apply_whisper_fixes(text: str, fixes: list[tuple[re.Pattern, str]]) -> str:
+def apply_whisper_fixes(text: str, fixes: list[tuple[re.Pattern[str], str]]) -> str:
     if not text or not fixes:
         return text
     for pat, rep in fixes:
@@ -303,15 +320,28 @@ def apply_whisper_fixes(text: str, fixes: list[tuple[re.Pattern, str]]) -> str:
 # Metadata + GPS + frames
 # ---------------------------------------------------------------------------
 
-def get_metadata(video: Path) -> dict:
+
+def get_metadata(video: Path) -> dict[str, Any]:
     cmd = [
-        "ffprobe", "-v", "quiet", "-print_format", "json",
-        "-show_format", "-show_streams", str(video),
+        "ffprobe",
+        "-v",
+        "quiet",
+        "-print_format",
+        "json",
+        "-show_format",
+        "-show_streams",
+        str(video),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        return {"duration_seconds": 0, "width": None, "height": None,
-                "creation_time": "", "size_bytes": video.stat().st_size, "codec": None}
+        return {
+            "duration_seconds": 0,
+            "width": None,
+            "height": None,
+            "creation_time": "",
+            "size_bytes": video.stat().st_size,
+            "codec": None,
+        }
     data = json.loads(result.stdout or "{}")
     fmt = data.get("format", {})
     streams = data.get("streams", [])
@@ -326,12 +356,17 @@ def get_metadata(video: Path) -> dict:
     }
 
 
-def get_gps(video: Path) -> dict:
+def get_gps(video: Path) -> dict[str, Any]:
     """exiftool → lat/lon/alt. Returns {} if nothing usable."""
     cmd = [
-        "exiftool", "-json", "-n",
-        "-GPSLatitude", "-GPSLongitude", "-GPSAltitude",
-        "-GPSCoordinates", "-LocationInformation",
+        "exiftool",
+        "-json",
+        "-n",
+        "-GPSLatitude",
+        "-GPSLongitude",
+        "-GPSAltitude",
+        "-GPSCoordinates",
+        "-LocationInformation",
         str(video),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -352,10 +387,8 @@ def get_gps(video: Path) -> dict:
             pass
     alt = data.get("GPSAltitude")
     if alt is not None:
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             out["altitude_m"] = float(alt)
-        except (TypeError, ValueError):
-            pass
     # Some clips embed GPSCoordinates as "lat, lon, alt"
     if "lat" not in out and data.get("GPSCoordinates"):
         coords = str(data["GPSCoordinates"]).split(",")
@@ -389,14 +422,19 @@ class NominatimRateLimiter:
         try:
             resp = requests.get(
                 "https://nominatim.openstreetmap.org/reverse",
-                params={"lat": lat, "lon": lon, "format": "json", "zoom": 14},
+                params={
+                    "lat": str(lat),
+                    "lon": str(lon),
+                    "format": "json",
+                    "zoom": "14",
+                },
                 headers={"User-Agent": USER_AGENT},
                 timeout=10,
             )
             self.last_call = time.time()
             if resp.ok:
                 data = resp.json()
-                place = data.get("display_name", "")
+                place = str(data.get("display_name", ""))
                 self.cache[key] = place
                 return place
         except Exception:
@@ -417,10 +455,21 @@ def extract_frames(video: Path, out_dir: Path, num_frames: int = 5) -> list[Path
     for i, ts in enumerate(timestamps):
         out = out_dir / f"frame_{i:02d}.jpg"
         cmd = [
-            "ffmpeg", "-y", "-ss", f"{ts:.2f}", "-i", str(video),
-            "-vframes", "1", "-q:v", "2",  # higher quality jpeg
-            "-vf", f"scale='min({FRAME_MAX_WIDTH},iw)':-2",
-            "-loglevel", "error", str(out),
+            "ffmpeg",
+            "-y",
+            "-ss",
+            f"{ts:.2f}",
+            "-i",
+            str(video),
+            "-vframes",
+            "1",
+            "-q:v",
+            "2",  # higher quality jpeg
+            "-vf",
+            f"scale='min({FRAME_MAX_WIDTH},iw)':-2",
+            "-loglevel",
+            "error",
+            str(out),
         ]
         subprocess.run(cmd, capture_output=True)
         if out.exists() and out.stat().st_size > 0:
@@ -432,11 +481,23 @@ def extract_frames(video: Path, out_dir: Path, num_frames: int = 5) -> list[Path
 # WhisperX: transcribe + align + diarize
 # ---------------------------------------------------------------------------
 
+
 def extract_audio(video: Path, out_path: Path) -> bool:
     cmd = [
-        "ffmpeg", "-y", "-i", str(video),
-        "-vn", "-ac", "1", "-ar", "16000", "-f", "wav",
-        "-loglevel", "error", str(out_path),
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(video),
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-f",
+        "wav",
+        "-loglevel",
+        "error",
+        str(out_path),
     ]
     r = subprocess.run(cmd, capture_output=True)
     return r.returncode == 0 and out_path.exists() and out_path.stat().st_size > 1000
@@ -445,11 +506,11 @@ def extract_audio(video: Path, out_path: Path) -> bool:
 def transcribe_audio_whisperx(
     video: Path,
     whisper_model: Any,
-    align_models: dict,
+    align_models: dict[str, Any],
     diarize_pipeline: Any | None,
     proper_nouns: list[str] | None = None,
-    whisper_fixes: list[tuple[re.Pattern, str]] | None = None,
-) -> dict:
+    whisper_fixes: list[tuple[re.Pattern[str], str]] | None = None,
+) -> dict[str, Any]:
     """
     Returns dict with keys:
         language, language_probability, transcript, english_translation,
@@ -492,11 +553,19 @@ def transcribe_audio_whisperx(
         # 2. Align (word-level timestamps) — required for diarization
         try:
             if language not in align_models:
-                model_a, meta_a = whisperx.load_align_model(language_code=language, device="cpu")
+                model_a, meta_a = whisperx.load_align_model(
+                    language_code=language, device="cpu"
+                )
                 align_models[language] = (model_a, meta_a)
             model_a, meta_a = align_models[language]
-            aligned = whisperx.align(segments, model_a, meta_a, audio, device="cpu",
-                                     return_char_alignments=False)
+            aligned = whisperx.align(
+                segments,
+                model_a,
+                meta_a,
+                audio,
+                device="cpu",
+                return_char_alignments=False,
+            )
             segments = aligned.get("segments", segments)
         except Exception as e:
             # Alignment failed (e.g. unsupported language for alignment); diarize without
@@ -507,7 +576,9 @@ def transcribe_audio_whisperx(
         if diarize_pipeline is not None:
             try:
                 diarize_segments = diarize_pipeline(audio)
-                assigned = whisperx.assign_word_speakers(diarize_segments, {"segments": segments})
+                assigned = whisperx.assign_word_speakers(
+                    diarize_segments, {"segments": segments}
+                )
                 segments = assigned.get("segments", segments)
                 speakers = {s.get("speaker") for s in segments if s.get("speaker")}
                 speaker_count = len(speakers)
@@ -520,9 +591,15 @@ def transcribe_audio_whisperx(
         english_translation = None
         if language and language != "en" and transcript.strip():
             try:
-                t_result = whisper_model.transcribe(audio, batch_size=8, task="translate")
-                english_translation = " ".join(s.get("text", "").strip()
-                                                for s in t_result.get("segments", [])).strip() or None
+                t_result = whisper_model.transcribe(
+                    audio, batch_size=8, task="translate"
+                )
+                english_translation = (
+                    " ".join(
+                        s.get("text", "").strip() for s in t_result.get("segments", [])
+                    ).strip()
+                    or None
+                )
             except Exception as e:
                 english_translation = f"[translation failed: {e}]"
 
@@ -532,7 +609,9 @@ def transcribe_audio_whisperx(
         if whisper_fixes:
             transcript = apply_whisper_fixes(transcript, whisper_fixes)
             if english_translation:
-                english_translation = apply_whisper_fixes(english_translation, whisper_fixes)
+                english_translation = apply_whisper_fixes(
+                    english_translation, whisper_fixes
+                )
             for s in segments:
                 if "text" in s:
                     s["text"] = apply_whisper_fixes(s["text"], whisper_fixes)
@@ -555,7 +634,7 @@ def transcribe_audio_whisperx(
         audio_path.unlink(missing_ok=True)
 
 
-def _empty_transcript(language: str = "") -> dict:
+def _empty_transcript(language: str = "") -> dict[str, Any]:
     return {
         "language": language,
         "transcript": "",
@@ -565,7 +644,7 @@ def _empty_transcript(language: str = "") -> dict:
     }
 
 
-def _segments_to_text(segments: list[dict]) -> str:
+def _segments_to_text(segments: list[dict[str, Any]]) -> str:
     """Render segments as 'Speaker N (HH:MM:SS): text' lines."""
     lines = []
     last_speaker = None
@@ -606,8 +685,13 @@ def _fmt_time(seconds: float) -> str:
 # Vision description
 # ---------------------------------------------------------------------------
 
-def _build_vision_prompt(frames: list[Path], context: dict, folder_context: str,
-                         include_paths: bool) -> str:
+
+def _build_vision_prompt(
+    frames: list[Path],
+    context: dict[str, Any],
+    folder_context: str,
+    include_paths: bool,
+) -> str:
     """Shared prompt builder. include_paths=True for CLI mode (Claude Code reads
     via its Read tool); False for direct API / local where images go as
     content blocks. Asks for a YAML structured block + a prose description."""
@@ -631,10 +715,12 @@ def _build_vision_prompt(frames: list[Path], context: dict, folder_context: str,
     if folder_context:
         folder_block = f"\nDrive/folder context (use this to interpret the scene):\n{folder_context}\n"
 
-    intro = (f"Read these {len(frames)} JPEG frames in order, then analyze the video clip."
-             if include_paths
-             else f"Analyze this short video clip based on these {len(frames)} frames "
-                  "(evenly sampled across the clip).")
+    intro = (
+        f"Read these {len(frames)} JPEG frames in order, then analyze the video clip."
+        if include_paths
+        else f"Analyze this short video clip based on these {len(frames)} frames "
+        "(evenly sampled across the clip)."
+    )
 
     paths_block = ""
     if include_paths:
@@ -646,10 +732,10 @@ def _build_vision_prompt(frames: list[Path], context: dict, folder_context: str,
     return textwrap.dedent(f"""
     {intro}
     {paths_block}
-    File: {context['filename']}
-    Parent folder: {context['parent_folder']}
-    Duration: {context['duration_seconds']:.1f}s
-    Creation date: {context.get('creation_time') or 'unknown'}
+    File: {context["filename"]}
+    Parent folder: {context["parent_folder"]}
+    Duration: {context["duration_seconds"]:.1f}s
+    Creation date: {context.get("creation_time") or "unknown"}
     {location_line}
     Speech: {speech_block}
     {folder_block}
@@ -746,7 +832,7 @@ def _coerce_people_count(value: Any, face_count: int) -> int:
     word → fall back to face_count (real ground truth from insightface);
     junk → 0."""
     if isinstance(value, bool):
-        return 0   # avoid True→1 surprise
+        return 0  # avoid True→1 surprise
     if isinstance(value, int):
         return max(0, min(99, value))
     if isinstance(value, float):
@@ -759,8 +845,17 @@ def _coerce_people_count(value: Any, face_count: int) -> int:
         except (ValueError, TypeError):
             pass
         # Word-style fuzzy counts
-        if s in {"many", "lots", "lots of people", "a lot", "crowd", "crowded",
-                 "numerous", "several", "group"}:
+        if s in {
+            "many",
+            "lots",
+            "lots of people",
+            "a lot",
+            "crowd",
+            "crowded",
+            "numerous",
+            "several",
+            "group",
+        }:
             # Use face_count as a real lower bound; min 10 since "many" implies >10
             return max(10, min(99, face_count))
         if s in {"few", "couple", "pair"}:
@@ -772,7 +867,7 @@ def _coerce_people_count(value: Any, face_count: int) -> int:
     return 0
 
 
-def parse_vision_response(raw: str) -> tuple[dict, str]:
+def parse_vision_response(raw: str) -> tuple[dict[str, Any], str]:
     """Extract the YAML structured block and the prose Description from the
     model's response. Returns (yaml_dict, prose_description). Tolerant of
     minor formatting variations."""
@@ -780,7 +875,7 @@ def parse_vision_response(raw: str) -> tuple[dict, str]:
         return {}, raw
 
     # Pull the first ```yaml fence
-    structured: dict = {}
+    structured: dict[str, Any] = {}
     m = YAML_FENCE_RE.search(raw)
     if m:
         yaml_text = m.group(1)
@@ -806,9 +901,9 @@ def parse_vision_response(raw: str) -> tuple[dict, str]:
 
 
 def describe_frames_api(
-    client: "anthropic.Anthropic",
+    client: anthropic.Anthropic,
     frames: list[Path],
-    context: dict,
+    context: dict[str, Any],
     folder_context: str,
     model_id: str,
 ) -> str:
@@ -816,16 +911,18 @@ def describe_frames_api(
     if not frames:
         return "[no frames extracted]"
 
-    content: list[dict] = []
+    content: list[dict[str, Any]] = []
     for f in frames:
-        content.append({
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/jpeg",
-                "data": base64.b64encode(f.read_bytes()).decode(),
-            },
-        })
+        content.append(
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/jpeg",
+                    "data": base64.b64encode(f.read_bytes()).decode(),
+                },
+            }
+        )
     prompt = _build_vision_prompt(frames, context, folder_context, include_paths=False)
     content.append({"type": "text", "text": prompt})
 
@@ -836,13 +933,13 @@ def describe_frames_api(
     )
     for block in msg.content:
         if getattr(block, "type", None) == "text":
-            return block.text.strip()
+            return str(getattr(block, "text", "")).strip()
     return "[no description returned]"
 
 
 def describe_frames_local(
     frames: list[Path],
-    context: dict,
+    context: dict[str, Any],
     folder_context: str,
     base_url: str,
     model_name: str | None,
@@ -857,20 +954,22 @@ def describe_frames_local(
         return "[no frames extracted]"
 
     # OpenAI vision content blocks: image_url with data URI for inline images.
-    content: list[dict] = []
+    content: list[dict[str, Any]] = []
     for f in frames:
         b64 = base64.b64encode(f.read_bytes()).decode()
-        content.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
-        })
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+            }
+        )
     prompt = _build_vision_prompt(frames, context, folder_context, include_paths=False)
     content.append({"type": "text", "text": prompt})
 
-    payload: dict = {
+    payload: dict[str, Any] = {
         "messages": [{"role": "user", "content": content}],
         "max_tokens": 800,
-        "temperature": 0.3,   # lower temperature → less confabulation
+        "temperature": 0.3,  # lower temperature → less confabulation
     }
     if model_name:
         payload["model"] = model_name
@@ -886,8 +985,10 @@ def describe_frames_local(
             timeout=timeout_sec,
         )
     except requests.exceptions.ConnectionError:
-        return (f"[local backend unreachable at {base_url}. "
-                "Is LM Studio running with a vision model loaded?]")
+        return (
+            f"[local backend unreachable at {base_url}. "
+            "Is LM Studio running with a vision model loaded?]"
+        )
     except requests.exceptions.Timeout:
         return f"[local backend timed out after {timeout_sec}s]"
     except Exception as e:
@@ -938,7 +1039,7 @@ def check_local_endpoint(base_url: str) -> tuple[bool, str]:
 
 def describe_frames_cli(
     frames: list[Path],
-    context: dict,
+    context: dict[str, Any],
     folder_context: str,
     model_id: str,
     timeout_sec: int = 180,
@@ -959,24 +1060,35 @@ def describe_frames_cli(
     env.pop("CLAUDE_API_KEY", None)
 
     cmd = [
-        "claude", "-p", prompt,
-        "--model", model_id,
-        "--output-format", "json",
+        "claude",
+        "-p",
+        prompt,
+        "--model",
+        model_id,
+        "--output-format",
+        "json",
         # Headless mode: auto-approve tool uses (Claude Code needs Read to open
         # the frame JPEGs we created in /tmp). Without this, the CLI returns
         # "I need permission to read the image frames" as the response text.
-        "--permission-mode", "bypassPermissions",
+        "--permission-mode",
+        "bypassPermissions",
     ]
 
     try:
         result = subprocess.run(
-            cmd, env=env, capture_output=True, text=True, timeout=timeout_sec,
+            cmd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
         )
     except subprocess.TimeoutExpired:
         return f"[CLI timed out after {timeout_sec}s]"
 
     if result.returncode != 0:
-        return f"[CLI error: rc={result.returncode}, stderr={result.stderr.strip()[:300]}]"
+        return (
+            f"[CLI error: rc={result.returncode}, stderr={result.stderr.strip()[:300]}]"
+        )
 
     stdout = result.stdout.strip()
     if not stdout:
@@ -1033,14 +1145,15 @@ def describe_frames_cli(
 # Sidecar write
 # ---------------------------------------------------------------------------
 
+
 def write_sidecar(
     video: Path,
-    metadata: dict,
-    gps: dict,
+    metadata: dict[str, Any],
+    gps: dict[str, Any],
     place: str,
-    audio: dict,
+    audio: dict[str, Any],
     description: str,
-    structured: dict,
+    structured: dict[str, Any],
     faces: list[face_db.DetectedFace],
 ) -> Path:
     sidecar = sidecar_path(video)
@@ -1049,7 +1162,7 @@ def write_sidecar(
 
     # Build the frontmatter as a single Python dict, then serialize via PyYAML.
     # This gives us robust YAML quoting/escaping for free.
-    fm: dict = {
+    fm: dict[str, Any] = {
         "file": video.name,
         "path": str(video),
         "parent_folder": parent,
@@ -1060,7 +1173,7 @@ def write_sidecar(
         "creation_time": metadata.get("creation_time") or "",
     }
     if gps.get("lat") is not None:
-        loc: dict = {
+        loc: dict[str, Any] = {
             "lat": gps["lat"],
             "lon": gps["lon"],
         }
@@ -1077,15 +1190,19 @@ def write_sidecar(
     fm["rating"] = structured.get("rating") or "review"
     fm["cull_reason"] = structured.get("cull_reason") or ""
     fm["technical"] = structured.get("technical") or {
-        "focus": "unclear", "exposure": "unclear",
-        "stability": "unclear", "motion_blur": "unclear",
+        "focus": "unclear",
+        "exposure": "unclear",
+        "stability": "unclear",
+        "motion_blur": "unclear",
     }
     fm["lighting"] = structured.get("lighting") or "unclear"
     fm["time_of_day"] = structured.get("time_of_day") or "unclear"
     fm["dominant_color_palette"] = structured.get("dominant_color_palette") or ""
     fm["dominant_colors"] = structured.get("dominant_colors") or []
     fm["audio_quality"] = structured.get("audio_quality") or "unclear"
-    fm["people_count"] = _coerce_people_count(structured.get("people_count", 0), len(faces))
+    fm["people_count"] = _coerce_people_count(
+        structured.get("people_count", 0), len(faces)
+    )
     fm["keywords"] = structured.get("keywords") or []
     fm["notable_timestamp"] = structured.get("notable_timestamp") or ""
 
@@ -1100,8 +1217,9 @@ def write_sidecar(
 
     fm["indexed_at"] = datetime.now().isoformat(timespec="seconds")
 
-    frontmatter_text = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True,
-                                       default_flow_style=False).rstrip()
+    frontmatter_text = yaml.safe_dump(
+        fm, sort_keys=False, allow_unicode=True, default_flow_style=False
+    ).rstrip()
 
     body_parts = [
         "---",
@@ -1133,6 +1251,7 @@ def write_sidecar(
 # Key resolution
 # ---------------------------------------------------------------------------
 
+
 def resolve_anthropic_key() -> str | None:
     """Return API key if available; None if not. Caller decides if it's required."""
     env = os.environ.get("ANTHROPIC_API_KEY")
@@ -1147,10 +1266,13 @@ def resolve_anthropic_key() -> str | None:
 def check_claude_cli() -> bool:
     """Verify `claude` CLI is on PATH and responds to --version."""
     import shutil
+
     if not shutil.which("claude"):
         return False
     try:
-        r = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=10)
+        r = subprocess.run(
+            ["claude", "--version"], capture_output=True, text=True, timeout=10
+        )
         return r.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return False
@@ -1164,68 +1286,115 @@ def resolve_hf_token() -> str | None:
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Index videos in a folder tree.")
     parser.add_argument("root", help="Root folder to scan recursively")
-    parser.add_argument("--force", action="store_true",
-                        help="Re-process clips even if a sidecar exists")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="List what would be processed; no API/model calls")
-    parser.add_argument("--max-files", type=int, default=None,
-                        help="Stop after N files (for testing)")
-    parser.add_argument("--max-duration", type=int, default=30,
-                        help="Skip clips longer than N minutes (default: 30; 0 = no limit). "
-                             "Useful for mixed folders that contain movies/long recordings "
-                             "you don't want to transcribe.")
-    parser.add_argument("--whisper-model", default="large-v3-turbo",
-                        help="Whisper model: tiny/base/small/medium/large-v3/large-v3-turbo")
-    parser.add_argument("--no-diarize", action="store_true",
-                        help="Skip speaker diarization (faster, no HF_TOKEN needed)")
-    parser.add_argument("--no-geocode", action="store_true",
-                        help="Skip Nominatim reverse geocoding (GPS still recorded)")
-    parser.add_argument("--exclude", action="append", default=[],
-                        help="Path substring to exclude (repeatable)")
-    parser.add_argument("--backend", choices=["cli", "api", "local"], default="cli",
-                        help="Vision backend. 'cli' shells out to `claude -p` "
-                             "(uses Max subscription, $0 marginal cost). "
-                             "'api' uses anthropic SDK with ANTHROPIC_API_KEY "
-                             "(faster, ~$0.002/clip via Haiku). "
-                             "'local' uses LM Studio (or any OpenAI-compatible "
-                             "endpoint) at --local-base-url ($0, fully offline). "
-                             "Default: cli.")
-    parser.add_argument("--vision-model", choices=list(VISION_MODELS.keys()),
-                        default=VISION_MODEL_DEFAULT,
-                        help="Claude vision model when --backend cli or api. "
-                             "Ignored for --backend local. 'haiku' (default) "
-                             "or 'sonnet' (~4x cost via api, better accuracy "
-                             "on motion/low-light/ambiguous clips).")
-    parser.add_argument("--local-base-url", default=DEFAULT_LOCAL_BASE_URL,
-                        help=f"OpenAI-compatible base URL for --backend local "
-                             f"(default: {DEFAULT_LOCAL_BASE_URL}). LM Studio "
-                             "exposes /v1 by default.")
-    parser.add_argument("--local-model", default=None,
-                        help="Model name to send to --backend local. If unset, "
-                             "uses whatever model LM Studio has loaded. Pass "
-                             "the exact loaded model id (e.g. "
-                             "'google/gemma-4-26b') if your server has multiple.")
-    parser.add_argument("--no-faces", action="store_true",
-                        help="Skip face detection step (faster; no embeddings "
-                             "captured for later fdx-faces clustering).")
-    parser.add_argument("--face-db", default=str(face_db.DB_PATH_DEFAULT),
-                        help=f"Path to face DB SQLite file (default: "
-                             f"{face_db.DB_PATH_DEFAULT}).")
-    parser.add_argument("--no-whisper-prompt", action="store_true",
-                        help="Disable per-clip Whisper proper-noun biasing. "
-                             "By default the indexer reads `**Whisper proper "
-                             "nouns:**` lines from .video-context.md files and "
-                             "passes the union as initial_prompt + hotwords to "
-                             "Whisper so names get spelled right.")
-    parser.add_argument("--whisper-fixes", default=str(WHISPER_FIXES_DEFAULT),
-                        help=f"Path to JSON file with Layer-2 canonical-name "
-                             f"regex fixes applied post-Whisper (default: "
-                             f"{WHISPER_FIXES_DEFAULT}). Empty / missing file = "
-                             f"no fixes. Schema: "
-                             f"{{\"fixes\": [{{\"pattern\": \"...\", \"replace\": \"...\"}}]}}.")
+    parser.add_argument(
+        "--force", action="store_true", help="Re-process clips even if a sidecar exists"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="List what would be processed; no API/model calls",
+    )
+    parser.add_argument(
+        "--max-files", type=int, default=None, help="Stop after N files (for testing)"
+    )
+    parser.add_argument(
+        "--max-duration",
+        type=int,
+        default=30,
+        help="Skip clips longer than N minutes (default: 30; 0 = no limit). "
+        "Useful for mixed folders that contain movies/long recordings "
+        "you don't want to transcribe.",
+    )
+    parser.add_argument(
+        "--whisper-model",
+        default="large-v3-turbo",
+        help="Whisper model: tiny/base/small/medium/large-v3/large-v3-turbo",
+    )
+    parser.add_argument(
+        "--no-diarize",
+        action="store_true",
+        help="Skip speaker diarization (faster, no HF_TOKEN needed)",
+    )
+    parser.add_argument(
+        "--no-geocode",
+        action="store_true",
+        help="Skip Nominatim reverse geocoding (GPS still recorded)",
+    )
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        help="Path substring to exclude (repeatable)",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=["cli", "api", "local"],
+        default="cli",
+        help="Vision backend. 'cli' shells out to `claude -p` "
+        "(uses Max subscription, $0 marginal cost). "
+        "'api' uses anthropic SDK with ANTHROPIC_API_KEY "
+        "(faster, ~$0.002/clip via Haiku). "
+        "'local' uses LM Studio (or any OpenAI-compatible "
+        "endpoint) at --local-base-url ($0, fully offline). "
+        "Default: cli.",
+    )
+    parser.add_argument(
+        "--vision-model",
+        choices=list(VISION_MODELS.keys()),
+        default=VISION_MODEL_DEFAULT,
+        help="Claude vision model when --backend cli or api. "
+        "Ignored for --backend local. 'haiku' (default) "
+        "or 'sonnet' (~4x cost via api, better accuracy "
+        "on motion/low-light/ambiguous clips).",
+    )
+    parser.add_argument(
+        "--local-base-url",
+        default=DEFAULT_LOCAL_BASE_URL,
+        help=f"OpenAI-compatible base URL for --backend local "
+        f"(default: {DEFAULT_LOCAL_BASE_URL}). LM Studio "
+        "exposes /v1 by default.",
+    )
+    parser.add_argument(
+        "--local-model",
+        default=None,
+        help="Model name to send to --backend local. If unset, "
+        "uses whatever model LM Studio has loaded. Pass "
+        "the exact loaded model id (e.g. "
+        "'google/gemma-4-26b') if your server has multiple.",
+    )
+    parser.add_argument(
+        "--no-faces",
+        action="store_true",
+        help="Skip face detection step (faster; no embeddings "
+        "captured for later fdx-faces clustering).",
+    )
+    parser.add_argument(
+        "--face-db",
+        default=str(face_db.DB_PATH_DEFAULT),
+        help=f"Path to face DB SQLite file (default: {face_db.DB_PATH_DEFAULT}).",
+    )
+    parser.add_argument(
+        "--no-whisper-prompt",
+        action="store_true",
+        help="Disable per-clip Whisper proper-noun biasing. "
+        "By default the indexer reads `**Whisper proper "
+        "nouns:**` lines from .video-context.md files and "
+        "passes the union as initial_prompt + hotwords to "
+        "Whisper so names get spelled right.",
+    )
+    parser.add_argument(
+        "--whisper-fixes",
+        default=str(WHISPER_FIXES_DEFAULT),
+        help=f"Path to JSON file with Layer-2 canonical-name "
+        f"regex fixes applied post-Whisper (default: "
+        f"{WHISPER_FIXES_DEFAULT}). Empty / missing file = "
+        f"no fixes. Schema: "
+        f'{{"fixes": [{{"pattern": "...", "replace": "..."}}]}}.',
+    )
     args = parser.parse_args()
 
     root = Path(args.root).expanduser().resolve()
@@ -1250,10 +1419,10 @@ def main() -> int:
 
     model_cfg = VISION_MODELS[args.vision_model]
     if args.backend == "api":
-        model_id = model_cfg["api"]
-        cost_per_call = model_cfg["cost_per_call_api"]
+        model_id = str(model_cfg["api"])
+        cost_per_call = float(model_cfg["cost_per_call_api"])
     elif args.backend == "cli":
-        model_id = model_cfg["cli"]
+        model_id = str(model_cfg["cli"])
         cost_per_call = COST_PER_CALL_USD_CLI
     else:  # local
         model_id = args.local_model or "(loaded model in LM Studio)"
@@ -1265,10 +1434,10 @@ def main() -> int:
         print(f"  estimated Anthropic API cost: ~${est_cost:.2f}")
     elif args.backend == "cli":
         print(f"  vision: cli (Max) / {model_id}")
-        print(f"  marginal cost: $0 (Max subscription)")
+        print("  marginal cost: $0 (Max subscription)")
     else:
         print(f"  vision: local / {model_id} @ {args.local_base_url}")
-        print(f"  marginal cost: $0 (fully local)")
+        print("  marginal cost: $0 (fully local)")
     print()
 
     if args.dry_run:
@@ -1281,34 +1450,45 @@ def main() -> int:
     # .video-context.md files exist anywhere under root.
     ctx_files = list(root.rglob(CONTEXT_FILE))
     if ctx_files:
-        print(f"  found {len(ctx_files)} {CONTEXT_FILE} file(s) — will layer "
-              "per-clip context from drive root → trip → subfolder\n")
+        print(
+            f"  found {len(ctx_files)} {CONTEXT_FILE} file(s) — will layer "
+            "per-clip context from drive root → trip → subfolder\n"
+        )
 
     # Backend wiring
     api_client = None
     if args.backend == "api":
         api_key = resolve_anthropic_key()
         if not api_key:
-            sys.exit("--backend api requires ANTHROPIC_API_KEY env or "
-                     "~/.claude/credentials/anthropic-key.txt")
+            sys.exit(
+                "--backend api requires ANTHROPIC_API_KEY env or "
+                "~/.claude/credentials/anthropic-key.txt"
+            )
         import anthropic as _anthropic
+
         api_client = _anthropic.Anthropic(api_key=api_key)
         print("Vision: direct Anthropic API\n")
     elif args.backend == "cli":
         if not check_claude_cli():
-            sys.exit("--backend cli requires the `claude` CLI on PATH. "
-                     "Install Claude Code or pass --backend api with ANTHROPIC_API_KEY.")
+            sys.exit(
+                "--backend cli requires the `claude` CLI on PATH. "
+                "Install Claude Code or pass --backend api with ANTHROPIC_API_KEY."
+            )
         if os.environ.get("ANTHROPIC_API_KEY"):
-            print("NOTE: ANTHROPIC_API_KEY is set in your environment. The script will\n"
-                  "      explicitly remove it from each `claude` subprocess so calls go\n"
-                  "      against your Max subscription instead of API billing.\n")
+            print(
+                "NOTE: ANTHROPIC_API_KEY is set in your environment. The script will\n"
+                "      explicitly remove it from each `claude` subprocess so calls go\n"
+                "      against your Max subscription instead of API billing.\n"
+            )
         else:
             print("Vision: claude CLI -> Max subscription\n")
     else:  # local
         ok, info = check_local_endpoint(args.local_base_url)
         if not ok:
-            sys.exit(f"--backend local: cannot reach {args.local_base_url} ({info}). "
-                     "Start LM Studio and load a vision-capable model first.")
+            sys.exit(
+                f"--backend local: cannot reach {args.local_base_url} ({info}). "
+                "Start LM Studio and load a vision-capable model first."
+            )
         print(f"Vision: local LM Studio at {args.local_base_url} ({info})\n")
 
     # Face detection setup
@@ -1322,31 +1502,38 @@ def main() -> int:
             face_conn = face_db.open_db(Path(args.face_db))
             stats = face_db.db_stats(face_conn)
             print(f"Face detection: insightface ({info})")
-            print(f"Face DB: {args.face_db} (currently {stats['faces']} faces, "
-                  f"{stats['clusters']} clusters, {stats['named_clusters']} named)\n")
+            print(
+                f"Face DB: {args.face_db} (currently {stats['faces']} faces, "
+                f"{stats['clusters']} clusters, {stats['named_clusters']} named)\n"
+            )
 
     print(f"Loading Whisper model: {args.whisper_model}")
-    whisper_model = whisperx.load_model(args.whisper_model, device="cpu", compute_type="int8")
+    whisper_model = whisperx.load_model(
+        args.whisper_model, device="cpu", compute_type="int8"
+    )
     print("Whisper ready.")
 
     # Load Layer-2 canonical-name fixes once at startup
-    whisper_fixes: list[tuple[re.Pattern, str]] = []
+    whisper_fixes: list[tuple[re.Pattern[str], str]] = []
     if not args.no_whisper_prompt:
         whisper_fixes = load_whisper_fixes(Path(args.whisper_fixes).expanduser())
         if whisper_fixes:
-            print(f"Whisper canonical fixes: loaded {len(whisper_fixes)} rule(s) "
-                  f"from {args.whisper_fixes}")
+            print(
+                f"Whisper canonical fixes: loaded {len(whisper_fixes)} rule(s) "
+                f"from {args.whisper_fixes}"
+            )
         else:
-            print(f"Whisper canonical fixes: none "
-                  f"(no rules at {args.whisper_fixes})")
+            print(f"Whisper canonical fixes: none (no rules at {args.whisper_fixes})")
 
-    align_models: dict = {}
+    align_models: dict[str, Any] = {}
 
     diarize_pipeline = None
     if not args.no_diarize:
         hf = resolve_hf_token()
         if not hf:
-            print("HF_TOKEN not set — running without diarization. Pass --no-diarize to silence this notice.")
+            print(
+                "HF_TOKEN not set — running without diarization. Pass --no-diarize to silence this notice."
+            )
         else:
             # WhisperX 3.3.4+ moved DiarizationPipeline to the diarize submodule.
             # WhisperX 3.8+ renamed the auth kwarg from use_auth_token → token
@@ -1355,18 +1542,22 @@ def main() -> int:
             DiarizationPipeline = None
             try:
                 from whisperx.diarize import DiarizationPipeline as _DP
+
                 DiarizationPipeline = _DP
             except ImportError:
                 DiarizationPipeline = getattr(whisperx, "DiarizationPipeline", None)
             if DiarizationPipeline is None:
-                print("DiarizationPipeline not found in this whisperx version. "
-                      "Continuing without diarization. Update whisperx or run with --no-diarize to silence.")
+                print(
+                    "DiarizationPipeline not found in this whisperx version. "
+                    "Continuing without diarization. Update whisperx or run with --no-diarize to silence."
+                )
             else:
                 import inspect
+
                 try:
                     params = inspect.signature(DiarizationPipeline.__init__).parameters
                 except (ValueError, TypeError):
-                    params = {}
+                    params = {}  # type: ignore[assignment]
                 # Prefer the new kwarg name, fall back to the legacy one.
                 if "token" in params:
                     auth_kwarg = "token"
@@ -1376,20 +1567,30 @@ def main() -> int:
                     # Newer versions might bury auth in **kwargs; try `token` first.
                     auth_kwarg = "token"
                 try:
-                    diarize_pipeline = DiarizationPipeline(**{auth_kwarg: hf}, device="cpu")
+                    diarize_pipeline = DiarizationPipeline(
+                        **{auth_kwarg: hf}, device="cpu"
+                    )
                     print(f"Diarization pipeline ready (auth kwarg: {auth_kwarg}).")
-                except TypeError as e:
+                except TypeError:
                     # Last-resort: if the kwarg we picked is wrong, try the other one.
                     other = "use_auth_token" if auth_kwarg == "token" else "token"
                     try:
-                        diarize_pipeline = DiarizationPipeline(**{other: hf}, device="cpu")
-                        print(f"Diarization pipeline ready (auth kwarg: {other}, fallback).")
+                        diarize_pipeline = DiarizationPipeline(
+                            **{other: hf}, device="cpu"
+                        )
+                        print(
+                            f"Diarization pipeline ready (auth kwarg: {other}, fallback)."
+                        )
                     except Exception as e2:
                         print(f"Failed to load diarization pipeline: {e2}")
-                        print("Continuing without diarization. (Did you accept terms on the pyannote model pages?)")
+                        print(
+                            "Continuing without diarization. (Did you accept terms on the pyannote model pages?)"
+                        )
                 except Exception as e:
                     print(f"Failed to load diarization pipeline: {e}")
-                    print("Continuing without diarization. (Did you accept terms on the pyannote model pages?)")
+                    print(
+                        "Continuing without diarization. (Did you accept terms on the pyannote model pages?)"
+                    )
     print()
 
     geocoder = NominatimRateLimiter() if not args.no_geocode else None
@@ -1407,9 +1608,14 @@ def main() -> int:
             if metadata["duration_seconds"] < 0.5:
                 print("  skipped (duration < 0.5s)")
                 continue
-            if max_duration_seconds and metadata["duration_seconds"] > max_duration_seconds:
+            if (
+                max_duration_seconds
+                and metadata["duration_seconds"] > max_duration_seconds
+            ):
                 mins = metadata["duration_seconds"] / 60
-                print(f"  skipped (duration {mins:.1f} min > --max-duration {args.max_duration} min)")
+                print(
+                    f"  skipped (duration {mins:.1f} min > --max-duration {args.max_duration} min)"
+                )
                 skipped_too_long += 1
                 continue
 
@@ -1428,12 +1634,17 @@ def main() -> int:
                 clip_proper_nouns = load_proper_nouns_for_clip(video, root)
 
             audio = transcribe_audio_whisperx(
-                video, whisper_model, align_models, diarize_pipeline,
+                video,
+                whisper_model,
+                align_models,
+                diarize_pipeline,
                 proper_nouns=clip_proper_nouns,
                 whisper_fixes=whisper_fixes,
             )
             if audio.get("speaker_count"):
-                print(f"  transcribed ({audio['language']}, {audio['speaker_count']} speakers)")
+                print(
+                    f"  transcribed ({audio['language']}, {audio['speaker_count']} speakers)"
+                )
             elif audio.get("language"):
                 print(f"  transcribed ({audio['language']})")
 
@@ -1446,8 +1657,9 @@ def main() -> int:
                 # Compute frame timestamps to pass to face detection
                 duration = metadata["duration_seconds"]
                 num = len(frames)
-                frame_timestamps = ([duration * (i + 1) / (num + 1) for i in range(num)]
-                                    if num else [])
+                frame_timestamps = (
+                    [duration * (i + 1) / (num + 1) for i in range(num)] if num else []
+                )
 
                 context = {
                     "filename": video.name,
@@ -1465,14 +1677,22 @@ def main() -> int:
 
                 # Vision call returns raw text (yaml + prose); parse it
                 if args.backend == "api":
-                    raw = describe_frames_api(api_client, frames, context, clip_context, model_id)
+                    assert api_client is not None
+                    raw = describe_frames_api(
+                        api_client, frames, context, str(clip_context), model_id
+                    )
                 elif args.backend == "cli":
-                    raw = describe_frames_cli(frames, context, clip_context, model_id)
+                    raw = describe_frames_cli(
+                        frames, context, str(clip_context), model_id
+                    )
                     time.sleep(CLI_INTER_CALL_DELAY)  # be polite to Max TPM
                 else:  # local
                     raw = describe_frames_local(
-                        frames, context, clip_context,
-                        args.local_base_url, args.local_model,
+                        frames,
+                        context,
+                        str(clip_context),
+                        args.local_base_url,
+                        args.local_model,
                     )
 
                 structured, description = parse_vision_response(raw)
@@ -1481,7 +1701,9 @@ def main() -> int:
                 detected_faces: list[face_db.DetectedFace] = []
                 if face_conn is not None and frames:
                     try:
-                        detected_faces = face_db.detect_faces_in_frames(frames, frame_timestamps)
+                        detected_faces = face_db.detect_faces_in_frames(
+                            frames, frame_timestamps
+                        )
                     except Exception as e:
                         print(f"  face detection failed: {e}")
             finally:
@@ -1490,20 +1712,32 @@ def main() -> int:
                     f.unlink(missing_ok=True)
                 tmp_frames.rmdir()
 
-            sidecar = write_sidecar(video, metadata, gps, place, audio,
-                                     description, structured, detected_faces)
+            sidecar = write_sidecar(
+                video,
+                metadata,
+                gps,
+                place,
+                audio,
+                description,
+                structured,
+                detected_faces,
+            )
             if face_conn is not None and detected_faces:
                 face_db.write_faces(face_conn, video, sidecar, detected_faces)
-            actual_cost += cost_per_call
+            actual_cost += float(cost_per_call)
             processed += 1
             faces_note = f", {len(detected_faces)} faces" if detected_faces else ""
             rating_note = f", rated {structured.get('rating', '?')}"
             if args.backend == "api":
-                print(f"  -> {sidecar.name}  (cost ~${actual_cost:.2f}{rating_note}{faces_note})")
+                print(
+                    f"  -> {sidecar.name}  (cost ~${actual_cost:.2f}{rating_note}{faces_note})"
+                )
             else:
                 print(f"  -> {sidecar.name}  ({rating_note}{faces_note})")
         except KeyboardInterrupt:
-            print("\nInterrupted. Re-run to resume — finished sidecars are skipped automatically.")
+            print(
+                "\nInterrupted. Re-run to resume — finished sidecars are skipped automatically."
+            )
             break
         except Exception as e:
             errors += 1
@@ -1519,9 +1753,11 @@ def main() -> int:
     print(summary)
     if face_conn is not None:
         s = face_db.db_stats(face_conn)
-        print(f"Face DB: {s['faces']} total faces, {s['clusters']} clusters "
-              f"({s['named_clusters']} named). Next: run fdx-faces to label "
-              "clusters (once it's built).")
+        print(
+            f"Face DB: {s['faces']} total faces, {s['clusters']} clusters "
+            f"({s['named_clusters']} named). Next: run fdx-faces to label "
+            "clusters (once it's built)."
+        )
         face_conn.close()
     return 0 if errors == 0 else 2
 

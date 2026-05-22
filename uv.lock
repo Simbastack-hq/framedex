@@ -956,7 +956,7 @@ dependencies = [
     { name = "whisperx" },
 ]
 
-[package.optional-dependencies]
+[package.dev-dependencies]
 dev = [
     { name = "mypy" },
     { name = "ruff" },
@@ -968,17 +968,20 @@ dev = [
 requires-dist = [
     { name = "anthropic", specifier = ">=0.40.0" },
     { name = "insightface", specifier = ">=0.7.3" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.14.0" },
     { name = "onnxruntime", specifier = ">=1.18.0" },
     { name = "opencv-python-headless", specifier = ">=4.9.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.31.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.0" },
-    { name = "types-pyyaml", marker = "extra == 'dev'" },
-    { name = "types-requests", marker = "extra == 'dev'" },
     { name = "whisperx", specifier = ">=3.1.0" },
 ]
-provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mypy", specifier = ">=1.14.0" },
+    { name = "ruff", specifier = ">=0.15.0" },
+    { name = "types-pyyaml" },
+    { name = "types-requests" },
+]
 
 [[package]]
 name = "frozenlist"

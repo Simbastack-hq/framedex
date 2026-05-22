@@ -46,7 +46,7 @@ import time
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     import anthropic
@@ -929,7 +929,7 @@ def describe_frames_api(
     msg = client.messages.create(
         model=model_id,
         max_tokens=800,
-        messages=[{"role": "user", "content": content}],
+        messages=[{"role": "user", "content": cast(Any, content)}],
     )
     for block in msg.content:
         if getattr(block, "type", None) == "text":

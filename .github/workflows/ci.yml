@@ -16,14 +16,17 @@ jobs:
           version: "0.11.16"
           python-version: "3.12"
 
-      - name: Install dev deps only
-        run: uv sync --locked --only-group dev
+      - name: Install dev + test deps
+        run: uv sync --locked --only-group dev --only-group test
 
       - name: ruff check
-        run: uv run --no-sync ruff check src/framedex
+        run: uv run --no-sync ruff check src/framedex tests
 
       - name: ruff format
-        run: uv run --no-sync ruff format --check src/framedex
+        run: uv run --no-sync ruff format --check src/framedex tests
 
       - name: mypy
-        run: uv run --no-sync mypy src/framedex --ignore-missing-imports
+        run: uv run --no-sync mypy src/framedex tests --ignore-missing-imports
+
+      - name: pytest
+        run: uv run --no-sync pytest

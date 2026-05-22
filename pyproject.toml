@@ -20,6 +20,7 @@ dependencies = [
 ]
 
 [dependency-groups]
+test = ["pytest>=8.0", "pyyaml>=6.0"]
 dev = ["ruff>=0.15.0", "mypy>=1.14.0", "types-PyYAML", "types-requests"]
 
 [project.scripts]
@@ -70,3 +71,7 @@ warn_no_return = true
 warn_unreachable = true
 ignore_missing_imports = true
 exclude = ["setup.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

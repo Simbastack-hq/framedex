@@ -52,7 +52,7 @@ fdx-master  /Volumes/SSD-2024
 1. `ffprobe` → metadata (duration, codec, resolution, creation date)
 2. `exiftool` → GPS lat/lon/altitude
 3. Nominatim → reverse-geocoded place name (rate-limited 1/sec, polite UA)
-4. `ffmpeg` → 5 evenly-spaced JPEG frames (≤1920px wide)
+4. `ffmpeg` + scene-aware sampling → 3–10 content-distinct JPEG frames (≤1920px wide). Candidate frames are extracted densely, then a color-histogram pass keeps only the visually distinct ones — a static clip yields 3, a busy multi-scene clip up to 10. Tunable via `--max-frames` / `--scene-threshold`.
 5. `ffmpeg` → mono 16k WAV
 6. WhisperX → Whisper transcribe + word-level alignment + pyannote diarization
 7. WhisperX translate mode → English translation (non-English only)
@@ -160,6 +160,8 @@ Each drive ends up self-contained with its own sidecars + `_INDEX.json`. Knowled
 | `--exclude PATTERN` | Skip paths matching substring (repeatable) |
 | `--backend cli\|api\|local` | Vision backend (see below) |
 | `--vision-model haiku\|sonnet` | Claude model for `cli`/`api`. Default `haiku` |
+| `--max-frames N` | Cap on frames sent to the vision model per clip (default: 10, min 1). More = better multi-scene coverage, higher cost |
+| `--scene-threshold F` | Histogram-distance threshold 0–1 for a new scene (default: 0.30). Lower keeps more frames |
 | `--local-base-url URL` | Override LM Studio endpoint (default `http://localhost:1234/v1`) |
 | `--local-model NAME` | Specify which loaded model to use when LM Studio has multiple |
 | `--no-whisper-prompt` | Disable proper-noun biasing |
@@ -181,7 +183,7 @@ For huge archives, `api` is fastest. For routine indexing on a Max plan, `cli` i
 |---|---|
 | ffmpeg, exiftool, Whisper, pyannote, insightface | Local |
 | Nominatim reverse geocode | Cloud — sends lat/lon only, never video. Skip with `--no-geocode` |
-| Vision (`--backend cli`/`api`) | Cloud — sends 5 JPEG frames + a transcript snippet per clip |
+| Vision (`--backend cli`/`api`) | Cloud — sends the selected JPEG frames (3–10) + a transcript snippet per clip |
 | Vision (`--backend local`) | Fully local |
 | Face DB (`~/.framedex/faces.db`) | Local only, never uploaded |
 
@@ -236,7 +238,6 @@ fdx-query /Volumes/SSD-2024 --place-contains California --language es
 
 ## Known limitations
 
-- Frame sampling is evenly-spaced, not scene-detected
 - pyannote diarization degrades on heavy ambient noise (wind, music, crowd)
 - WhisperX runs on CPU on Apple Silicon
 - Face cluster IDs are temporary hashes until the `fdx-faces` labeling tool ships — embeddings are captured now, so no re-indexing will be needed

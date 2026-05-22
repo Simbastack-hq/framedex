@@ -6,7 +6,7 @@ Pipeline per clip:
     ffprobe       → metadata (duration, codec, resolution, creation date)
     exiftool      → GPS lat/lon/altitude
     Nominatim     → reverse-geocoded place name (rate-limited, optional)
-    ffmpeg        → 5 representative JPEG frames @ 1920px max
+    ffmpeg        → scene-aware JPEG frames (3-10, content-adaptive) @ 1920px max
     ffmpeg        → mono 16k WAV
     WhisperX      → Whisper transcribe + word-level alignment + diarization
     WhisperX      → Whisper translate-mode pass (non-English clips only)
@@ -65,6 +65,12 @@ except ImportError as e:
 # insightface is loaded lazily by face_db (heavy module).
 
 from framedex import face_db
+from framedex.frames import (
+    DEFAULT_MAX_FRAMES,
+    DEFAULT_SCENE_THRESHOLD,
+    MIN_FRAMES,
+    extract_scene_frames,
+)
 from framedex.parsing import (
     coerce_people_count,
     is_permission_denied,
@@ -98,14 +104,8 @@ VISION_MODELS: dict[str, dict[str, str | float]] = {
         "api": "claude-sonnet-4-6-20251001",
         "cli": "claude-sonnet-4-6",
         "cost_per_call_api": 0.008,
-    },  # ~4x Haiku for short prompts + 5 frames
+    },  # ~4x Haiku for short prompts + frames
 }
-
-# Frame extraction cap — wider is more informative for the vision model on
-# hard clips (low light, motion blur). 1920 chosen as a sweet spot: enough
-# pixels for the model to disambiguate small details, but still small enough
-# that base64-encoding 5 frames keeps the API request reasonable.
-FRAME_MAX_WIDTH = 1920
 
 COST_PER_CALL_USD_CLI = 0.0  # Max subscription: marginal cost is $0 to user
 COST_PER_CALL_USD_LOCAL = 0.0  # Local model: $0, just electricity
@@ -446,40 +446,6 @@ class NominatimRateLimiter:
             pass
         self.cache[key] = ""
         return ""
-
-
-def extract_frames(video: Path, out_dir: Path, num_frames: int = 5) -> list[Path]:
-    meta = get_metadata(video)
-    duration = meta["duration_seconds"]
-    if duration < 0.5:
-        return []
-    if duration < 3:
-        num_frames = min(num_frames, 3)
-    timestamps = [duration * (i + 1) / (num_frames + 1) for i in range(num_frames)]
-    frames: list[Path] = []
-    for i, ts in enumerate(timestamps):
-        out = out_dir / f"frame_{i:02d}.jpg"
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-ss",
-            f"{ts:.2f}",
-            "-i",
-            str(video),
-            "-vframes",
-            "1",
-            "-q:v",
-            "2",  # higher quality jpeg
-            "-vf",
-            f"scale='min({FRAME_MAX_WIDTH},iw)':-2",
-            "-loglevel",
-            "error",
-            str(out),
-        ]
-        subprocess.run(cmd, capture_output=True)
-        if out.exists() and out.stat().st_size > 0:
-            frames.append(out)
-    return frames
 
 
 # ---------------------------------------------------------------------------
@@ -1304,6 +1270,24 @@ def main() -> int:
         "on motion/low-light/ambiguous clips).",
     )
     parser.add_argument(
+        "--max-frames",
+        type=int,
+        default=DEFAULT_MAX_FRAMES,
+        help="Max frames sent to the vision model per clip "
+        f"(default: {DEFAULT_MAX_FRAMES}, must be >= 1). Scene-aware "
+        "sampling picks up to this many visually distinct frames "
+        f"(typically at least {MIN_FRAMES}) — more frames give better "
+        "coverage on multi-scene clips at higher per-clip cost.",
+    )
+    parser.add_argument(
+        "--scene-threshold",
+        type=float,
+        default=DEFAULT_SCENE_THRESHOLD,
+        help="Histogram-distance threshold (0-1) for treating a frame "
+        f"as a new scene (default: {DEFAULT_SCENE_THRESHOLD}). Lower "
+        "keeps more frames, higher keeps fewer.",
+    )
+    parser.add_argument(
         "--local-base-url",
         default=DEFAULT_LOCAL_BASE_URL,
         help=f"OpenAI-compatible base URL for --backend local "
@@ -1348,6 +1332,11 @@ def main() -> int:
         f'{{"fixes": [{{"pattern": "...", "replace": "..."}}]}}.',
     )
     args = parser.parse_args()
+
+    if args.max_frames < 1:
+        parser.error("--max-frames must be >= 1")
+    if not 0.0 <= args.scene_threshold <= 1.0:
+        parser.error("--scene-threshold must be between 0 and 1")
 
     root = Path(args.root).expanduser().resolve()
     if not root.exists() or not root.is_dir():
@@ -1598,13 +1587,17 @@ def main() -> int:
             # persistent tmpdir we clean up after the vision call returns.
             tmp_frames = Path(tempfile.mkdtemp(prefix="fdx-frames-"))
             try:
-                frames = extract_frames(video, tmp_frames, num_frames=5)
-                # Compute frame timestamps to pass to face detection
-                duration = metadata["duration_seconds"]
-                num = len(frames)
-                frame_timestamps = (
-                    [duration * (i + 1) / (num + 1) for i in range(num)] if num else []
+                frame_refs = extract_scene_frames(
+                    video,
+                    tmp_frames,
+                    metadata["duration_seconds"],
+                    max_frames=args.max_frames,
+                    threshold=args.scene_threshold,
                 )
+                # Scene-aware sampling is not evenly spaced — carry each
+                # frame's real timestamp through to face detection.
+                frames = [r.path for r in frame_refs]
+                frame_timestamps = [r.timestamp for r in frame_refs]
 
                 context = {
                     "filename": video.name,

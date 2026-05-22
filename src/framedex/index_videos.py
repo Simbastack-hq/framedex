@@ -1100,6 +1100,7 @@ def describe_frames_cli(
 
 def write_sidecar(
     video: Path,
+    root: Path,
     metadata: dict[str, Any],
     gps: dict[str, Any],
     place: str,
@@ -1114,9 +1115,13 @@ def write_sidecar(
 
     # Build the frontmatter as a single Python dict, then serialize via PyYAML.
     # This gives us robust YAML quoting/escaping for free.
+    # Store the path relative to the scan root so sidecars stay portable: the
+    # archive can be moved or remounted at a different mountpoint without every
+    # sidecar going stale. Downstream tools (query, master_index) resolve it
+    # back against their own --root.
     fm: dict[str, Any] = {
         "file": video.name,
-        "path": str(video),
+        "path": str(video.relative_to(root)),
         "parent_folder": parent,
         "duration_seconds": round(metadata["duration_seconds"], 1),
         "resolution": f"{metadata.get('width')}x{metadata.get('height')}",
@@ -1659,6 +1664,7 @@ def main() -> int:
 
             sidecar = write_sidecar(
                 video,
+                root,
                 metadata,
                 gps,
                 place,

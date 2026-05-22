@@ -243,6 +243,12 @@ def main() -> int:
         rec = parse_sidecar(s)
         if rec is None:
             continue
+        # Sidecars store `path` relative to the scan root (portable). Resolve it
+        # back to an absolute path so the printed output is usable for piping
+        # (xargs, ffplay, etc.). Older sidecars with absolute paths pass through.
+        p = rec.get("path")
+        if p and not Path(p).is_absolute():
+            rec["path"] = str(root / p)
         if matches(rec, args):
             matched.append(rec)
 

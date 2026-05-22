@@ -75,6 +75,14 @@ def main() -> int:
         r for r in (parse_sidecar(s) for s in sidecars) if r
     ]
 
+    # Sidecars store `path` relative to the scan root (portable). Resolve it
+    # back to an absolute path against this run's root. Older sidecars with
+    # absolute paths pass through unchanged.
+    for r in records:
+        p = r.get("path")
+        if p and not Path(p).is_absolute():
+            r["path"] = str(root / p)
+
     # Group by top-level subfolder
     trips: dict[str, list[dict[str, Any]]] = {}
     for r in records:

@@ -65,7 +65,7 @@ fdx-master  /Volumes/SSD-2024
 ```markdown
 ---
 file: IMG_4827.mov
-path: /Volumes/SSD-2024/2024-08-construction/drone/IMG_4827.mov
+path: 2024-08-construction/drone/IMG_4827.mov
 parent_folder: drone
 duration_seconds: 12.3
 resolution: 3840x2160

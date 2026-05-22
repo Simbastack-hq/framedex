@@ -1,9 +1,12 @@
 """Tests for framedex.query — sidecar parsing and the record filter."""
 
 import argparse
+import sys
 from pathlib import Path
 
-from framedex.query import matches, parse_sidecar
+import pytest
+
+from framedex.query import main, matches, parse_sidecar
 
 VALID_SIDECAR = """\
 ---
@@ -160,3 +163,45 @@ def test_matches_person_cluster_id() -> None:
 def test_matches_has_speech() -> None:
     assert matches({"speaker_count": 2}, make_args(has_speech=True)) is True
     assert matches({"speaker_count": 0}, make_args(has_speech=True)) is False
+
+
+# --- path resolution (issue #4) --------------------------------------------
+
+
+def _write_sidecar(root: Path, rel: str, path_field: str) -> None:
+    """Drop a sidecar at root/<rel>.description.md with the given `path` field."""
+    sidecar = root / f"{rel}.description.md"
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    sidecar.write_text(
+        f"---\nfile: {Path(rel).name}\npath: {path_field}\nrating: keep\n---\n"
+        "\n## Description\n\nA clip.\n"
+    )
+
+
+def test_query_resolves_relative_path(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sidecar storing a root-relative `path` is resolved to an absolute path
+    in query output, so the result stays pipeable (xargs, ffplay, ...)."""
+    rel = "2024-08/drone/IMG_1.mov"
+    _write_sidecar(tmp_path, rel, rel)
+    monkeypatch.setattr(sys, "argv", ["fdx-query", str(tmp_path), "--rating", "keep"])
+
+    assert main() == 0
+    assert capsys.readouterr().out.strip() == str(tmp_path / rel)
+
+
+def test_query_absolute_path_passthrough(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Older sidecars with an absolute `path` are printed unchanged."""
+    abs_path = "/Volumes/OldDrive/archive/old.mov"
+    _write_sidecar(tmp_path, "old.mov", abs_path)
+    monkeypatch.setattr(sys, "argv", ["fdx-query", str(tmp_path), "--rating", "keep"])
+
+    assert main() == 0
+    assert capsys.readouterr().out.strip() == abs_path

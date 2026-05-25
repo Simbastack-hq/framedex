@@ -167,30 +167,38 @@ fdx-query /Volumes/SSD-2024 --rating keep --json | jq '.[] | .path'
 
 ### Apple Photos library
 
+If the library is local on disk (no iCloud, or iCloud without Optimize Storage),
+this is one command — no flags, no permission prompts:
+
 ```bash
-# First, check library state (how many local vs iCloud-only)
+fdx-photos
+```
+
+The full menu:
+
+```bash
+# Quick sanity check before starting — how many videos are local vs iCloud-only
 .venv/bin/python scripts/diagnose_photos.py
 
-# Smoke-test on 5 already-downloaded clips
+# Smoke-test on 5 clips first
 fdx-photos --max-files 5
 
-# Full library (default path: ~/Pictures/Photos Library.photoslibrary)
-# Sidecars land at ~/framedex-photos/{YYYY-MM}/...
+# Full library (default: ~/Pictures/Photos Library.photoslibrary → ~/framedex-photos/)
 fdx-photos
 
 # Filter by Photos-side metadata (repeatable, OR-combined within a flag)
 fdx-photos --album "Yosemite 2024" --since 2024-01-01
 fdx-photos --person "Mom" --keyword sunset
 
-# Force per-clip iCloud download via PhotoKit (slow; needs Photos permission
-# for the terminal in System Settings → Privacy & Security)
-fdx-photos --download
-
 # Custom mirror output (must be OUTSIDE the .photoslibrary bundle)
 fdx-photos --output ~/Documents/photos-kb
 
 # Re-process a single problem clip by UUID
 fdx-photos --uuid ABCD1234-EF56-7890-ABCD-1234567890AB --force
+
+# Only if Optimize Mac Storage is on AND you want per-clip iCloud downloads
+# (needs Photos permission for the terminal in System Settings → Privacy & Security)
+fdx-photos --download
 
 # After indexing, fdx-query / fdx-summary / fdx-master work on the mirror
 fdx-query ~/framedex-photos --rating keep --person "Mom"

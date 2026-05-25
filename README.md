@@ -149,16 +149,24 @@ Each drive ends up self-contained with its own sidecars + `_INDEX.json`. Knowled
 
 `fdx-photos` indexes videos that live inside an Apple Photos library directly — no export step, no metadata loss. It reads `Photos.sqlite` via [osxphotos](https://github.com/RhetTbull/osxphotos), uses the bytes Photos already has on disk, and writes sidecars to an external mirror tree (never inside the `.photoslibrary` bundle). macOS only.
 
-### Why not just export?
+**The common case is dead simple.** If your Photos library is local on disk — you don't use iCloud Photos at all, or you use it but keep originals on this Mac (no Optimize Storage) — `fdx-photos` is just:
 
-The Photos UI's "Export edited" / "Export unmodified original" can:
+```bash
+uv pip install -e '.[photos]'   # one-time, adds osxphotos
+fdx-photos                       # indexes the whole library
+```
 
-- transcode and strip container-level metadata (codec, color tags),
-- write `.AAE` sidecars and split Live Photos into `.MOV` + `.HEIC` pairs,
-- drop or re-encode GPS / creation_time on edited variants,
-- skip iCloud-only originals that haven't been downloaded.
+No flags, no permissions dialog, no iCloud round-trip. This is the path for everyone who keeps their photos on their own machine — no iCloud+ subscription required, no monthly storage fee, no PhotoKit drama. The iCloud-Optimized variant is a separate edge case at the bottom of this section.
 
-`fdx-photos` avoids all of that by reading bits directly from `~/Pictures/Photos Library.photoslibrary/originals/` and pulling Photos-authoritative GPS / date / persons / albums / keywords straight from the library database. Those fields land in the sidecar frontmatter alongside the standard vision/audio passes.
+### Why this instead of `osxphotos export` + `fdx`?
+
+You *could* export your videos out of Photos and run regular `fdx` on the exported directory. Reasons not to:
+
+- The Photos UI's "Export edited" / "Export unmodified original" can transcode, strip container metadata, write `.AAE` sidecars, and split Live Photos into `.MOV` + `.HEIC` pairs.
+- Even a clean `osxphotos export` leaves behind the Photos-side metadata that doesn't live in the file container: album membership, named-person labels from Photos' face recognition, user-added keywords, the canonical creation date Photos may have corrected.
+- An export doubles the disk space — you keep one copy in `.photoslibrary` and another in the export directory.
+
+`fdx-photos` reads the original bytes in place and threads Photos-side metadata (albums, persons, keywords, canonical date) straight into the sidecar frontmatter alongside the standard vision/audio passes.
 
 ### Setup
 
@@ -177,14 +185,14 @@ fdx-photos --album "Yosemite 2024" --max-files 5
 fdx-photos --person "Mom" --since 2024-01-01 --until 2024-12-31
 fdx-photos --keyword sunset --keyword drone
 
-# Materialize iCloud-only originals before processing (slow, uses network)
-fdx-photos --download
-
 # Custom output tree (still must be outside the .photoslibrary)
 fdx-photos --output ~/Documents/photos-kb
 
 # Re-process a single problem clip by UUID
 fdx-photos --uuid ABCD1234-EF56-7890-ABCD-1234567890AB --force
+
+# Materialize iCloud-only originals on demand (only needed if Optimize Storage is on)
+fdx-photos --download
 ```
 
 ### Sidecar layout
@@ -244,14 +252,16 @@ Before launching the full indexer, check how many videos are already on local di
 
 Output tells you total / on-disk / iCloud-only / edited / Live Photo counts, plus a sample of the first 10 and a recommendation for which flag (or Photos setting) you actually need.
 
-### iCloud + Optimize Mac Storage
+### Notes for iCloud users (edge case)
 
-If "Optimize Mac Storage" is on in Photos, many originals live only in iCloud. Two paths:
+Skip this section unless `diagnose_photos.py` reports a non-zero `iCloud-only` count.
 
-- **Recommended — turn off Optimize Mac Storage**: Photos → Settings → iCloud → "Download Originals to this Mac". Photos downloads all originals in the background. After that, `fdx-photos` runs with no special flags — every asset is local.
+If "Optimize Mac Storage" is on, some originals live only in iCloud and aren't on local disk. Two paths to handle them:
+
+- **Simplest — turn off Optimize Mac Storage**: Photos → Settings → iCloud → "Download Originals to this Mac". Photos downloads everything in the background; once done, `fdx-photos` runs with no special flags.
 - **Per-clip `--download`**: materializes missing originals via PhotoKit, with an AppleScript-via-`PhotoScript` fallback when PhotoKit auth isn't granted. Slow and network-heavy. The materialized copy lives in a tempdir for the duration of one clip and is deleted after the sidecar is written.
 
-PhotoKit requires the calling terminal app to have "Photos" access in **System Settings → Privacy & Security → Photos**. Note that unsigned Python (the standard `.venv` install) often can't trigger the OS permission prompt, so the terminal may not appear in that panel until you explicitly add it. Disabling Optimize Mac Storage sidesteps all of this.
+PhotoKit requires the calling terminal app to have "Photos" access in **System Settings → Privacy & Security → Photos**. Unsigned Python (the standard `.venv` install) often can't trigger the OS permission prompt, so the terminal may not appear in that panel until you explicitly add it. Disabling Optimize Mac Storage sidesteps the whole thing.
 
 ### Spot-checking metadata preservation
 

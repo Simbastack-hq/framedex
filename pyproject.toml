@@ -19,6 +19,11 @@ dependencies = [
     "opencv-python-headless>=4.9.0",
 ]
 
+[project.optional-dependencies]
+photos = [
+    "osxphotos>=0.69.0; sys_platform == 'darwin'",
+]
+
 [dependency-groups]
 test = ["pytest>=8.0", "pyyaml>=6.0"]
 dev = ["ruff>=0.15.0", "mypy>=1.14.0", "types-PyYAML", "types-requests"]
@@ -28,6 +33,7 @@ fdx = "framedex.index_videos:main"
 fdx-summary = "framedex.trip_summary:main"
 fdx-master = "framedex.master_index:main"
 fdx-query = "framedex.query:main"
+fdx-photos = "framedex.photos_indexer:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/framedex"]

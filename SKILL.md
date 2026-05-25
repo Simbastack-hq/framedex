@@ -1,6 +1,6 @@
 ---
 name: framedex
-description: "Build a portable knowledge base of your video (and eventually photo) archive across multiple SSDs. For each clip: GPS + reverse-geocoded place, speaker-diarized multi-lingual transcript with English translation, face detection + embeddings for later named-person queries, Claude/Gemma structured assessment (keep/review/cull rating + technical quality + lighting + time of day + dominant colors + audio quality + people count + keywords + notable timestamps), and prose scene description. Writes plain-text sidecars next to originals + persistent face DB. Non-destructive, idempotent, resumable. Use whenever you want to: index videos, tag footage, organize a drive, build the video knowledge base, transcribe audio, describe clips, rate clips, find clips by location/lighting/person/keyword, generate folder summaries, identify duplicates or cull pile. Trigger phrases: 'index this drive', 'tag my videos', 'what's on this SSD', 'rate these clips', 'find me clips of X', 'what should I cull', 'build the video knowledge base'."
+description: "Build a portable knowledge base of your video (and eventually photo) archive across multiple SSDs or directly from an Apple Photos library. For each clip: GPS + reverse-geocoded place, speaker-diarized multi-lingual transcript with English translation, face detection + embeddings for later named-person queries, Claude/Gemma structured assessment (keep/review/cull rating + technical quality + lighting + time of day + dominant colors + audio quality + people count + keywords + notable timestamps), and prose scene description. Writes plain-text sidecars next to originals (or to a mirror tree for Photos libraries — never inside the .photoslibrary bundle) + persistent face DB. Photos-library mode also threads through albums, named persons, and keywords from the Photos database. Non-destructive, idempotent, resumable. Use whenever you want to: index videos, tag footage, organize a drive, build the video knowledge base, transcribe audio, describe clips, rate clips, find clips by location/lighting/person/keyword, generate folder summaries, identify duplicates or cull pile, index the Apple Photos library directly. Trigger phrases: 'index this drive', 'tag my videos', 'index my Photos library', 'index Apple Photos videos', 'what's on this SSD', 'rate these clips', 'find me clips of X', 'what should I cull', 'build the video knowledge base'."
 ---
 
 # framedex — Video Archive Knowledge Base
@@ -63,6 +63,18 @@ face_count: 2
 indexed_at: 2026-05-17T14:32:01
 ```
 
+When indexed via `fdx-photos`, the sidecar also carries Photos-side fields:
+
+```yaml
+original_filename: IMG_4827.MOV     # user-meaningful camera filename
+photos_uuid: ABCD1234-EF56-7890-ABCD-1234567890AB
+photos_persons: [Mom, Dad]          # from Photos' face recognition labels
+photos_albums: [Yosemite 2024]      # Photos album membership
+photos_keywords: [sunset]           # tags added in the Photos UI
+live_photo: true                    # only when true
+photos_edited: true                 # only when Photos has edits on the clip
+```
+
 Body follows: `## Description` (Scene/Subjects/Action/Mood/Shot type/Use cases prose), `## Transcript` (with speaker labels if diarized), `## English translation` (if applicable).
 
 ## Three vision backends
@@ -85,7 +97,8 @@ Skip with `--no-faces` if you don't want face data.
 
 | Alias | Script | Purpose |
 |---|---|---|
-| `fdx` | `framedex.index_videos` | Main indexer (this skill) |
+| `fdx` | `framedex.index_videos` | Main indexer for folder trees (drives, project dirs) |
+| `fdx-photos` | `framedex.photos_indexer` | Index videos directly from an Apple Photos library (macOS, requires `[photos]` extra) |
 | `fdx-summary` | `framedex.trip_summary` | Recursive folder summaries (`_folder-summary.md` in each ≥5-clip folder) |
 | `fdx-master` | `framedex.master_index` | Drive-level `_INDEX.md` + `_INDEX.json` |
 | `fdx-query` | `framedex.query` | Filter sidecars by metadata (rating, lighting, person, keyword, etc.) |
@@ -97,6 +110,9 @@ cd ~/.claude/skills/framedex
 
 # Install Python deps (editable — changes take effect immediately)
 uv pip install -e .
+
+# For the Apple Photos integration (macOS only) — adds osxphotos:
+uv pip install -e '.[photos]'
 
 # Verify system binaries + pre-download models
 python3 scripts/setup.py
@@ -110,7 +126,7 @@ export HF_TOKEN=hf_...
 # export ANTHROPIC_API_KEY=sk-ant-...
 
 # Commands are now on PATH after editable install:
-#   fdx, fdx-summary, fdx-master, fdx-query
+#   fdx, fdx-photos, fdx-summary, fdx-master, fdx-query
 ```
 
 ## Common run patterns
@@ -149,6 +165,38 @@ fdx-query /Volumes/SSD-2024 --stability smooth --people-count 0
 fdx-query /Volumes/SSD-2024 --rating keep --json | jq '.[] | .path'
 ```
 
+### Apple Photos library
+
+```bash
+# First, check library state (how many local vs iCloud-only)
+.venv/bin/python scripts/diagnose_photos.py
+
+# Smoke-test on 5 already-downloaded clips
+fdx-photos --max-files 5
+
+# Full library (default path: ~/Pictures/Photos Library.photoslibrary)
+# Sidecars land at ~/framedex-photos/{YYYY-MM}/...
+fdx-photos
+
+# Filter by Photos-side metadata (repeatable, OR-combined within a flag)
+fdx-photos --album "Yosemite 2024" --since 2024-01-01
+fdx-photos --person "Mom" --keyword sunset
+
+# Force per-clip iCloud download via PhotoKit (slow; needs Photos permission
+# for the terminal in System Settings → Privacy & Security)
+fdx-photos --download
+
+# Custom mirror output (must be OUTSIDE the .photoslibrary bundle)
+fdx-photos --output ~/Documents/photos-kb
+
+# Re-process a single problem clip by UUID
+fdx-photos --uuid ABCD1234-EF56-7890-ABCD-1234567890AB --force
+
+# After indexing, fdx-query / fdx-summary / fdx-master work on the mirror
+fdx-query ~/framedex-photos --rating keep --person "Mom"
+fdx-master ~/framedex-photos
+```
+
 ## Optional folder context
 
 Drop `.video-context.md` at the root of any scan target with a paragraph describing what's on that drive ("construction site, 2023-2026", "family travel, 2024", etc). The vision prompt prepends it for context-aware descriptions.
@@ -174,6 +222,7 @@ Run on each drive separately. Sidecars travel with the data; the face DB is cent
 - WhisperX runs on CPU on Apple Silicon (CTranslate2 doesn't have M-series GPU acceleration yet; 64GB CPU is still plenty)
 - `fdx-faces` (clustering + labeling tool) not built yet — face embeddings are captured but cluster IDs are temporary hashes until that tool ships
 - RAW image format support not yet (videos only; photos are coming)
+- `fdx-photos --download` relies on PhotoKit, which requires the parent terminal to have "Photos" access in macOS Privacy & Security. Unsigned Python (the default `.venv` install) often can't trigger the OS prompt, so the terminal may never appear in that panel. The supported workaround is to turn off "Optimize Mac Storage" in Photos → Settings → iCloud, which makes all originals local and removes the need for `--download` entirely.
 
 ## File layout
 
@@ -185,10 +234,15 @@ Run on each drive separately. Sidecars travel with the data; the face DB is cent
 ├── .pre-commit-config.yaml        # pre-commit hooks
 ├── .github/workflows/ci.yml       # CI (ruff + mypy)
 ├── scripts/
-│   └── setup.py                   # system binaries + model pre-download
+│   ├── setup.py                   # system binaries + model pre-download
+│   └── diagnose_photos.py         # one-shot Photos-library state report
 └── src/framedex/
     ├── __init__.py                # package init, version from pyproject.toml
-    ├── index_videos.py            # main worker (fdx)
+    ├── index_videos.py            # main worker (fdx) — also exports
+    │                              # ProcessOptions/ProcessContext/process_one_video
+    │                              # so fdx-photos can reuse the per-clip pipeline
+    ├── photos.py                  # Apple Photos library adapter (osxphotos)
+    ├── photos_indexer.py          # Photos library indexer (fdx-photos)
     ├── face_db.py                 # face detection + SQLite face DB module
     ├── trip_summary.py            # recursive folder summaries (fdx-summary)
     ├── master_index.py            # drive-level KB (fdx-master)

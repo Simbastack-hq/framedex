@@ -242,6 +242,12 @@ fdx-query /Volumes/SSD-2024 --place-contains California --language es
 - Face cluster IDs are temporary hashes until the `fdx-faces` labeling tool ships — embeddings are captured now, so no re-indexing will be needed
 - RAW photo support not yet (videos only)
 
+## Built by SimbaStack
+
+framedex is an open-source project from **[SimbaStack](https://simbastack.com/)**, an AI consulting and development studio. We help businesses figure out where AI actually fits in their operations — then build and ship it. Working systems in production, not strategy decks.
+
+If you want something like this built for your company — agents, automation, AI that removes a real bottleneck — get in touch: **[nj@simbastack.com](mailto:nj@simbastack.com)**.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

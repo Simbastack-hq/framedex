@@ -2,7 +2,7 @@
 
 **A queryable knowledge base for your video archive.**
 
-Turn a scattered video archive — across multiple SSDs and years — into a portable, plain-text knowledge base. Each clip gets a `.description.md` sidecar with GPS location + place name, a speaker-diarized multilingual transcript, an English translation (if needed), face detection, and an AI vision scene description with a keep/review/cull rating.
+Turn a scattered video archive, spread across multiple SSDs and years, into a portable, plain-text knowledge base. Each clip gets a `.description.md` sidecar with GPS location + place name, a speaker-diarized multilingual transcript, an English translation (if needed), face detection, and an AI vision scene description with a keep/review/cull rating.
 
 Sidecars live next to the videos. Originals are never modified. Local-first, non-destructive, resumable.
 
@@ -15,7 +15,7 @@ framedex is a [Claude Code](https://docs.claude.com/en/docs/claude-code) skill. 
 git clone git@github.com:Simbastack-hq/framedex.git ~/.claude/skills/framedex
 cd ~/.claude/skills/framedex
 
-# Install Python deps (editable — changes take effect immediately)
+# Install Python deps (editable, so changes take effect immediately)
 uv pip install -e .
 
 # Verify system binaries + pre-download models
@@ -31,7 +31,7 @@ python3 scripts/setup.py
 #    https://huggingface.co/settings/tokens                    (create read token)
 export HF_TOKEN=hf_yourTokenHere
 
-# 2. (Optional) Set an Anthropic API key — only needed for --backend api
+# 2. (Optional) Set an Anthropic API key, only needed for --backend api
 export ANTHROPIC_API_KEY=sk-ant-...
 
 # 3. Commands are on PATH after editable install. Use fdx, fdx-summary, fdx-master, fdx-query.
@@ -180,8 +180,8 @@ For huge archives, `api` is fastest. For routine indexing on a Max plan, `cli` i
 | Component | Local or cloud? |
 |---|---|
 | ffmpeg, exiftool, Whisper, pyannote, insightface | Local |
-| Nominatim reverse geocode | Cloud — sends lat/lon only, never video. Skip with `--no-geocode` |
-| Vision (`--backend cli`/`api`) | Cloud — sends 5 JPEG frames + a transcript snippet per clip |
+| Nominatim reverse geocode | Cloud: sends lat/lon only, never video. Skip with `--no-geocode` |
+| Vision (`--backend cli`/`api`) | Cloud: sends 5 JPEG frames + a transcript snippet per clip |
 | Vision (`--backend local`) | Fully local |
 | Face DB (`~/.framedex/faces.db`) | Local only, never uploaded |
 
@@ -208,15 +208,15 @@ Already-indexed clips are skipped on re-runs (a sidecar existing = done). Ctrl-C
 
 ## Troubleshooting
 
-**"Missing dependency: whisperx"** — Run `setup.py`.
+**"Missing dependency: whisperx"**. Run `setup.py`.
 
-**"Failed to load diarization pipeline"** — You didn't accept the pyannote model terms on Hugging Face. Visit the two model pages, click Agree, then re-run.
+**"Failed to load diarization pipeline"**. You didn't accept the pyannote model terms on Hugging Face. Visit the two model pages, click Agree, then re-run.
 
-**Whisper model download stalls** — `setup.py --skip-model-download`, then `index_videos.py` downloads on first use. Make sure you have disk space (~3GB for large-v3, ~1.5GB for turbo).
+**Whisper model download stalls**. Run `setup.py --skip-model-download`, then `index_videos.py` downloads on first use. Make sure you have disk space (~3GB for large-v3, ~1.5GB for turbo).
 
-**"No GPS data in this file"** — Many clips don't have GPS metadata. The script handles this silently — the frontmatter just omits the location block.
+**"No GPS data in this file"**. Many clips don't have GPS metadata. The script handles this silently; the frontmatter just omits the location block.
 
-**Apple Silicon GPU not used** — CTranslate2 (via WhisperX) currently runs on CPU on M-series Macs. For archive indexing, CPU is plenty fast (10-30× realtime).
+**Apple Silicon GPU not used**. CTranslate2 (via WhisperX) currently runs on CPU on M-series Macs. For archive indexing, CPU is plenty fast (10-30× realtime).
 
 ## Companion tools
 
@@ -239,15 +239,15 @@ fdx-query /Volumes/SSD-2024 --place-contains California --language es
 - Frame sampling is evenly-spaced, not scene-detected
 - pyannote diarization degrades on heavy ambient noise (wind, music, crowd)
 - WhisperX runs on CPU on Apple Silicon
-- Face cluster IDs are temporary hashes until the `fdx-faces` labeling tool ships — embeddings are captured now, so no re-indexing will be needed
+- Face cluster IDs are temporary hashes until the `fdx-faces` labeling tool ships; embeddings are captured now, so no re-indexing will be needed
 - RAW photo support not yet (videos only)
 
 ## Built by SimbaStack
 
-framedex is an open-source project from **[SimbaStack](https://simbastack.com/)**, an AI consulting and development studio. We help businesses figure out where AI actually fits in their operations — then build and ship it. Working systems in production, not strategy decks.
+framedex is an open-source project from **[SimbaStack](https://simbastack.com/)**, an AI consulting and development studio. We help businesses figure out where AI actually fits in their operations, then build and ship it. Working systems in production, not strategy decks.
 
-If you want something like this built for your company — agents, automation, AI that removes a real bottleneck — get in touch: **[nj@simbastack.com](mailto:nj@simbastack.com)**.
+If you want something like this built for your company (agents, automation, AI that removes a real bottleneck), get in touch: **[nj@simbastack.com](mailto:nj@simbastack.com)**.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

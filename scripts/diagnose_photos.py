@@ -11,6 +11,7 @@ Usage:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 from pathlib import Path
@@ -38,29 +39,23 @@ def main() -> int:
     on_disk_count = 0
     icloud_count = 0
     edited_count = 0
-    live_count = 0
     total_size_mb = 0
 
     for p in videos:
         pth = p.path
         if pth and os.path.exists(pth):
             on_disk_count += 1
-            try:
+            with contextlib.suppress(OSError):
                 total_size_mb += os.path.getsize(pth) // (1024 * 1024)
-            except OSError:
-                pass
         else:
             icloud_count += 1
         if getattr(p, "hasadjustments", False):
             edited_count += 1
-        if getattr(p, "live_photo", False):
-            live_count += 1
 
     print(f"Total movies in library: {len(videos)}")
     print(f"  on local disk:    {on_disk_count}   ({total_size_mb} MB combined)")
     print(f"  iCloud-only:      {icloud_count}")
     print(f"  with Photos edits: {edited_count}")
-    print(f"  Live Photos:      {live_count}")
     print()
 
     print("First 10 sample (showing both local and iCloud):")

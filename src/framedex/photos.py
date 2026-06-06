@@ -3,8 +3,8 @@ photos.py — Apple Photos Library adapter for framedex.
 
 Reads Photos.sqlite via osxphotos to enumerate videos in the user's library
 directly, without going through Photos UI export. This avoids the metadata
-loss that "Export edited" / "Export unmodified original" can introduce
-(Live Photo splits, .AAE sidecars, transcoding, GPS/date stripping).
+loss that "Export edited" / "Export unmodified original" can introduce:
+.AAE sidecars, transcoding, GPS/date stripping.
 
 Photos-side metadata (GPS, date, persons, albums, keywords) flows into the
 sidecar frontmatter alongside the standard framedex vision/audio passes.
@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 try:
-    import osxphotos  # type: ignore[import-not-found]
+    import osxphotos
 except ImportError as e:  # pragma: no cover
     raise ImportError(
         "fdx-photos requires the 'osxphotos' extra. "
@@ -58,7 +58,6 @@ class PhotosAsset:
     persons: list[str] = field(default_factory=list)
     albums: list[str] = field(default_factory=list)
     keywords: list[str] = field(default_factory=list)
-    is_live_photo: bool = False
     is_edited: bool = False
     in_icloud: bool = False  # True if original isn't currently on local disk
     path_original: Path | None = None  # absolute path; None when iCloud-only
@@ -91,7 +90,6 @@ def _project(photo: Any) -> PhotosAsset:
         persons=list(getattr(photo, "persons", []) or []),
         albums=list(getattr(photo, "albums", []) or []),
         keywords=list(getattr(photo, "keywords", []) or []),
-        is_live_photo=bool(getattr(photo, "live_photo", False)),
         is_edited=bool(getattr(photo, "hasadjustments", False)),
         in_icloud=not on_disk,
         path_original=p_path if on_disk else None,
@@ -279,8 +277,6 @@ def to_extra_frontmatter(asset: PhotosAsset) -> dict[str, Any]:
         "photos_albums": asset.albums,
         "photos_keywords": asset.keywords,
     }
-    if asset.is_live_photo:
-        extra["live_photo"] = True
     if asset.is_edited:
         extra["photos_edited"] = True
     return extra

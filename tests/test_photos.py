@@ -36,7 +36,6 @@ def _make_asset(**overrides) -> photos.PhotosAsset:
         persons=["Mom", "Dad"],
         albums=["Yosemite 2024"],
         keywords=["sunset", "drone"],
-        is_live_photo=False,
         is_edited=False,
         in_icloud=False,
         path_original=Path(
@@ -138,13 +137,6 @@ class TestExtraFrontmatter:
         assert extra["file"] == "IMG_4827.MOV"
         assert extra["original_filename"] == "IMG_4827.MOV"
 
-    def test_live_photo_flag_only_set_when_true(self) -> None:
-        # Avoid noise in the frontmatter when the asset isn't a Live Photo
-        extra = photos.to_extra_frontmatter(_make_asset(is_live_photo=False))
-        assert "live_photo" not in extra
-        extra = photos.to_extra_frontmatter(_make_asset(is_live_photo=True))
-        assert extra["live_photo"] is True
-
     def test_edited_flag_only_set_when_true(self) -> None:
         extra = photos.to_extra_frontmatter(_make_asset(is_edited=False))
         assert "photos_edited" not in extra
@@ -176,7 +168,6 @@ class TestProjection:
             "persons": ["Mom"],
             "albums": ["Yosemite"],
             "keywords": ["sunset"],
-            "live_photo": False,
             "hasadjustments": False,
             "path": None,
         }
@@ -219,7 +210,6 @@ class TestProjection:
             persons=[],
             albums=[],
             keywords=[],
-            live_photo=False,
             hasadjustments=False,
             path_original=str(f),
             # Note: no `path` attribute at all

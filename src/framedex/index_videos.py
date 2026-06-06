@@ -1114,6 +1114,7 @@ def write_sidecar(
     sidecar_path_override: Path | None = None,
     parent_folder_override: str | None = None,
     extra_frontmatter: dict[str, Any] | None = None,
+    omit_path: bool = False,
 ) -> Path:
     sidecar = sidecar_path_override or sidecar_path(video)
     parent = (
@@ -1129,16 +1130,8 @@ def write_sidecar(
     # archive can be moved or remounted at a different mountpoint without every
     # sidecar going stale. Downstream tools (query, master_index) resolve it
     # back against their own --root.
-    try:
-        path_field = str(video.relative_to(root))
-    except ValueError:
-        # video lives outside root (e.g. inside an Apple Photos library bundle
-        # while sidecars mirror to a separate output tree). Fall back to the
-        # absolute path so downstream tools can still locate the original.
-        path_field = str(video)
     fm: dict[str, Any] = {
         "file": video.name,
-        "path": path_field,
         "parent_folder": parent,
         "duration_seconds": round(metadata["duration_seconds"], 1),
         "resolution": f"{metadata.get('width')}x{metadata.get('height')}",
@@ -1146,6 +1139,15 @@ def write_sidecar(
         "size_bytes": metadata["size_bytes"],
         "creation_time": metadata.get("creation_time") or "",
     }
+    if not omit_path:
+        try:
+            path_field = str(video.relative_to(root))
+        except ValueError:
+            # video lives outside root (e.g. inside an Apple Photos library bundle
+            # while sidecars mirror to a separate output tree). Fall back to the
+            # absolute path so downstream tools can still locate the original.
+            path_field = str(video)
+        fm["path"] = path_field
     if gps.get("lat") is not None:
         loc: dict[str, Any] = {
             "lat": gps["lat"],
@@ -1315,6 +1317,7 @@ def process_one_video(
     gps_override: dict[str, Any] | None = None,
     place_override: str | None = None,
     extra_frontmatter: dict[str, Any] | None = None,
+    omit_path: bool = False,
     proper_nouns: list[str] | None = None,
 ) -> ProcessResult:
     """Run the full per-clip pipeline for one video and emit a sidecar.
@@ -1436,6 +1439,7 @@ def process_one_video(
         sidecar_path_override=sidecar_path_override,
         parent_folder_override=parent_folder_override,
         extra_frontmatter=extra_frontmatter,
+        omit_path=omit_path,
     )
     if ctx.face_conn is not None and detected_faces:
         face_db.write_faces(ctx.face_conn, video, sidecar, detected_faces)

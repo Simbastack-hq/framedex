@@ -61,3 +61,29 @@ def test_sidecar_path_for_root_level_video(tmp_path: Path) -> None:
     sidecar = write_sidecar(video, root, METADATA, {}, "", {}, "desc", {}, [])
 
     assert _frontmatter(sidecar)["path"] == "clip.mp4"
+
+
+def test_sidecar_can_omit_ephemeral_path(tmp_path: Path) -> None:
+    """Callers that process a temporary materialized file can omit `path`
+    rather than persisting a location that will be deleted after the run."""
+    root = tmp_path / "library.photoslibrary"
+    root.mkdir()
+    video = tmp_path / "download-temp" / "clip.mov"
+    video.parent.mkdir()
+    video.write_bytes(b"x")
+
+    sidecar = write_sidecar(
+        video,
+        root,
+        METADATA,
+        {},
+        "",
+        {},
+        "desc",
+        {},
+        [],
+        sidecar_path_override=tmp_path / "clip.mov.description.md",
+        omit_path=True,
+    )
+
+    assert "path" not in _frontmatter(sidecar)

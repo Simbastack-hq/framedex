@@ -38,32 +38,8 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-try:
-    import whisperx  # type: ignore[import-not-found]
-except ImportError as e:
-    print(f"Missing dependency: {e}", file=sys.stderr)
-    print("Run: uv pip install -e '.[photos]'", file=sys.stderr)
-    sys.exit(1)
-
 from framedex import face_db
-from framedex.index_videos import (
-    COST_PER_CALL_USD_CLI,
-    COST_PER_CALL_USD_LOCAL,
-    DEFAULT_LOCAL_BASE_URL,
-    VISION_MODEL_DEFAULT,
-    VISION_MODELS,
-    WHISPER_FIXES_DEFAULT,
-    NominatimRateLimiter,
-    ProcessContext,
-    ProcessOptions,
-    check_claude_cli,
-    check_local_endpoint,
-    load_whisper_fixes,
-    pick_diar_auth_kwarg,
-    process_one_video,
-    resolve_anthropic_key,
-    resolve_hf_token,
-)
+from framedex.parsing import pick_diar_auth_kwarg
 
 try:
     from framedex import photos as photos_mod
@@ -77,6 +53,9 @@ except ImportError as e:
 
 
 DEFAULT_OUTPUT = Path.home() / "framedex-photos"
+DEFAULT_LOCAL_BASE_URL = "http://localhost:1234/v1"
+VISION_MODEL_DEFAULT = "haiku"
+WHISPER_FIXES_DEFAULT = Path.home() / ".framedex" / "whisper_fixes.json"
 
 
 def _parse_date(s: str) -> datetime:
@@ -196,8 +175,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--vision-model",
-        choices=list(VISION_MODELS.keys()),
         default=VISION_MODEL_DEFAULT,
+        help="Claude vision model when --backend cli or api (default: haiku)",
     )
     parser.add_argument("--local-base-url", default=DEFAULT_LOCAL_BASE_URL)
     parser.add_argument("--local-model", default=None)
@@ -281,6 +260,41 @@ def main() -> int:
         print("Nothing to do.")
         return 0
 
+    if args.dry_run:
+        for a in todo:
+            sidecar = existing_sidecar(a)
+            tag = "iCloud" if a.in_icloud else "local"
+            date = a.date.isoformat() if a.date else "no-date"
+            print(f"  would process: {a.filename}  [{tag}, {date}, uuid={a.uuid[:8]}]")
+            print(f"    -> {sidecar}")
+        return 0
+
+    try:
+        import whisperx
+    except ImportError as e:
+        print(f"Missing dependency: {e}", file=sys.stderr)
+        print("Run: uv pip install -e '.[photos]'", file=sys.stderr)
+        return 1
+
+    from framedex.index_videos import (
+        COST_PER_CALL_USD_CLI,
+        COST_PER_CALL_USD_LOCAL,
+        VISION_MODELS,
+        NominatimRateLimiter,
+        ProcessContext,
+        ProcessOptions,
+        check_claude_cli,
+        check_local_endpoint,
+        load_whisper_fixes,
+        process_one_video,
+        resolve_anthropic_key,
+        resolve_hf_token,
+    )
+
+    if args.vision_model not in VISION_MODELS:
+        known = ", ".join(sorted(VISION_MODELS))
+        sys.exit(f"--vision-model must be one of: {known}")
+
     model_cfg = VISION_MODELS[args.vision_model]
     if args.backend == "api":
         model_id = str(model_cfg["api"])
@@ -303,15 +317,6 @@ def main() -> int:
         print(f"  vision: local / {model_id} @ {args.local_base_url}")
         print("  marginal cost: $0 (fully local)")
     print()
-
-    if args.dry_run:
-        for a in todo:
-            sidecar = existing_sidecar(a)
-            tag = "iCloud" if a.in_icloud else "local"
-            date = a.date.isoformat() if a.date else "no-date"
-            print(f"  would process: {a.filename}  [{tag}, {date}, uuid={a.uuid[:8]}]")
-            print(f"    -> {sidecar}")
-        return 0
 
     # Backend wiring (mirrors fdx main)
     api_client = None
@@ -465,6 +470,7 @@ def main() -> int:
                     gps_override=photos_mod.to_gps_override(asset),
                     place_override=None,  # let geocoder run on Photos GPS
                     extra_frontmatter=photos_mod.to_extra_frontmatter(asset),
+                    omit_path=status == "downloaded",
                     proper_nouns=[],  # Photos has no .video-context.md chain
                 )
 

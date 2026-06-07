@@ -71,7 +71,6 @@ photos_uuid: ABCD1234-EF56-7890-ABCD-1234567890AB
 photos_persons: [Mom, Dad]          # from Photos' face recognition labels
 photos_albums: [Yosemite 2024]      # Photos album membership
 photos_keywords: [sunset]           # tags added in the Photos UI
-live_photo: true                    # only when true
 photos_edited: true                 # only when Photos has edits on the clip
 ```
 

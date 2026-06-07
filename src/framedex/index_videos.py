@@ -38,12 +38,14 @@ import contextlib
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import textwrap
 import time
 import traceback
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -1108,9 +1110,18 @@ def write_sidecar(
     description: str,
     structured: dict[str, Any],
     faces: list[face_db.DetectedFace],
+    *,
+    sidecar_path_override: Path | None = None,
+    parent_folder_override: str | None = None,
+    extra_frontmatter: dict[str, Any] | None = None,
+    omit_path: bool = False,
 ) -> Path:
-    sidecar = sidecar_path(video)
-    parent = video.parent.name
+    sidecar = sidecar_path_override or sidecar_path(video)
+    parent = (
+        parent_folder_override
+        if parent_folder_override is not None
+        else video.parent.name
+    )
     transcript = audio.get("transcript") or "[no speech detected]"
 
     # Build the frontmatter as a single Python dict, then serialize via PyYAML.
@@ -1121,7 +1132,6 @@ def write_sidecar(
     # back against their own --root.
     fm: dict[str, Any] = {
         "file": video.name,
-        "path": str(video.relative_to(root)),
         "parent_folder": parent,
         "duration_seconds": round(metadata["duration_seconds"], 1),
         "resolution": f"{metadata.get('width')}x{metadata.get('height')}",
@@ -1129,6 +1139,15 @@ def write_sidecar(
         "size_bytes": metadata["size_bytes"],
         "creation_time": metadata.get("creation_time") or "",
     }
+    if not omit_path:
+        try:
+            path_field = str(video.relative_to(root))
+        except ValueError:
+            # video lives outside root (e.g. inside an Apple Photos library bundle
+            # while sidecars mirror to a separate output tree). Fall back to the
+            # absolute path so downstream tools can still locate the original.
+            path_field = str(video)
+        fm["path"] = path_field
     if gps.get("lat") is not None:
         loc: dict[str, Any] = {
             "lat": gps["lat"],
@@ -1171,6 +1190,10 @@ def write_sidecar(
     else:
         fm["faces"] = []
         fm["face_count"] = 0
+
+    if extra_frontmatter:
+        for k, v in extra_frontmatter.items():
+            fm[k] = v
 
     fm["indexed_at"] = datetime.now().isoformat(timespec="seconds")
 
@@ -1237,6 +1260,198 @@ def check_claude_cli() -> bool:
 
 def resolve_hf_token() -> str | None:
     return os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+
+
+# ---------------------------------------------------------------------------
+# Per-clip pipeline (callable from fdx and fdx-photos)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ProcessOptions:
+    """Per-run config — built once, shared across every clip."""
+
+    backend: str  # 'cli' | 'api' | 'local'
+    vision_model_id: str
+    local_base_url: str
+    local_model: str | None
+    cost_per_call: float
+    no_whisper_prompt: bool
+    whisper_fixes: list[tuple[re.Pattern[str], str]] = field(default_factory=list)
+    max_duration_seconds: int | None = None
+
+
+@dataclass
+class ProcessContext:
+    """Heavy objects loaded once at startup (models, network clients, DB conns)."""
+
+    whisper_model: Any
+    align_models: dict[str, Any] = field(default_factory=dict)
+    diarize_pipeline: Any = None
+    geocoder: NominatimRateLimiter | None = None
+    api_client: Any = None  # anthropic.Anthropic when backend == 'api'
+    face_conn: sqlite3.Connection | None = None
+
+
+@dataclass
+class ProcessResult:
+    """Outcome of processing one clip."""
+
+    sidecar: Path | None
+    detected_faces: list[face_db.DetectedFace] = field(default_factory=list)
+    cost: float = 0.0
+    skipped_reason: str | None = None  # 'short' | 'too_long' | None
+    rating: str = "?"
+    structured: dict[str, Any] = field(default_factory=dict)
+
+
+def process_one_video(
+    video: Path,
+    root: Path,
+    opts: ProcessOptions,
+    ctx: ProcessContext,
+    *,
+    sidecar_path_override: Path | None = None,
+    parent_folder_override: str | None = None,
+    metadata_override: dict[str, Any] | None = None,
+    gps_override: dict[str, Any] | None = None,
+    place_override: str | None = None,
+    extra_frontmatter: dict[str, Any] | None = None,
+    omit_path: bool = False,
+    proper_nouns: list[str] | None = None,
+) -> ProcessResult:
+    """Run the full per-clip pipeline for one video and emit a sidecar.
+
+    Overrides let callers (e.g. fdx-photos) inject metadata from a richer
+    source (Photos.sqlite) instead of probing the file again, and redirect
+    sidecar output to a mirror tree outside the original's directory.
+    """
+    metadata = get_metadata(video)
+    if metadata_override:
+        # Caller (e.g. fdx-photos) has authoritative fields from a richer source.
+        # Shallow-merge over ffprobe results so fields like creation_time can be
+        # corrected without losing duration/codec/resolution.
+        metadata.update(metadata_override)
+    if metadata["duration_seconds"] < 0.5:
+        return ProcessResult(sidecar=None, skipped_reason="short")
+    if (
+        opts.max_duration_seconds
+        and metadata["duration_seconds"] > opts.max_duration_seconds
+    ):
+        return ProcessResult(sidecar=None, skipped_reason="too_long")
+
+    gps = gps_override if gps_override is not None else get_gps(video)
+    if place_override is not None:
+        place = place_override
+    elif gps.get("lat") is not None and ctx.geocoder is not None:
+        place = ctx.geocoder.reverse(gps["lat"], gps["lon"])
+        if place:
+            print(f"  location: {place}")
+    else:
+        place = ""
+
+    clip_proper_nouns: list[str] = proper_nouns if proper_nouns is not None else []
+    if proper_nouns is None and not opts.no_whisper_prompt:
+        clip_proper_nouns = load_proper_nouns_for_clip(video, root)
+
+    audio = transcribe_audio_whisperx(
+        video,
+        ctx.whisper_model,
+        ctx.align_models,
+        ctx.diarize_pipeline,
+        proper_nouns=clip_proper_nouns,
+        whisper_fixes=opts.whisper_fixes,
+    )
+    if audio.get("speaker_count"):
+        print(f"  transcribed ({audio['language']}, {audio['speaker_count']} speakers)")
+    elif audio.get("language"):
+        print(f"  transcribed ({audio['language']})")
+
+    tmp_frames = Path(tempfile.mkdtemp(prefix="fdx-frames-"))
+    detected_faces: list[face_db.DetectedFace] = []
+    structured: dict[str, Any] = {}
+    description: str = ""
+    try:
+        frames = extract_frames(video, tmp_frames, num_frames=5)
+        duration = metadata["duration_seconds"]
+        num = len(frames)
+        frame_timestamps = (
+            [duration * (i + 1) / (num + 1) for i in range(num)] if num else []
+        )
+
+        context = {
+            "filename": video.name,
+            "parent_folder": parent_folder_override
+            if parent_folder_override is not None
+            else video.parent.name,
+            "duration_seconds": metadata["duration_seconds"],
+            "creation_time": metadata.get("creation_time", ""),
+            "language": audio.get("language"),
+            "transcript": audio.get("transcript", ""),
+            "english_translation": audio.get("english_translation"),
+            "location": {**gps, "place": place} if gps else {"place": place},
+        }
+        clip_context = load_context_for_clip(video, root)
+
+        if opts.backend == "api":
+            assert ctx.api_client is not None
+            raw = describe_frames_api(
+                ctx.api_client, frames, context, str(clip_context), opts.vision_model_id
+            )
+        elif opts.backend == "cli":
+            raw = describe_frames_cli(
+                frames, context, str(clip_context), opts.vision_model_id
+            )
+            time.sleep(CLI_INTER_CALL_DELAY)
+        else:  # local
+            raw = describe_frames_local(
+                frames,
+                context,
+                str(clip_context),
+                opts.local_base_url,
+                opts.local_model,
+            )
+
+        structured, description = parse_vision_response(raw)
+
+        if ctx.face_conn is not None and frames:
+            try:
+                detected_faces = face_db.detect_faces_in_frames(
+                    frames, frame_timestamps
+                )
+            except Exception as e:
+                print(f"  face detection failed: {e}")
+    finally:
+        for f in tmp_frames.glob("*"):
+            f.unlink(missing_ok=True)
+        tmp_frames.rmdir()
+
+    sidecar = write_sidecar(
+        video,
+        root,
+        metadata,
+        gps,
+        place,
+        audio,
+        description,
+        structured,
+        detected_faces,
+        sidecar_path_override=sidecar_path_override,
+        parent_folder_override=parent_folder_override,
+        extra_frontmatter=extra_frontmatter,
+        omit_path=omit_path,
+    )
+    if ctx.face_conn is not None and detected_faces:
+        face_db.write_faces(ctx.face_conn, video, sidecar, detected_faces)
+
+    return ProcessResult(
+        sidecar=sidecar,
+        detected_faces=detected_faces,
+        cost=opts.cost_per_call,
+        skipped_reason=None,
+        rating=str(structured.get("rating", "?")),
+        structured=structured,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1366,7 +1581,7 @@ def main() -> int:
     skipped = len(all_videos) - len(todo)
     if skipped:
         print(f"  skipping {skipped} already-indexed")
-    if args.max_files:
+    if args.max_files and len(todo) > args.max_files:
         todo = todo[: args.max_files]
         print(f"  limiting to {len(todo)} for this run")
 
@@ -1545,146 +1760,55 @@ def main() -> int:
 
     geocoder = NominatimRateLimiter() if not args.no_geocode else None
 
+    max_duration_seconds = args.max_duration * 60 if args.max_duration > 0 else None
+    opts = ProcessOptions(
+        backend=args.backend,
+        vision_model_id=model_id,
+        local_base_url=args.local_base_url,
+        local_model=args.local_model,
+        cost_per_call=float(cost_per_call),
+        no_whisper_prompt=args.no_whisper_prompt,
+        whisper_fixes=whisper_fixes,
+        max_duration_seconds=max_duration_seconds,
+    )
+    ctx = ProcessContext(
+        whisper_model=whisper_model,
+        align_models=align_models,
+        diarize_pipeline=diarize_pipeline,
+        geocoder=geocoder,
+        api_client=api_client,
+        face_conn=face_conn,
+    )
+
     processed = 0
     errors = 0
     skipped_too_long = 0
     actual_cost = 0.0
-    max_duration_seconds = args.max_duration * 60 if args.max_duration > 0 else None
     for i, video in enumerate(todo, start=1):
         rel = video.relative_to(root)
         print(f"[{i}/{len(todo)}] {rel}")
         try:
-            metadata = get_metadata(video)
-            if metadata["duration_seconds"] < 0.5:
+            result = process_one_video(video, root, opts, ctx)
+            if result.skipped_reason == "short":
                 print("  skipped (duration < 0.5s)")
                 continue
-            if (
-                max_duration_seconds
-                and metadata["duration_seconds"] > max_duration_seconds
-            ):
-                mins = metadata["duration_seconds"] / 60
-                print(
-                    f"  skipped (duration {mins:.1f} min > --max-duration {args.max_duration} min)"
-                )
+            if result.skipped_reason == "too_long":
+                print(f"  skipped (duration > --max-duration {args.max_duration} min)")
                 skipped_too_long += 1
                 continue
-
-            gps = get_gps(video)
-            place = ""
-            if gps.get("lat") is not None and geocoder is not None:
-                place = geocoder.reverse(gps["lat"], gps["lon"])
-                if place:
-                    print(f"  location: {place}")
-
-            # Gather proper nouns from the .video-context.md chain for this clip
-            # (drive root → trip → subfolder, unioned + deduped). Skipped if
-            # --no-whisper-prompt was passed.
-            clip_proper_nouns: list[str] = []
-            if not args.no_whisper_prompt:
-                clip_proper_nouns = load_proper_nouns_for_clip(video, root)
-
-            audio = transcribe_audio_whisperx(
-                video,
-                whisper_model,
-                align_models,
-                diarize_pipeline,
-                proper_nouns=clip_proper_nouns,
-                whisper_fixes=whisper_fixes,
-            )
-            if audio.get("speaker_count"):
-                print(
-                    f"  transcribed ({audio['language']}, {audio['speaker_count']} speakers)"
-                )
-            elif audio.get("language"):
-                print(f"  transcribed ({audio['language']})")
-
-            # Frames need to outlive the temp dir when we're using the CLI
-            # backend (claude subprocess reads them by path). Use a per-clip
-            # persistent tmpdir we clean up after the vision call returns.
-            tmp_frames = Path(tempfile.mkdtemp(prefix="fdx-frames-"))
-            try:
-                frames = extract_frames(video, tmp_frames, num_frames=5)
-                # Compute frame timestamps to pass to face detection
-                duration = metadata["duration_seconds"]
-                num = len(frames)
-                frame_timestamps = (
-                    [duration * (i + 1) / (num + 1) for i in range(num)] if num else []
-                )
-
-                context = {
-                    "filename": video.name,
-                    "parent_folder": video.parent.name,
-                    "duration_seconds": metadata["duration_seconds"],
-                    "creation_time": metadata.get("creation_time", ""),
-                    "language": audio.get("language"),
-                    "transcript": audio.get("transcript", ""),
-                    "english_translation": audio.get("english_translation"),
-                    "location": {**gps, "place": place} if gps else {"place": place},
-                }
-
-                # Load layered context (drive root → trip → shoot)
-                clip_context = load_context_for_clip(video, root)
-
-                # Vision call returns raw text (yaml + prose); parse it
-                if args.backend == "api":
-                    assert api_client is not None
-                    raw = describe_frames_api(
-                        api_client, frames, context, str(clip_context), model_id
-                    )
-                elif args.backend == "cli":
-                    raw = describe_frames_cli(
-                        frames, context, str(clip_context), model_id
-                    )
-                    time.sleep(CLI_INTER_CALL_DELAY)  # be polite to Max TPM
-                else:  # local
-                    raw = describe_frames_local(
-                        frames,
-                        context,
-                        str(clip_context),
-                        args.local_base_url,
-                        args.local_model,
-                    )
-
-                structured, description = parse_vision_response(raw)
-
-                # Face detection on the same frames (free reuse)
-                detected_faces: list[face_db.DetectedFace] = []
-                if face_conn is not None and frames:
-                    try:
-                        detected_faces = face_db.detect_faces_in_frames(
-                            frames, frame_timestamps
-                        )
-                    except Exception as e:
-                        print(f"  face detection failed: {e}")
-            finally:
-                # Clean up frames
-                for f in tmp_frames.glob("*"):
-                    f.unlink(missing_ok=True)
-                tmp_frames.rmdir()
-
-            sidecar = write_sidecar(
-                video,
-                root,
-                metadata,
-                gps,
-                place,
-                audio,
-                description,
-                structured,
-                detected_faces,
-            )
-            if face_conn is not None and detected_faces:
-                face_db.write_faces(face_conn, video, sidecar, detected_faces)
-            actual_cost += float(cost_per_call)
+            assert result.sidecar is not None
+            actual_cost += result.cost
             processed += 1
-            faces_note = f", {len(detected_faces)} faces" if detected_faces else ""
-            rating_note = f", rated {structured.get('rating', '?')}"
+            faces_note = (
+                f", {len(result.detected_faces)} faces" if result.detected_faces else ""
+            )
+            rating_note = f", rated {result.rating}"
             if args.backend == "api":
                 print(
-                    f"  -> {sidecar.name}  (cost ~${actual_cost:.2f}{rating_note}{faces_note})"
+                    f"  -> {result.sidecar.name}  (cost ~${actual_cost:.2f}{rating_note}{faces_note})"
                 )
             else:
-                print(f"  -> {sidecar.name}  ({rating_note}{faces_note})")
+                print(f"  -> {result.sidecar.name}  ({rating_note}{faces_note})")
         except KeyboardInterrupt:
             print(
                 "\nInterrupted. Re-run to resume — finished sidecars are skipped automatically."

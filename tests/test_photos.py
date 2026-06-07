@@ -12,21 +12,22 @@ import sys
 import types
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 # Stub osxphotos before importing framedex.photos. The stub doesn't need to
 # do anything — none of the tested code paths reach osxphotos itself.
 if "osxphotos" not in sys.modules:
-    sys.modules["osxphotos"] = types.SimpleNamespace(
+    sys.modules["osxphotos"] = types.SimpleNamespace(  # type: ignore[assignment]
         PhotosDB=lambda **kw: None,
     )
 
 from framedex import photos
 
 
-def _make_asset(**overrides) -> photos.PhotosAsset:
-    base = dict(
+def _make_asset(**overrides: Any) -> photos.PhotosAsset:
+    base: dict[str, Any] = dict(
         uuid="ABCD1234-EF56-7890-ABCD-1234567890AB",
         filename="IMG_4827.MOV",
         date=datetime(2024, 8, 14, 7, 23, 11),
@@ -157,7 +158,7 @@ class TestParentFolder:
 class TestProjection:
     """Light tests against the _project helper using a duck-typed PhotoInfo."""
 
-    def _make_photoinfo(self, **overrides):
+    def _make_photoinfo(self, **overrides: Any) -> types.SimpleNamespace:
         """Mock that quacks like osxphotos.PhotoInfo."""
         defaults = {
             "uuid": "ABCD1234-EF56-7890-ABCD-1234567890AB",
@@ -270,6 +271,10 @@ class TestMaterialize:
 def test_sidecar_suffix_constant_matches_index_videos() -> None:
     """Photos sidecars must use the same suffix as fdx sidecars so the
     existing fdx-query / fdx-master / fdx-summary tools can pick them up."""
+    # index_videos imports the heavy runtime stack (whisperx, requests, ...) at
+    # module level; CI installs only dev + test groups, so skip there. Matches
+    # the guard in test_index_videos.py.
+    pytest.importorskip("whisperx", reason="full runtime stack not installed")
     from framedex.index_videos import SIDECAR_SUFFIX as fdx_suffix
 
     assert fdx_suffix == photos.SIDECAR_SUFFIX

@@ -96,7 +96,7 @@ Skip with `--no-faces` if you don't want face data.
 
 | Alias | Script | Purpose |
 |---|---|---|
-| `fdx` | `framedex.index_videos` | Main indexer for folder trees (drives, project dirs) |
+| `fdx` | `framedex.index_videos` | Main indexer for folder trees — videos and still photos (`--media images\|videos\|all`) |
 | `fdx-photos` | `framedex.photos_indexer` | Index videos directly from an Apple Photos library (macOS, requires `[photos]` extra) |
 | `fdx-summary` | `framedex.trip_summary` | Recursive folder summaries (`_folder-summary.md` in each ≥5-clip folder) |
 | `fdx-master` | `framedex.master_index` | Drive-level `_INDEX.md` + `_INDEX.json` |
@@ -107,11 +107,12 @@ Skip with `--no-faces` if you don't want face data.
 ```bash
 cd ~/.claude/skills/framedex
 
-# Install Python deps (editable — changes take effect immediately)
-uv pip install -e .
-
-# For the Apple Photos integration (macOS only) — adds osxphotos:
-uv pip install -e '.[photos]'
+# Install Python deps (editable — changes take effect immediately). Media support
+# is split into extras so a photo-only setup never pulls torch:
+uv pip install -e '.[all]'        # video + photos + Apple Photos (everything)
+# uv pip install -e '.[video]'    # video only (whisperx/torch)
+# uv pip install -e '.[images]'   # still photos only (Pillow + pillow-heif)
+# uv pip install -e '.[photos]'   # Apple Photos library (macOS, osxphotos)
 
 # Verify system binaries + pre-download models
 python3 scripts/setup.py
@@ -163,6 +164,45 @@ fdx-query /Volumes/SSD-2024 --keyword drone --keyword landscape
 fdx-query /Volumes/SSD-2024 --stability smooth --people-count 0
 fdx-query /Volumes/SSD-2024 --rating keep --json | jq '.[] | .path'
 ```
+
+### Still photos (`fdx --media`)
+
+`fdx` indexes still photos (RAW / JPEG / HEIC) through the same pipeline as
+video, minus the audio half, plus an EXIF camera block. One command handles
+mixed photo + video folders.
+
+```bash
+# Mixed drive — photos and clips both, one corpus
+fdx /Volumes/SSD-photos --max-files 5
+fdx /Volumes/SSD-photos
+
+# Scope a run to one media type
+fdx /Volumes/SSD-photos --media images          # stills only (no whisper stack)
+fdx /Volumes/SSD-photos --media videos          # clips only
+
+# Query just the photos
+fdx-query /Volumes/SSD-photos --media image --place-contains Mara --keyword giraffe
+```
+
+Photo sidecars mirror the video schema with the audio/motion fields removed and
+a camera block added:
+
+```yaml
+file: DSC_4827.RAF
+media_type: image
+dimensions: 7728x5152
+camera: {make: FUJIFILM, model: X-T5, lens: "XF16-80mmF4", focal_length: "80.0 mm", aperture: 4.0, shutter: "1/1000", iso: 400}
+location: {lat: -1.40, lon: 35.01, place: "Maasai Mara National Reserve, Narok County, Kenya"}
+rating: keep                # keep | review | cull
+technical: {focus: sharp, exposure: strong, composition: strong}
+lighting: golden_hour
+time_of_day: golden_hour
+scene_type: wildlife        # wildlife | landscape | portrait | street | architecture | ...
+keywords: [giraffe, waterhole, drinking, savanna]
+```
+
+RAW is read from the embedded full-res JPEG preview (no libraw). Requires the
+`[images]` extra (`Pillow` + `pillow-heif`); video indexing needs `[video]`.
 
 ### Apple Photos library
 

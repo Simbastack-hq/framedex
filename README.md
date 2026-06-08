@@ -1,10 +1,10 @@
 # framedex
 
-**A queryable knowledge base for your video archive.**
+**A queryable knowledge base for your video and photo archive.**
 
-Turn a scattered video archive, spread across multiple SSDs and years, into a portable, plain-text knowledge base. Each clip gets a `.description.md` sidecar with GPS location + place name, a speaker-diarized multilingual transcript, an English translation (if needed), face detection, and an AI vision scene description with a keep/review/cull rating.
+Turn a scattered media archive, spread across multiple SSDs and years, into a portable, plain-text knowledge base. Each video clip gets a `.description.md` sidecar with GPS location + place name, a speaker-diarized multilingual transcript, an English translation (if needed), face detection, and an AI vision scene description with a keep/review/cull rating. Each still photo gets the same treatment minus the audio — plus a camera/lens/exposure block read from EXIF.
 
-Sidecars live next to the videos. Originals are never modified. Local-first, non-destructive, resumable.
+Sidecars live next to the originals. Originals are never modified. Local-first, non-destructive, resumable.
 
 framedex is a [Claude Code](https://docs.claude.com/en/docs/claude-code) skill. It installs the `fdx` command-line tool.
 
@@ -15,8 +15,11 @@ framedex is a [Claude Code](https://docs.claude.com/en/docs/claude-code) skill. 
 git clone git@github.com:Simbastack-hq/framedex.git ~/.claude/skills/framedex
 cd ~/.claude/skills/framedex
 
-# Install Python deps (editable, so changes take effect immediately)
-uv pip install -e .
+# Pick what you index. The heavy video stack (whisperx/torch) and the still-photo
+# readers (Pillow) are optional extras, so a photo-only setup never pulls torch:
+uv pip install -e '.[all]'        # video + photos + Apple Photos (everything)
+# uv pip install -e '.[video]'    # video only (folders of clips)
+# uv pip install -e '.[images]'   # still photos only (RAW / JPEG / HEIC)
 
 # Verify system binaries + pre-download models
 python3 scripts/setup.py
@@ -144,6 +147,24 @@ fdx /Volumes/SSD-2025
 ```
 
 Each drive ends up self-contained with its own sidecars + `_INDEX.json`. Knowledge travels with the data. The face DB at `~/.framedex/faces.db` is centralized so cross-drive person queries work.
+
+## Still photos (RAW / JPEG / HEIC)
+
+`fdx` indexes photos the same way it indexes video — same `.description.md` sidecars, same `fdx-query` / `fdx-master` / `fdx-summary`. Point it at a folder of stills (a Lightroom/Capture One export, an SSD of RAWs) and each photo gets EXIF (camera, lens, aperture, shutter, ISO), GPS + reverse-geocoded place, face detection, and a scene description with keywords and a keep/review/cull rating.
+
+```bash
+uv pip install -e '.[images]'                          # one-time: Pillow + pillow-heif, no torch
+
+fdx /Volumes/SSD-photos --media images --max-files 5   # test on 5 first
+fdx /Volumes/SSD-photos                                 # mixed photos + clips, one corpus
+fdx /Volumes/SSD-photos --media images                 # stills only
+```
+
+- **One command, mixed media.** A drive with both photos and clips becomes a single queryable corpus — `fdx` routes each file by extension. `--media images|videos|all` scopes a run.
+- **RAW** is read from the full-res JPEG preview every modern RAW embeds (no libraw needed): `.cr2 .cr3 .nef .arw .raf .rw2 .orf .dng`, plus `.jpg .jpeg .png .tif .tiff .heic .webp`.
+- **Search is identical to video:** `fdx-query /Volumes/SSD-photos --media images --place-contains Mara --keyword giraffe`, or just ask Claude to read `_INDEX.md` for "that sunset photo in Mara".
+
+Photo sidecars add a `camera:` block, `dimensions`, `scene_type`, and `media_type: image`, and drop the video-only audio/duration fields.
 
 ## Apple Photos Library (macOS)
 
@@ -338,7 +359,7 @@ Already-indexed clips are skipped on re-runs (a sidecar existing = done). Ctrl-C
 
 ## Troubleshooting
 
-**"Missing dependency: whisperx"**. Run `setup.py`.
+**"Video indexing needs the 'video' extra"** (or `ModuleNotFoundError: whisperx`). Video indexing lives in an optional extra now — `uv pip install -e '.[video]'` (or `'.[all]'`), then re-run.
 
 **"Failed to load diarization pipeline"**. You didn't accept the pyannote model terms on Hugging Face. Visit the two model pages, click Agree, then re-run.
 

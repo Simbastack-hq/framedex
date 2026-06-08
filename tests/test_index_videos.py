@@ -1,18 +1,15 @@
 """Tests for framedex.index_videos sidecar writing.
 
-index_videos imports the heavy runtime stack (whisperx, torch, ...) at module
-level and exits if it is missing. CI installs only the dev + test dependency
-groups, so skip this module there. The sidecar consumers (query, master_index)
-are covered by stdlib-light tests that always run.
+The video runtime stack (whisperx/torch) is imported lazily now, so
+index_videos imports without it. These tests pin the video sidecar's
+frontmatter/body output, which the pipeline.py extraction must keep
+byte-for-byte identical.
 """
 
 from pathlib import Path
 from typing import Any, cast
 
-import pytest
 import yaml
-
-pytest.importorskip("whisperx", reason="full runtime stack not installed")
 
 from framedex.index_videos import write_sidecar
 

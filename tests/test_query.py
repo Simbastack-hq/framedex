@@ -70,6 +70,7 @@ def make_args(**overrides: object) -> argparse.Namespace:
     """Build a query args namespace with every filter disabled by default."""
     defaults: dict[str, object] = {
         "rating": None,
+        "media": None,
         "lighting": None,
         "time_of_day": None,
         "audio_quality": None,

@@ -162,7 +162,6 @@ media_type: image                     # NEW discriminator: image | video
 size_bytes: 52428800
 creation_time: 2024-08-14T07:23:11
 dimensions: 7728x5152
-megapixels: 40.2
 camera:
   make: Fujifilm
   model: X-T5
@@ -203,8 +202,8 @@ indexed_at: 2026-06-08T14:32:01
 `technical.stability`, `technical.motion_blur`, and the `## Transcript` /
 `## English translation` body sections.
 
-**Added:** `media_type`, `camera:` block, `dimensions`, `megapixels`,
-`scene_type`, `technical.composition`.
+**Added:** `media_type`, `camera:` block, `dimensions`, `scene_type` (free-form
+soft field, no query filter in v1), `technical.composition`.
 
 ## Search / query
 
@@ -239,6 +238,43 @@ Unchanged model — this is the whole point. Photo sidecars are the same shape, 
 - Strict mypy + ruff clean (project standard).
 - Manual: `fdx <folder> --media images --max-files 1` end-to-end on a real RAW;
   confirm `fdx-query --place-contains Mara --keyword giraffe` returns it.
+
+## Refinements from plan review (Codex, high effort)
+
+Concrete corrections folded into the contract above:
+
+1. **Router before model setup.** `main()` filters the file list by `--media`
+   first; the whisper/align/diarize models are initialized **only if the routed
+   set contains at least one video**. An image-only run never imports or loads
+   the video stack.
+2. **`ProcessContext` video handles are Optional.** `whisper_model`,
+   `align_models`, `diarize_pipeline` default to `None`; image processing leaves
+   them unset.
+3. **Resume preserved.** Per routed file, `has_sidecar()` is checked before any
+   work and the file is skipped unless `--force` (today's behaviour, both media).
+4. **`render_preview()` normalizes orientation.** Apply EXIF orientation
+   (`PIL.ImageOps.exif_transpose`) so the vision call and face detection always
+   see upright pixels (HEIC/phone/rotated RAW).
+5. **Sidecar naming reuses the suffix-append scheme** (`DSC_4827.RAF` →
+   `DSC_4827.RAF.description.md`), so two files sharing a stem but differing in
+   extension never collide. No stem-based naming.
+6. **`query.py`: missing video fields must NOT-match, never match-as-zero.**
+   `--min/max-duration`, `--has-speech`, `--language` must exclude records that
+   lack those fields rather than treat absent as `0`/empty.
+7. **`master_index.py` / `trip_summary.py`: media-neutral.** Count label not
+   hardcoded to "clip"; skip duration/language rollups for image records; the
+   `media_type` discriminator drives per-type counts.
+8. **Skip/error reporting by reason.** The run summary counts: processed,
+   skipped-no-preview (RAW w/o embedded preview), decode-failure, vision-error —
+   not a single opaque "errors" bucket.
+9. **`pipeline.py` stays narrow.** Only GPS+geocode, vision backends
+   (cli/api/local), `parse_vision_response`, the shared dataclasses, the Nominatim
+   limiter, and the serialize-only sidecar writer move. Whisper, frame
+   extraction, audio, and `.video-context.md` biasing stay video-only in
+   `index_videos.py`.
+
+**Cut:** `megapixels` (derivable from `dimensions`). **Deferred:** `scene_type`
+as a fixed enum + a `--scene-type` query filter (keep the field free-form for v1).
 
 ## Open questions / future
 

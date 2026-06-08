@@ -234,20 +234,20 @@ def render_preview(image: Path, out_dir: Path) -> Path | None:
                 f"Install with: uv pip install -e '.[images]'  ({e})"
             ) from e
 
-    try:
-        with Image.open(src) as im:
-            im = ImageOps.exif_transpose(im)  # normalize rotation
-            if im.mode != "RGB":
-                im = im.convert("RGB")
-            w, h = im.size
-            if w > FRAME_MAX_WIDTH:
-                new_h = round(h * FRAME_MAX_WIDTH / w)
-                im = im.resize((FRAME_MAX_WIDTH, new_h), Image.LANCZOS)
-            out = out_dir / "preview.jpg"
-            im.save(out, "JPEG", quality=90)
-    except Exception:
-        return None
-    return out if out.exists() and out.stat().st_size > 0 else None
+    # A decode/save failure here is a real error (corrupt or unreadable file),
+    # not a clean skip — let it propagate so the run loop reports it loudly and
+    # the file is retried, rather than masquerading as "no preview".
+    with Image.open(src) as im:
+        im = ImageOps.exif_transpose(im)  # normalize rotation
+        if im.mode != "RGB":
+            im = im.convert("RGB")
+        w, h = im.size
+        if w > FRAME_MAX_WIDTH:
+            new_h = round(h * FRAME_MAX_WIDTH / w)
+            im = im.resize((FRAME_MAX_WIDTH, new_h), Image.LANCZOS)
+        out = out_dir / "preview.jpg"
+        im.save(out, "JPEG", quality=90)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -514,6 +514,12 @@ def process_one_image(
         for f in tmp_dir.glob("*"):
             f.unlink(missing_ok=True)
         tmp_dir.rmdir()
+
+    # A "[...]" sentinel means the vision call failed; don't persist a sidecar
+    # (that would permanently skip the photo on re-runs). Retry next time.
+    if not structured and description.startswith("["):
+        print(f"  vision call failed: {description[:200]}")
+        return pipeline.ProcessResult(sidecar=None, skipped_reason="vision_error")
 
     fm = build_image_frontmatter(
         image,

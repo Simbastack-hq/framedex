@@ -181,7 +181,7 @@ fdx /Volumes/SSD-photos --media images          # stills only (no whisper stack)
 fdx /Volumes/SSD-photos --media videos          # clips only
 
 # Query just the photos
-fdx-query /Volumes/SSD-photos --media image --place-contains Mara --keyword giraffe
+fdx-query /Volumes/SSD-photos --media images --place-contains Mara --keyword giraffe
 ```
 
 Photo sidecars mirror the video schema with the audio/motion fields removed and

@@ -522,7 +522,8 @@ class ProcessResult:
     sidecar: Path | None
     detected_faces: list[face_db.DetectedFace] = field(default_factory=list)
     cost: float = 0.0
-    skipped_reason: str | None = None  # 'short' | 'too_long' | 'no_preview' | None
+    # 'short' | 'too_long' | 'no_preview' | 'vision_error' | None
+    skipped_reason: str | None = None
     rating: str = "?"
     structured: dict[str, Any] = field(default_factory=dict)
 

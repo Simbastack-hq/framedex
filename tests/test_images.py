@@ -282,6 +282,28 @@ def test_process_one_image_writes_sidecar(
     assert "A giraffe at golden hour." in body
 
 
+def test_process_one_image_vision_error_writes_no_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A vision-backend failure sentinel must NOT persist a sidecar — otherwise
+    the photo is marked indexed and silently skipped forever. It should be
+    retryable (no sidecar) and reported as a vision_error."""
+    img = tmp_path / "DSC.jpg"
+    img.write_bytes(b"x")
+    monkeypatch.setattr(images, "get_image_metadata", lambda p: {"size_bytes": 1})
+    monkeypatch.setattr(pipeline, "get_gps", lambda p: {})
+    monkeypatch.setattr(images, "render_preview", lambda img, out: out / "preview.jpg")
+    monkeypatch.setattr("framedex.images.time.sleep", lambda s: None)
+    monkeypatch.setattr(
+        pipeline, "describe_frames_cli", lambda *a, **k: "[CLI timed out]"
+    )
+
+    result = images.process_one_image(img, tmp_path, _opts(), pipeline.ProcessContext())
+    assert result.skipped_reason == "vision_error"
+    assert result.sidecar is None
+    assert not pipeline.has_sidecar(img)
+
+
 def test_image_sidecar_is_queryable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

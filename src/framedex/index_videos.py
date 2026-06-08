@@ -959,6 +959,14 @@ def process_one_video(
             f.unlink(missing_ok=True)
         tmp_frames.rmdir()
 
+    # The vision backends return a "[...]" sentinel on failure (timeout, HTTP
+    # error, permission-denied). Don't persist a sidecar for those — that would
+    # mark the clip permanently "indexed" and silently skip it on every re-run.
+    # Returning vision_error keeps the clip in the todo list next time.
+    if not structured and description.startswith("["):
+        print(f"  vision call failed: {description[:200]}")
+        return ProcessResult(sidecar=None, skipped_reason="vision_error")
+
     sidecar = write_sidecar(
         video,
         root,
@@ -1389,6 +1397,11 @@ def main() -> int:
             if result.skipped_reason == "no_preview":
                 print("  skipped (RAW without an embedded preview to read)")
                 skipped_no_preview += 1
+                continue
+            if result.skipped_reason == "vision_error":
+                # No sidecar written — counts as an error so the run is non-zero
+                # and the file is retried on the next pass.
+                errors += 1
                 continue
             assert result.sidecar is not None
             actual_cost += result.cost

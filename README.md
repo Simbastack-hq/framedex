@@ -150,7 +150,7 @@ Each drive ends up self-contained with its own sidecars + `_INDEX.json`. Knowled
 
 ## Still photos (RAW / JPEG / HEIC)
 
-`fdx` indexes photos the same way it indexes video — same `.description.md` sidecars, same `fdx-query` / `fdx-master` / `fdx-summary`. Point it at a folder of stills (a Lightroom/Capture One export, an SSD of RAWs) and each photo gets EXIF (camera, lens, aperture, shutter, ISO), GPS + reverse-geocoded place, face detection, and a scene description with keywords and a keep/review/cull rating.
+`fdx` indexes photos the same way it indexes video — same `.description.md` sidecars, queryable with the same `fdx-query` and rolled up by `fdx-master`. Point it at a folder of stills (a Lightroom/Capture One export, an SSD of RAWs) and each photo gets EXIF (camera, lens, aperture, shutter, ISO), GPS + reverse-geocoded place, face detection, and a scene description with keywords and a keep/review/cull rating. (`fdx-summary`'s prose is still video-tuned — photo-aware summaries are a fast-follow.)
 
 ```bash
 uv pip install -e '.[images]'                          # one-time: Pillow + pillow-heif, no torch

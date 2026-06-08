@@ -116,7 +116,9 @@ def matches(rec: dict[str, Any], args: argparse.Namespace) -> bool:
         if dur is None or dur > args.max_duration:
             return False
     if args.media:
-        wanted = {v.strip() for v in args.media.split(",")}
+        # Accept the indexer's plural words too (image/images, video/videos).
+        alias = {"images": "image", "videos": "video"}
+        wanted = {alias.get(v.strip(), v.strip()) for v in args.media.split(",")}
         # Existing video sidecars predate media_type; treat absent as 'video'.
         if (rec.get("media_type") or "video") not in wanted:
             return False

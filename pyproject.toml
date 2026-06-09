@@ -5,12 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "framedex"
 version = "0.1.0"
-description = "A queryable knowledge base for your video archive"
+description = "A queryable knowledge base for your video and photo archive"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
+# Base = the media-agnostic core (vision, geocoding, face detection). The heavy
+# video stack (whisperx/torch) and the still-photo readers live in extras so a
+# photographer can `pip install framedex[images]` without pulling torch.
 dependencies = [
-    "whisperx>=3.1.0",
     "anthropic>=0.40.0",
     "requests>=2.31.0",
     "PyYAML>=6.0",
@@ -20,12 +22,30 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+video = [
+    "whisperx>=3.1.0",
+]
+images = [
+    "Pillow>=10.0.0",
+    "pillow-heif>=0.16.0",
+]
 photos = [
+    # fdx-photos indexes the library's *videos*, so it needs the video stack too.
+    "whisperx>=3.1.0",
+    "osxphotos>=0.69.0; sys_platform == 'darwin'",
+]
+all = [
+    "whisperx>=3.1.0",
+    "Pillow>=10.0.0",
+    "pillow-heif>=0.16.0",
     "osxphotos>=0.69.0; sys_platform == 'darwin'",
 ]
 
+# `requests`/`pyyaml` are runtime deps of the shared pipeline core that the
+# tests import directly; keep them here so CI (which installs only these groups,
+# not the project deps) can import framedex.pipeline / framedex.images.
 [dependency-groups]
-test = ["pytest>=8.0", "pyyaml>=6.0"]
+test = ["pytest>=8.0", "pyyaml>=6.0", "requests>=2.31.0"]
 dev = ["ruff>=0.15.0", "mypy>=1.14.0", "types-PyYAML", "types-requests"]
 
 [project.scripts]

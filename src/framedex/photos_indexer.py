@@ -277,6 +277,11 @@ def main() -> int:
         return 1
 
     from framedex.index_videos import (
+        load_whisper_fixes,
+        process_one_video,
+        resolve_hf_token,
+    )
+    from framedex.pipeline import (
         COST_PER_CALL_USD_CLI,
         COST_PER_CALL_USD_LOCAL,
         VISION_MODELS,
@@ -285,10 +290,7 @@ def main() -> int:
         ProcessOptions,
         check_claude_cli,
         check_local_endpoint,
-        load_whisper_fixes,
-        process_one_video,
         resolve_anthropic_key,
-        resolve_hf_token,
     )
 
     if args.vision_model not in VISION_MODELS:
@@ -482,6 +484,11 @@ def main() -> int:
                         f"  skipped (duration > --max-duration {args.max_duration} min)"
                     )
                     skipped_too_long += 1
+                    continue
+                if result.skipped_reason == "vision_error":
+                    # Vision backend failed; no sidecar written so the asset is
+                    # retried next run. Count it as an error (non-zero exit).
+                    errors += 1
                     continue
 
                 assert result.sidecar is not None

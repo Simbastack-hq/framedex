@@ -268,16 +268,12 @@ class TestMaterialize:
         assert status.startswith("failed:")
 
 
-def test_sidecar_suffix_constant_matches_index_videos() -> None:
-    """Photos sidecars must use the same suffix as fdx sidecars so the
+def test_sidecar_suffix_constant_matches_pipeline() -> None:
+    """Photos sidecars must use the same suffix as the shared pipeline so the
     existing fdx-query / fdx-master / fdx-summary tools can pick them up."""
-    # index_videos imports the heavy runtime stack (whisperx, requests, ...) at
-    # module level; CI installs only dev + test groups, so skip there. Matches
-    # the guard in test_index_videos.py.
-    pytest.importorskip("whisperx", reason="full runtime stack not installed")
-    from framedex.index_videos import SIDECAR_SUFFIX as fdx_suffix
+    from framedex import pipeline
 
-    assert fdx_suffix == photos.SIDECAR_SUFFIX
+    assert pipeline.SIDECAR_SUFFIX == photos.SIDECAR_SUFFIX
 
 
 if __name__ == "__main__":

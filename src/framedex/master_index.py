@@ -94,6 +94,10 @@ def main() -> int:
             trip = "(unknown)"
         trips.setdefault(trip, []).append(r)
 
+    n_images = sum(1 for r in records if r.get("media_type") == "image")
+    n_videos = len(records) - n_images
+    kb_label = "Media" if n_images else "Video"
+
     # ---- JSON ----
     json_out = root / "_INDEX.json"
     json_out.write_text(
@@ -102,6 +106,8 @@ def main() -> int:
                 "drive_root": str(root),
                 "generated_at": datetime.now().isoformat(timespec="seconds"),
                 "clip_count": len(records),
+                "video_count": n_videos,
+                "image_count": n_images,
                 "trip_count": len(trips),
                 "clips": records,
             },
@@ -109,12 +115,17 @@ def main() -> int:
             default=str,
         )
     )
-    print(f"Wrote {json_out.name} ({len(records)} clips)")
+    print(f"Wrote {json_out.name} ({len(records)} records)")
 
     # ---- Markdown ----
     total_dur_min = sum((r.get("duration_seconds") or 0) for r in records) / 60
     rating_counter = Counter(r.get("rating", "review") for r in records)
-    languages = Counter(r.get("language_detected") or "none" for r in records)
+    # Language is video-only; don't pollute the stat with photo "none" entries.
+    languages = Counter(
+        r.get("language_detected") or "none"
+        for r in records
+        if r.get("media_type") != "image"
+    )
     keyword_freq: Counter[str] = Counter()
     for r in records:
         for k in r.get("keywords") or []:
@@ -133,12 +144,19 @@ def main() -> int:
             if cid and not cid.startswith("tmp_"):
                 named_people[cid] += 1
 
+    if n_images:
+        count_phrase = (
+            f"{len(records)} items ({n_videos} videos, {n_images} photos), "
+            f"{total_dur_min:.1f} min of video"
+        )
+    else:
+        count_phrase = f"{len(records)} clips, {total_dur_min:.1f} min total"
+
     lines: list[str] = [
-        f"# Video Knowledge Base — `{root.name}`",
+        f"# {kb_label} Knowledge Base — `{root.name}`",
         "",
         f"*Generated {datetime.now().isoformat(timespec='seconds')}*",
-        f"*{len(records)} clips, {total_dur_min:.1f} min total, "
-        f"across {len(trips)} top-level folders*",
+        f"*{count_phrase}, across {len(trips)} top-level folders*",
         "",
         "## Drive-level stats",
         "",
@@ -146,9 +164,12 @@ def main() -> int:
         f"{rating_counter.get('keep', 0)} keep, "
         f"{rating_counter.get('review', 0)} review, "
         f"{rating_counter.get('cull', 0)} cull",
-        "- **Languages:** "
-        + ", ".join(f"{lang} ({n})" for lang, n in languages.most_common(5)),
     ]
+    if n_videos:
+        lines.append(
+            "- **Languages:** "
+            + ", ".join(f"{lang} ({n})" for lang, n in languages.most_common(5))
+        )
     if place_freq:
         lines.append(
             "- **Top locations:** "

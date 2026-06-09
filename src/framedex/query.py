@@ -105,13 +105,22 @@ def matches(rec: dict[str, Any], args: argparse.Namespace) -> bool:
             except ValueError:
                 if str(pc) != wanted:
                     return False
+    # Duration filters are video-only: a record without `duration_seconds`
+    # (i.e. a photo) must NOT match rather than be treated as 0 seconds.
     if args.min_duration is not None:
-        dur = rec.get("duration_seconds") or 0
-        if dur < args.min_duration:
+        dur = rec.get("duration_seconds")
+        if dur is None or dur < args.min_duration:
             return False
     if args.max_duration is not None:
-        dur = rec.get("duration_seconds") or 0
-        if dur > args.max_duration:
+        dur = rec.get("duration_seconds")
+        if dur is None or dur > args.max_duration:
+            return False
+    if args.media:
+        # Accept the indexer's plural words too (image/images, video/videos).
+        alias = {"images": "image", "videos": "video"}
+        wanted = {alias.get(v.strip(), v.strip()) for v in args.media.split(",")}
+        # Existing video sidecars predate media_type; treat absent as 'video'.
+        if (rec.get("media_type") or "video") not in wanted:
             return False
     if args.place_contains:
         place = ((rec.get("location") or {}).get("place") or "").lower()
@@ -164,6 +173,7 @@ def main() -> int:
 
     # Filter flags
     parser.add_argument("--rating", help="keep | review | cull (csv = OR)")
+    parser.add_argument("--media", help="media_type: image | video (csv = OR)")
     parser.add_argument("--lighting")
     parser.add_argument("--time-of-day", dest="time_of_day")
     parser.add_argument("--audio-quality", dest="audio_quality")
@@ -267,10 +277,14 @@ def main() -> int:
         path = rec.get("path") or rec.get("_sidecar_path", "")
         if args.with_description:
             rating = rec.get("rating", "?")
-            dur = rec.get("duration_seconds", 0)
+            # Videos show duration; photos show pixel dimensions in that column.
+            if rec.get("duration_seconds") is not None:
+                size_col = f"{rec['duration_seconds']:.1f}s"
+            else:
+                size_col = rec.get("dimensions") or rec.get("media_type") or ""
             place = ((rec.get("location") or {}).get("place") or "")[:40]
             kws = ",".join((rec.get("keywords") or [])[:5])
-            line = f"{path}\t{rating}\t{dur:.1f}s\t{place}\t{kws}"
+            line = f"{path}\t{rating}\t{size_col}\t{place}\t{kws}"
             print(line)
         else:
             print(path)

@@ -30,6 +30,11 @@ public surface (CLI flags, sidecar schema) can still shift between minor version
     prints a clear "install the video extra" message instead of a stack trace.
 - Internal: media-agnostic logic extracted into `framedex/pipeline.py`;
   `whisperx`/`torch` are imported lazily. Video sidecar output is byte-identical.
+- **Docs: README split into focused guides.** The README now covers the core
+  workflow; deeper and edge-case topics moved to `docs/` and are linked near the top:
+  `docs/apple-photos.md` (the Apple Photos library + iCloud "Optimize Storage" edge
+  case), `docs/tuning.md` (folder context, proper-noun biasing, languages,
+  diarization setup), and `docs/troubleshooting.md`. No behavior change.
 
 ### Fixed
 

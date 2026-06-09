@@ -304,6 +304,45 @@ def test_process_one_image_vision_error_writes_no_sidecar(
     assert not pipeline.has_sidecar(img)
 
 
+def test_process_one_image_metadata_override_threads_creation_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """fdx-photos passes Photos' canonical date via metadata_override; it must
+    shallow-merge over exiftool's creation_time without losing dimensions."""
+    img = tmp_path / "IMG.heic"
+    img.write_bytes(b"x")
+    monkeypatch.setattr(
+        images,
+        "get_image_metadata",
+        lambda p: {
+            "size_bytes": 100,
+            "creation_time": "1999-01-01T00:00:00",  # exiftool value
+            "dimensions": "4000x3000",
+            "camera": {"model": "iPhone"},
+        },
+    )
+    monkeypatch.setattr(pipeline, "get_gps", lambda p: {})
+    monkeypatch.setattr(images, "render_preview", lambda img, out: out / "preview.jpg")
+    monkeypatch.setattr("framedex.images.time.sleep", lambda s: None)
+    monkeypatch.setattr(
+        pipeline,
+        "describe_frames_cli",
+        lambda *a, **k: "```yaml\nrating: keep\n```\n\n## Description\n\nx\n",
+    )
+
+    result = images.process_one_image(
+        img,
+        tmp_path,
+        _opts(),
+        pipeline.ProcessContext(),
+        metadata_override={"creation_time": "2024-08-14T07:23:11"},
+    )
+    assert result.sidecar is not None
+    fm = _frontmatter(result.sidecar)
+    assert fm["creation_time"] == "2024-08-14T07:23:11"  # Photos date wins
+    assert fm["dimensions"] == "4000x3000"  # exiftool field preserved
+
+
 def test_image_sidecar_is_queryable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

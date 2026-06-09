@@ -1,9 +1,9 @@
 """
 photos.py — Apple Photos Library adapter for framedex.
 
-Reads Photos.sqlite via osxphotos to enumerate videos in the user's library
-directly, without going through Photos UI export. This avoids the metadata
-loss that "Export edited" / "Export unmodified original" can introduce:
+Reads Photos.sqlite via osxphotos to enumerate assets (stills + videos) in the
+user's library directly, without going through Photos UI export. This avoids the
+metadata loss that "Export edited" / "Export unmodified original" can introduce:
 .AAE sidecars, transcoding, GPS/date stripping.
 
 Photos-side metadata (GPS, date, persons, albums, keywords) flows into the
@@ -25,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 try:
     import osxphotos
@@ -42,16 +42,19 @@ SIDECAR_SUFFIX = ".description.md"
 
 @dataclass
 class PhotosAsset:
-    """A movie asset enumerated from the Photos library.
+    """An asset (still or movie) enumerated from the Photos library.
 
     `raw` holds the underlying osxphotos PhotoInfo for advanced operations
     (export, PhotoKit fetch). All other fields are pre-projected so callers
     that just need to write a sidecar don't have to touch osxphotos types.
+    `media_type` lets the indexer route each asset to the video or still
+    pipeline without re-touching osxphotos.
     """
 
     uuid: str
     filename: str  # original filename (e.g. "IMG_4827.MOV")
     date: datetime | None
+    media_type: Literal["image", "video"] = "video"
     lat: float | None = None
     lon: float | None = None
     altitude_m: float | None = None
@@ -80,10 +83,18 @@ def _project(photo: Any) -> PhotosAsset:
     p_path = Path(p_raw) if p_raw else None
     on_disk = bool(p_path and p_path.exists())
 
+    # `ismovie` is the osxphotos discriminator. Default to a still when the
+    # attribute is missing/falsey (Live Photos and plain images are stills; the
+    # paired Live-Photo movie is not a separate asset here).
+    media_type: Literal["image", "video"] = (
+        "video" if getattr(photo, "ismovie", False) else "image"
+    )
+
     return PhotosAsset(
         uuid=str(photo.uuid),
         filename=str(getattr(photo, "original_filename", None) or photo.filename or ""),
         date=getattr(photo, "date", None),
+        media_type=media_type,
         lat=float(lat) if lat is not None else None,
         lon=float(lon) if lon is not None else None,
         altitude_m=None,  # osxphotos doesn't expose altitude on PhotoInfo
@@ -97,9 +108,10 @@ def _project(photo: Any) -> PhotosAsset:
     )
 
 
-def enumerate_videos(
+def enumerate_assets(
     library: Path = DEFAULT_LIBRARY,
     *,
+    media: Literal["all", "images", "videos"] = "all",
     albums: list[str] | None = None,
     persons: list[str] | None = None,
     keywords: list[str] | None = None,
@@ -107,14 +119,18 @@ def enumerate_videos(
     until: datetime | None = None,
     uuids: list[str] | None = None,
 ) -> list[PhotosAsset]:
-    """Enumerate movie assets in the Photos library, applying filters.
+    """Enumerate assets in the Photos library, applying filters.
 
-    All filters are AND-combined. Empty/None lists mean "no filter on this
-    dimension". Results are sorted by date then UUID for deterministic
-    resumability.
+    `media` selects which kinds to return: 'all' (default), 'images', or
+    'videos'. All other filters are AND-combined; empty/None lists mean "no
+    filter on this dimension". When a date bound (`since`/`until`) is set,
+    undated assets are excluded — they cannot satisfy a date range. Results
+    are sorted by date then UUID for deterministic resumability.
     """
+    want_images = media in ("all", "images")
+    want_movies = media in ("all", "videos")
     db = osxphotos.PhotosDB(dbfile=str(library))
-    photos = db.photos(movies=True, images=False)
+    photos = db.photos(images=want_images, movies=want_movies)
     results: list[PhotosAsset] = []
     album_set = set(albums) if albums else None
     person_set = set(persons) if persons else None
@@ -129,13 +145,38 @@ def enumerate_videos(
             continue
         if keyword_set and not (set(p.keywords or []) & keyword_set):
             continue
-        if since and p.date and p.date < since:
+        # A date filter excludes undated assets: an asset with no date cannot
+        # satisfy a "since"/"until" bound.
+        if since and (p.date is None or p.date < since):
             continue
-        if until and p.date and p.date > until:
+        if until and (p.date is None or p.date > until):
             continue
         results.append(_project(p))
     results.sort(key=lambda a: (a.date or datetime.min, a.uuid))
     return results
+
+
+def enumerate_videos(
+    library: Path = DEFAULT_LIBRARY,
+    *,
+    albums: list[str] | None = None,
+    persons: list[str] | None = None,
+    keywords: list[str] | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    uuids: list[str] | None = None,
+) -> list[PhotosAsset]:
+    """Backwards-compatible wrapper: enumerate movie assets only."""
+    return enumerate_assets(
+        library,
+        media="videos",
+        albums=albums,
+        persons=persons,
+        keywords=keywords,
+        since=since,
+        until=until,
+        uuids=uuids,
+    )
 
 
 def materialize(

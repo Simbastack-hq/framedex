@@ -158,7 +158,8 @@ def test_image_only_run_never_loads_whisper(
         raise AssertionError("setup_whisper must not run for an image-only pass")
 
     monkeypatch.setattr(index_videos, "setup_whisper", _boom)
-    monkeypatch.setattr(index_videos, "check_claude_cli", lambda: True)
+    # Backend wiring (incl. the claude-CLI check) now lives in runner.
+    monkeypatch.setattr("framedex.runner.check_claude_cli", lambda: True)
     monkeypatch.setattr(
         images,
         "process_one_image",

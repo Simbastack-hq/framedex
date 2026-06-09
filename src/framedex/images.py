@@ -446,6 +446,7 @@ def process_one_image(
     *,
     sidecar_path_override: Path | None = None,
     parent_folder_override: str | None = None,
+    metadata_override: dict[str, Any] | None = None,
     gps_override: dict[str, Any] | None = None,
     place_override: str | None = None,
     extra_frontmatter: dict[str, Any] | None = None,
@@ -453,10 +454,16 @@ def process_one_image(
 ) -> pipeline.ProcessResult:
     """Run the full per-photo pipeline for one still and emit a sidecar.
 
-    Mirrors process_one_video's override surface so fdx-photos can later reuse
-    it for Apple Photos stills. Returns skipped_reason='no_preview' for a RAW
-    with no embedded preview to read."""
+    Mirrors process_one_video's override surface so fdx-photos can reuse it for
+    Apple Photos stills. `metadata_override` shallow-merges over exiftool's
+    output (e.g. Photos' canonical creation_time). Returns
+    skipped_reason='no_preview' for a RAW with no embedded preview to read."""
     metadata = get_image_metadata(image)
+    if metadata_override:
+        # Caller (e.g. fdx-photos) has authoritative fields from a richer source.
+        # Shallow-merge over exiftool so a field like creation_time can be
+        # corrected without losing dimensions/camera/size.
+        metadata.update(metadata_override)
 
     gps = gps_override if gps_override is not None else pipeline.get_gps(image)
     if place_override is not None:

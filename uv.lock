@@ -1150,7 +1150,6 @@ images = [
 ]
 photos = [
     { name = "osxphotos", marker = "sys_platform == 'darwin'" },
-    { name = "whisperx" },
 ]
 video = [
     { name = "whisperx" },
@@ -1184,7 +1183,6 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.31.0" },
     { name = "whisperx", marker = "extra == 'all'", specifier = ">=3.1.0" },
-    { name = "whisperx", marker = "extra == 'photos'", specifier = ">=3.1.0" },
     { name = "whisperx", marker = "extra == 'video'", specifier = ">=3.1.0" },
 ]
 provides-extras = ["video", "images", "photos", "all"]

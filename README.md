@@ -2,11 +2,19 @@
 
 **A queryable knowledge base for your video and photo archive.**
 
-Turn a scattered media archive, spread across multiple SSDs and years, into a portable, plain-text knowledge base. Each video clip gets a `.description.md` sidecar with GPS location + place name, a speaker-diarized multilingual transcript, an English translation (if needed), face detection, and an AI vision scene description with a keep/review/cull rating. Each still photo gets the same treatment minus the audio — plus a camera/lens/exposure block read from EXIF.
+Turn a scattered media archive, spread across multiple SSDs and years, into a portable, plain-text knowledge base. Each video clip gets a `.description.md` sidecar with GPS location + place name, a speaker-diarized multilingual transcript, an English translation (if needed), face detection, and an AI vision scene description with a keep/review/cull rating. Each still photo gets the same treatment minus the audio, plus a camera/lens/exposure block read from EXIF.
 
 Sidecars live next to the originals. Originals are never modified. Local-first, non-destructive, resumable.
 
 framedex is a [Claude Code](https://docs.claude.com/en/docs/claude-code) skill. It installs the `fdx` command-line tool.
+
+## Guides
+
+The README covers the core workflow. Deeper or edge-case topics live in `docs/`:
+
+- **[Apple Photos library](docs/apple-photos.md)**: index a `.photoslibrary` directly with `fdx-photos`, including the iCloud "Optimize Storage" edge case.
+- **[Tuning and advanced config](docs/tuning.md)**: folder-context priors, proper-noun biasing, languages, speaker-diarization setup.
+- **[Troubleshooting](docs/troubleshooting.md)**: common errors and their fixes.
 
 ## Install
 
@@ -111,30 +119,8 @@ indexed_at: 2026-05-17T14:32:01
 Place this beam here first. Yes, OK. Careful with the angle.
 ```
 
-## Optional folder context
-
-Drop `.video-context.md` at the root of any scan target to give the vision model better priors:
-
-```
-/Volumes/SSD-2024/.video-context.md
----
-This drive contains construction-site footage, 2023-2026. Many clips
-are drone aerials, crew training, and site walkthroughs. Languages mix
-English and Spanish.
----
-```
-
-Without it, descriptions are generic.
-
-### Proper-noun biasing
-
-A `.video-context.md` can also carry a line of names Whisper should spell correctly:
-
-```
-**Whisper proper nouns:** Yosemite, El Capitan, Half Dome, ...
-```
-
-These get passed to Whisper as `initial_prompt` + `hotwords` so place names and people names in speech don't come back garbled. A second regex pass (`~/.framedex/whisper_fixes.json`) catches anything the prompt bias misses.
+For folder-context priors and proper-noun biasing that sharpen these descriptions, see
+[Tuning and advanced config](docs/tuning.md).
 
 ## Multiple SSDs
 
@@ -150,7 +136,7 @@ Each drive ends up self-contained with its own sidecars + `_INDEX.json`. Knowled
 
 ## Still photos (RAW / JPEG / HEIC)
 
-`fdx` indexes photos the same way it indexes video — same `.description.md` sidecars, queryable with the same `fdx-query` and rolled up by `fdx-master`. Point it at a folder of stills (a Lightroom/Capture One export, an SSD of RAWs) and each photo gets EXIF (camera, lens, aperture, shutter, ISO), GPS + reverse-geocoded place, face detection, and a scene description with keywords and a keep/review/cull rating. (`fdx-summary`'s prose is still video-tuned — photo-aware summaries are a fast-follow.)
+`fdx` indexes photos the same way it indexes video: same `.description.md` sidecars, queryable with the same `fdx-query` and rolled up by `fdx-master`. Point it at a folder of stills (a Lightroom/Capture One export, an SSD of RAWs) and each photo gets EXIF (camera, lens, aperture, shutter, ISO), GPS + reverse-geocoded place, face detection, and a scene description with keywords and a keep/review/cull rating. (`fdx-summary`'s prose is still video-tuned; photo-aware summaries are a fast-follow.)
 
 ```bash
 uv pip install -e '.[images]'                          # one-time: Pillow + pillow-heif, no torch
@@ -160,158 +146,22 @@ fdx /Volumes/SSD-photos                                 # mixed photos + clips, 
 fdx /Volumes/SSD-photos --media images                 # stills only
 ```
 
-- **One command, mixed media.** A drive with both photos and clips becomes a single queryable corpus — `fdx` routes each file by extension. `--media images|videos|all` scopes a run.
+- **One command, mixed media.** A drive with both photos and clips becomes a single queryable corpus; `fdx` routes each file by extension. `--media images|videos|all` scopes a run.
 - **RAW** is read from the full-res JPEG preview every modern RAW embeds (no libraw needed): `.cr2 .cr3 .nef .arw .raf .rw2 .orf .dng`, plus `.jpg .jpeg .png .tif .tiff .heic .webp`.
 - **Search is identical to video:** `fdx-query /Volumes/SSD-photos --media images --place-contains Mara --keyword giraffe`, or just ask Claude to read `_INDEX.md` for "that sunset photo in Mara".
 
 Photo sidecars add a `camera:` block, `dimensions`, `scene_type`, and `media_type: image`, and drop the video-only audio/duration fields.
 
-## Apple Photos Library (macOS)
+## Apple Photos library (macOS)
 
-`fdx-photos` indexes media — videos **and** stills — that live inside an Apple Photos library directly, no export step, no metadata loss. It reads `Photos.sqlite` via [osxphotos](https://github.com/RhetTbull/osxphotos), uses the original bytes Photos manages, routes each asset to the same video or still pipeline `fdx` uses, and writes sidecars to an external mirror tree (never inside the `.photoslibrary` bundle). `--media images|videos|all` scopes a run (default `all`). macOS only.
-
-**The common case is dead simple.** If your Photos library is local on disk — you don't use iCloud Photos at all, or you use it but keep originals on this Mac (no Optimize Storage) — `fdx-photos` is just:
+`fdx-photos` indexes videos **and** stills straight from an Apple Photos library: no export, no metadata loss. The common case is one command:
 
 ```bash
 uv pip install -e '.[all]'       # one-time: osxphotos + video + image readers
 fdx-photos                       # indexes the whole library (videos + stills)
 ```
 
-`[photos]` is the Apple Photos *source* adapter (osxphotos) only; per-media processing is composable, so install just what you index:
-
-```bash
-uv pip install -e '.[photos,images]'   # stills only — no torch/whisper
-fdx-photos --media images
-
-uv pip install -e '.[photos,video]'    # clips only
-fdx-photos --media videos
-```
-
-`fdx-photos` preflights the queued media and prints an actionable install hint if an extra is missing, so a wrong combo fails fast with the exact command to run. No iCloud round-trip for any of this — the iCloud-Optimized variant is a separate edge case at the bottom of this section.
-
-macOS privacy note: the terminal app that runs `fdx-photos` may need **Full Disk Access** to read `Photos.sqlite` inside the Photos library bundle. TCC often does not show a permission prompt for this; without it, `osxphotos` can fail with `Operation not permitted`. Grant access in **System Settings → Privacy & Security → Full Disk Access** for Terminal, iTerm, VS Code, or whichever parent app launches the command.
-
-### Why this instead of `osxphotos export` + `fdx`?
-
-You *could* export your videos out of Photos and run regular `fdx` on the exported directory. Reasons not to:
-
-- The Photos UI's "Export edited" / "Export unmodified original" can transcode, strip container metadata, write `.AAE` sidecars, and split Live Photos into `.MOV` + `.HEIC` pairs.
-- Even a clean `osxphotos export` leaves behind the Photos-side metadata that doesn't live in the file container: album membership, named-person labels from Photos' face recognition, user-added keywords, the canonical creation date Photos may have corrected.
-- An export doubles the disk space — you keep one copy in `.photoslibrary` and another in the export directory.
-
-`fdx-photos` reads the unedited original bytes (video or still) and threads Photos-side metadata (albums, persons, keywords, canonical date, GPS) straight into the sidecar frontmatter alongside the standard vision/audio/EXIF passes. If Photos has edits on the asset, the sidecar records `photos_edited: true`; the indexed pixels still come from the original. Stills additionally get the full camera/EXIF block (`fdx --media images` schema) on top of the Photos-side fields.
-
-### Setup
-
-```bash
-uv pip install -e '.[all]'             # everything
-# or scope it: [photos,images] for stills, [photos,video] for clips
-```
-
-### Usage
-
-```bash
-# Default: ~/Pictures/Photos Library.photoslibrary → ~/framedex-photos/, all media
-fdx-photos
-
-# Scope by media type (an images-only run never loads the whisper stack)
-fdx-photos --media images
-fdx-photos --media videos
-
-# Filter by album / person / date — all repeatable, OR-combined within a flag
-fdx-photos --album "Yosemite 2024" --max-files 5
-fdx-photos --person "Mom" --since 2024-01-01 --until 2024-12-31
-fdx-photos --keyword sunset --keyword drone
-
-# Custom output tree (still must be outside the .photoslibrary)
-fdx-photos --output ~/Documents/photos-kb
-
-# Re-process a single problem asset by UUID
-fdx-photos --uuid ABCD1234-EF56-7890-ABCD-1234567890AB --force
-
-# Materialize iCloud-only originals on demand (only needed if Optimize Storage is on)
-fdx-photos --download
-```
-
-A bare `fdx-photos` on a large library is a big job (stills usually outnumber videos 10-100x). It runs incrementally and is fully resumable — sidecars appear as it goes, and you can Ctrl-C and re-run to continue — so above ~1000 unfiltered assets it prints a loud heads-up rather than blocking. Narrow with `--album`/`--person`/`--since` or test with `--max-files N` first.
-
-### Sidecar layout
-
-Sidecars mirror the library by date:
-
-```text
-~/framedex-photos/
-├── 2024-08/
-│   ├── IMG_4827__a1b2c3d4.MOV.description.md     # video
-│   └── IMG_4830__b2c3d4e5.HEIC.description.md    # still
-├── 2024-09/
-│   └── IMG_4912__c9d0e1f2.MOV.description.md
-└── _undated/
-    └── clip__99887766.mov.description.md
-```
-
-The `__{uuid8}` suffix disambiguates iPhone counter-rolled filenames (two `IMG_0001.MOV` from different camera sessions). The Photos UUID is also stored in the frontmatter as `photos_uuid:` for lookup.
-
-The mirror tree is a normal directory, so `fdx-query`, `fdx-summary`, and `fdx-master` all work against it:
-
-```bash
-fdx-query ~/framedex-photos --rating keep --person Mom
-fdx-summary ~/framedex-photos
-fdx-master  ~/framedex-photos
-```
-
-### Frontmatter additions
-
-Photos-side fields layered into each sidecar:
-
-```yaml
-file: IMG_4827.MOV                # original camera filename, not the library's UUID
-original_filename: IMG_4827.MOV
-photos_uuid: ABCD1234-EF56-7890-ABCD-1234567890AB
-photos_persons:
-  - Mom
-  - Dad
-photos_albums:
-  - Yosemite 2024
-photos_keywords:
-  - sunset
-  - drone
-photos_edited: true     # only present when Photos has edits on this clip
-```
-
-`file:` is overridden to the user-meaningful camera filename (the on-disk name inside `.photoslibrary` is a UUID like `B627DB90-...mp4`). `photos_uuid:` is the stable Photos lookup key. `path:` is present only when the original is a durable local file; assets materialized through `--download` are processed from a temporary copy, so their sidecars omit `path` instead of persisting a dead temp location.
-
-### Diagnose library state
-
-Before launching the full indexer, check how many videos are already on local disk vs iCloud-only:
-
-```bash
-.venv/bin/python scripts/diagnose_photos.py
-```
-
-Output tells you total / on-disk / iCloud-only / edited counts, plus a sample of the first 10 and a recommendation for which flag (or Photos setting) you actually need.
-
-### Notes for iCloud users (edge case)
-
-Skip this section unless `diagnose_photos.py` reports a non-zero `iCloud-only` count.
-
-If "Optimize Mac Storage" is on, some originals live only in iCloud and aren't on local disk. Two paths to handle them:
-
-- **Simplest — turn off Optimize Mac Storage**: Photos → Settings → iCloud → "Download Originals to this Mac". Photos downloads everything in the background; once done, `fdx-photos` runs with no special flags.
-- **Per-clip `--download`**: materializes missing originals via PhotoKit, with an AppleScript-via-`PhotoScript` fallback when PhotoKit auth isn't granted. Slow and network-heavy. The materialized copy lives in a tempdir for the duration of one clip and is deleted after the sidecar is written, so downloaded-asset sidecars omit `path` and rely on `photos_uuid`.
-
-PhotoKit requires the calling terminal app to have "Photos" access in **System Settings → Privacy & Security → Photos**. Reading `Photos.sqlite` can separately require **Full Disk Access**. Unsigned Python (the standard `.venv` install) often can't trigger the OS permission prompt, so the terminal may not appear in that panel until you explicitly add it. Disabling Optimize Mac Storage sidesteps the PhotoKit download path, but Full Disk Access may still be needed for the database read.
-
-### Spot-checking metadata preservation
-
-If you want to confirm GPS and dates survive, compare what we put in the sidecar against the bits we processed:
-
-```bash
-exiftool ~/Pictures/Photos\ Library.photoslibrary/originals/A/IMG_4827.MOV | grep -i gps
-exiftool ~/Pictures/Photos\ Library.photoslibrary/originals/A/IMG_4827.MOV | grep -i date
-```
-
-Those values should match the `location:` and `creation_time:` blocks in the corresponding `~/framedex-photos/.../IMG_4827__*.description.md`. When Photos disagrees with the file's container metadata (common on edited clips), `fdx-photos` trusts the Photos database — that's the value the Photos UI shows, which is what a human would expect.
+Album/person/date filters, the sidecar mirror layout, Photos-side frontmatter, and the iCloud "Optimize Storage" edge case are all in the full guide: **[docs/apple-photos.md](docs/apple-photos.md)**.
 
 ## Common flags
 
@@ -353,45 +203,16 @@ For huge archives, `api` is fastest. For routine indexing on a Max plan, `cli` i
 | Vision (`--backend local`) | Fully local |
 | Face DB (`~/.framedex/faces.db`) | Local only, never uploaded |
 
-## Languages
-
-Whisper supports 99 languages with auto-detection. For non-English clips the script automatically runs a second translate-mode pass and stores the English version alongside the original transcript. For best quality on important non-English footage:
-
-```bash
-fdx /Volumes/SSD-2024 --whisper-model large-v3 --force
-```
-
-## Speaker diarization
-
-WhisperX uses `pyannote/speaker-diarization-3.1` under the hood. First-time setup requires:
-
-1. A Hugging Face account + read token (`HF_TOKEN` env var)
-2. Clicking "Agree" on both pyannote model pages (linked in Quick start)
-
-If `HF_TOKEN` is missing, the script logs a notice and continues without diarization. Transcripts still work; they just won't have speaker labels.
-
 ## Resumable + idempotent
 
 Already-indexed clips are skipped on re-runs (a sidecar existing = done). Ctrl-C any time; a restart picks up where it stopped. `--force` regenerates everything.
-
-## Troubleshooting
-
-**"Video indexing needs the 'video' extra"** (or `ModuleNotFoundError: whisperx`). Video indexing lives in an optional extra now — `uv pip install -e '.[video]'` (or `'.[all]'`), then re-run.
-
-**"Failed to load diarization pipeline"**. You didn't accept the pyannote model terms on Hugging Face. Visit the two model pages, click Agree, then re-run.
-
-**Whisper model download stalls**. Run `setup.py --skip-model-download`, then `index_videos.py` downloads on first use. Make sure you have disk space (~3GB for large-v3, ~1.5GB for turbo).
-
-**"No GPS data in this file"**. Many clips don't have GPS metadata. The script handles this silently; the frontmatter just omits the location block.
-
-**Apple Silicon GPU not used**. CTranslate2 (via WhisperX) currently runs on CPU on M-series Macs. For archive indexing, CPU is plenty fast (10-30× realtime).
 
 ## Companion tools
 
 | Command | Script | Purpose |
 |---|---|---|
 | `fdx` | `index_videos.py` | Main indexer |
-| `fdx-photos` | `photos_indexer.py` | Index media (videos + stills) directly from an Apple Photos library (no export); `--media images\|videos\|all` |
+| `fdx-photos` | `photos_indexer.py` | Index media (videos + stills) directly from an Apple Photos library (no export); `--media images\|videos\|all`. See [docs/apple-photos.md](docs/apple-photos.md) |
 | `fdx-summary` | `trip_summary.py` | Recursive per-folder summaries |
 | `fdx-master` | `master_index.py` | Drive-level `_INDEX.md` + `_INDEX.json` |
 | `fdx-query` | `query.py` | Filter sidecars by rating, lighting, person, keyword, location, language |
@@ -409,7 +230,6 @@ fdx-query /Volumes/SSD-2024 --place-contains California --language es
 - pyannote diarization degrades on heavy ambient noise (wind, music, crowd)
 - WhisperX runs on CPU on Apple Silicon
 - Face cluster IDs are temporary hashes until the `fdx-faces` labeling tool ships; embeddings are captured now, so no re-indexing will be needed
-- RAW photo support not yet (videos only)
 
 ## Built by SimbaStack
 

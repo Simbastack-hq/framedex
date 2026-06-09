@@ -2,6 +2,30 @@
 
 **A queryable knowledge base for your video and photo archive.**
 
+```text
+ folders / SSDs of clips + photos        Apple Photos library (macOS)
+                |                                     |
+               fdx                               fdx-photos
+                |                                     |
+                +-----------------+-------------------+
+                                  |
+                                  v
+                  per-file pipeline (local, resumable)
+         metadata, GPS -> place, faces, AI description + rating
+          transcript + speakers + English translation (video)
+                                  |
+                                  v
+             a plain-text .description.md sidecar per file
+        (originals never modified; Photos writes a mirror tree)
+                                  |
+                                  v
+          fdx-summary / fdx-master -> _INDEX.md + _INDEX.json
+                                  |
+                                  v
+     fdx-query --person Mom --place-contains Yosemite --rating keep
+              ...or just ask Claude to read the index
+```
+
 Turn a scattered media archive, spread across multiple SSDs and years, into a portable, plain-text knowledge base. Each video clip gets a `.description.md` sidecar with GPS location + place name, a speaker-diarized multilingual transcript, an English translation (if needed), face detection, and an AI vision scene description with a keep/review/cull rating. Each still photo gets the same treatment minus the audio, plus a camera/lens/exposure block read from EXIF.
 
 Sidecars live next to the originals. Originals are never modified. Local-first, non-destructive, resumable.

@@ -34,7 +34,8 @@ public surface (CLI flags, sidecar schema) can still shift between minor version
   workflow; deeper and edge-case topics moved to `docs/` and are linked near the top:
   `docs/apple-photos.md` (the Apple Photos library + iCloud "Optimize Storage" edge
   case), `docs/tuning.md` (folder context, proper-noun biasing, languages,
-  diarization setup), and `docs/troubleshooting.md`. No behavior change.
+  diarization setup), and `docs/troubleshooting.md`. An ASCII flow diagram at
+  the top of the README shows the pipeline at a glance. No behavior change.
 
 ### Fixed
 

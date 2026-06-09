@@ -45,15 +45,13 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from framedex import face_db, images, pipeline
+from framedex import face_db, images, pipeline, runner
 from framedex.parsing import (
     coerce_people_count,
     pick_diar_auth_kwarg,
 )
 from framedex.pipeline import (
     CLI_INTER_CALL_DELAY,
-    COST_PER_CALL_USD_CLI,
-    COST_PER_CALL_USD_LOCAL,
     DEFAULT_LOCAL_BASE_URL,
     FRAME_MAX_WIDTH,
     VISION_MODEL_DEFAULT,
@@ -62,15 +60,12 @@ from framedex.pipeline import (
     ProcessContext,
     ProcessOptions,
     ProcessResult,
-    check_claude_cli,
-    check_local_endpoint,
     describe_frames_api,
     describe_frames_cli,
     describe_frames_local,
     get_gps,
     has_sidecar,
     parse_vision_response,
-    resolve_anthropic_key,
     sidecar_path,
 )
 
@@ -1253,28 +1248,10 @@ def main() -> int:
 
     need_video = any(kind == "video" for _, kind in todo)
 
-    model_cfg = VISION_MODELS[args.vision_model]
-    if args.backend == "api":
-        model_id = str(model_cfg["api"])
-        cost_per_call = float(model_cfg["cost_per_call_api"])
-    elif args.backend == "cli":
-        model_id = str(model_cfg["cli"])
-        cost_per_call = COST_PER_CALL_USD_CLI
-    else:  # local
-        model_id = args.local_model or "(loaded model in LM Studio)"
-        cost_per_call = COST_PER_CALL_USD_LOCAL
-
-    est_cost = len(todo) * cost_per_call
-    if args.backend == "api":
-        print(f"  vision: api / {model_id}")
-        print(f"  estimated Anthropic API cost: ~${est_cost:.2f}")
-    elif args.backend == "cli":
-        print(f"  vision: cli (Max) / {model_id}")
-        print("  marginal cost: $0 (Max subscription)")
-    else:
-        print(f"  vision: local / {model_id} @ {args.local_base_url}")
-        print("  marginal cost: $0 (fully local)")
-    print()
+    model_id, cost_per_call = runner.resolve_vision_model(args)
+    runner.announce_cost(
+        args.backend, model_id, cost_per_call, len(todo), args.local_base_url
+    )
 
     if args.dry_run:
         for path, kind in todo:
@@ -1291,57 +1268,9 @@ def main() -> int:
             "per-clip context from drive root → trip → subfolder\n"
         )
 
-    # Backend wiring
-    api_client = None
-    if args.backend == "api":
-        api_key = resolve_anthropic_key()
-        if not api_key:
-            sys.exit(
-                "--backend api requires ANTHROPIC_API_KEY env or "
-                "~/.claude/credentials/anthropic-key.txt"
-            )
-        import anthropic as _anthropic
-
-        api_client = _anthropic.Anthropic(api_key=api_key)
-        print("Vision: direct Anthropic API\n")
-    elif args.backend == "cli":
-        if not check_claude_cli():
-            sys.exit(
-                "--backend cli requires the `claude` CLI on PATH. "
-                "Install Claude Code or pass --backend api with ANTHROPIC_API_KEY."
-            )
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            print(
-                "NOTE: ANTHROPIC_API_KEY is set in your environment. The script will\n"
-                "      explicitly remove it from each `claude` subprocess so calls go\n"
-                "      against your Max subscription instead of API billing.\n"
-            )
-        else:
-            print("Vision: claude CLI -> Max subscription\n")
-    else:  # local
-        ok, info = check_local_endpoint(args.local_base_url)
-        if not ok:
-            sys.exit(
-                f"--backend local: cannot reach {args.local_base_url} ({info}). "
-                "Start LM Studio and load a vision-capable model first."
-            )
-        print(f"Vision: local LM Studio at {args.local_base_url} ({info})\n")
-
-    # Face detection setup
-    face_conn = None
-    if not args.no_faces:
-        ok, info = face_db.init_face_app()
-        if not ok:
-            print(f"Face detection unavailable: {info}")
-            print("Continuing without face detection. Pass --no-faces to silence.")
-        else:
-            face_conn = face_db.open_db(Path(args.face_db))
-            stats = face_db.db_stats(face_conn)
-            print(f"Face detection: insightface ({info})")
-            print(
-                f"Face DB: {args.face_db} (currently {stats['faces']} faces, "
-                f"{stats['clusters']} clusters, {stats['named_clusters']} named)\n"
-            )
+    # Backend wiring + face detection setup (shared with fdx-photos via runner).
+    api_client = runner.wire_vision_backend(args)
+    face_conn = runner.setup_face_db(args)
 
     whisper_model = None
     align_models: dict[str, Any] = {}
@@ -1374,11 +1303,7 @@ def main() -> int:
         face_conn=face_conn,
     )
 
-    processed = 0
-    errors = 0
-    skipped_too_long = 0
-    skipped_no_preview = 0
-    actual_cost = 0.0
+    tally = runner.RunTally()
     for i, (path, kind) in enumerate(todo, start=1):
         rel = path.relative_to(root)
         print(f"[{i}/{len(todo)}] {rel}")
@@ -1387,53 +1312,27 @@ def main() -> int:
                 result = process_one_video(path, root, opts, ctx)
             else:
                 result = images.process_one_image(path, root, opts, ctx)
-            if result.skipped_reason == "short":
-                print("  skipped (duration < 0.5s)")
-                continue
-            if result.skipped_reason == "too_long":
-                print(f"  skipped (duration > --max-duration {args.max_duration} min)")
-                skipped_too_long += 1
-                continue
-            if result.skipped_reason == "no_preview":
-                print("  skipped (RAW without an embedded preview to read)")
-                skipped_no_preview += 1
-                continue
-            if result.skipped_reason == "vision_error":
-                # No sidecar written — counts as an error so the run is non-zero
-                # and the file is retried on the next pass.
-                errors += 1
-                continue
-            assert result.sidecar is not None
-            actual_cost += result.cost
-            processed += 1
-            faces_note = (
-                f", {len(result.detected_faces)} faces" if result.detected_faces else ""
+            runner.record_result(
+                result, tally, backend=args.backend, max_duration_min=args.max_duration
             )
-            rating_note = f", rated {result.rating}"
-            if args.backend == "api":
-                print(
-                    f"  -> {result.sidecar.name}  (cost ~${actual_cost:.2f}{rating_note}{faces_note})"
-                )
-            else:
-                print(f"  -> {result.sidecar.name}  ({rating_note}{faces_note})")
         except KeyboardInterrupt:
             print(
                 "\nInterrupted. Re-run to resume — finished sidecars are skipped automatically."
             )
             break
         except Exception as e:
-            errors += 1
+            tally.errors += 1
             print(f"  ERROR: {e}")
             traceback.print_exc()
             continue
 
-    summary = f"\nDone. Processed: {processed}, Errors: {errors}"
-    if skipped_too_long:
-        summary += f", Skipped (too long): {skipped_too_long}"
-    if skipped_no_preview:
-        summary += f", Skipped (no preview): {skipped_no_preview}"
+    summary = f"\nDone. Processed: {tally.processed}, Errors: {tally.errors}"
+    if tally.skipped_too_long:
+        summary += f", Skipped (too long): {tally.skipped_too_long}"
+    if tally.skipped_no_preview:
+        summary += f", Skipped (no preview): {tally.skipped_no_preview}"
     if args.backend == "api":
-        summary += f", Approx cost: ${actual_cost:.2f}"
+        summary += f", Approx cost: ${tally.actual_cost:.2f}"
     print(summary)
     if face_conn is not None:
         s = face_db.db_stats(face_conn)
@@ -1443,7 +1342,7 @@ def main() -> int:
             "clusters (once it's built)."
         )
         face_conn.close()
-    return 0 if errors == 0 else 2
+    return 0 if tally.errors == 0 else 2
 
 
 if __name__ == "__main__":

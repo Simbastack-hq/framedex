@@ -11,6 +11,12 @@ Photos-side metadata (album, persons, keywords, canonical date) is merged
 into each sidecar so the indexed KB preserves what Photos knows on top of
 what ffprobe/Whisper/vision extract.
 
+This entry is a thin *source adapter* over the same engine `fdx` uses: it
+only decides how assets are enumerated (Photos.sqlite) and where sidecars go
+(an external mirror). The per-clip pipeline, backend wiring, face-DB setup,
+whisper loading, cost announcement, and result reporting are all shared via
+`framedex.runner` + `framedex.index_videos`.
+
 Tip: run `scripts/diagnose_photos.py` first to see how many videos are
 already on local disk vs iCloud-only — it tells you whether you need
 `--download` or whether you should just turn off Optimize Mac Storage in
@@ -29,8 +35,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import os
-import re
 import shutil
 import sys
 import tempfile
@@ -38,19 +42,13 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from framedex import face_db
-from framedex.parsing import pick_diar_auth_kwarg
-
-try:
-    from framedex import photos as photos_mod
-except ImportError as e:
-    print(
-        "fdx-photos requires the 'osxphotos' extra. "
-        f"Install with: uv pip install -e '.[photos]'\n  ({e})",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
+from framedex import face_db, runner
+from framedex.index_videos import process_one_video, setup_whisper
+from framedex.pipeline import (
+    NominatimRateLimiter,
+    ProcessContext,
+    ProcessOptions,
+)
 
 DEFAULT_OUTPUT = Path.home() / "framedex-photos"
 DEFAULT_LOCAL_BASE_URL = "http://localhost:1234/v1"
@@ -67,6 +65,18 @@ def _parse_date(s: str) -> datetime:
 
 
 def main() -> int:
+    # osxphotos is imported here (not at module scope) so this module stays
+    # importable — and its pure helpers testable — without the [photos] extra.
+    try:
+        from framedex import photos as photos_mod
+    except ImportError as e:
+        print(
+            "fdx-photos requires the 'osxphotos' extra. "
+            f"Install with: uv pip install -e '.[photos]'\n  ({e})",
+            file=sys.stderr,
+        )
+        return 1
+
     parser = argparse.ArgumentParser(
         description="Index videos in an Apple Photos Library (no export).",
     )
@@ -269,143 +279,16 @@ def main() -> int:
             print(f"    -> {sidecar}")
         return 0
 
-    try:
-        import whisperx
-    except ImportError as e:
-        print(f"Missing dependency: {e}", file=sys.stderr)
-        print("Run: uv pip install -e '.[photos]'", file=sys.stderr)
-        return 1
-
-    from framedex.index_videos import (
-        load_whisper_fixes,
-        process_one_video,
-        resolve_hf_token,
+    # Shared engine: model resolution, cost announce, backend wiring, face DB,
+    # and the whisper stack all come from runner / index_videos so this entry
+    # and `fdx` stay in lockstep.
+    model_id, cost_per_call = runner.resolve_vision_model(args)
+    runner.announce_cost(
+        args.backend, model_id, cost_per_call, len(todo), args.local_base_url
     )
-    from framedex.pipeline import (
-        COST_PER_CALL_USD_CLI,
-        COST_PER_CALL_USD_LOCAL,
-        VISION_MODELS,
-        NominatimRateLimiter,
-        ProcessContext,
-        ProcessOptions,
-        check_claude_cli,
-        check_local_endpoint,
-        resolve_anthropic_key,
-    )
-
-    if args.vision_model not in VISION_MODELS:
-        known = ", ".join(sorted(VISION_MODELS))
-        sys.exit(f"--vision-model must be one of: {known}")
-
-    model_cfg = VISION_MODELS[args.vision_model]
-    if args.backend == "api":
-        model_id = str(model_cfg["api"])
-        cost_per_call = float(model_cfg["cost_per_call_api"])
-    elif args.backend == "cli":
-        model_id = str(model_cfg["cli"])
-        cost_per_call = COST_PER_CALL_USD_CLI
-    else:
-        model_id = args.local_model or "(loaded model in LM Studio)"
-        cost_per_call = COST_PER_CALL_USD_LOCAL
-
-    est_cost = len(todo) * cost_per_call
-    if args.backend == "api":
-        print(f"  vision: api / {model_id}")
-        print(f"  estimated Anthropic API cost: ~${est_cost:.2f}")
-    elif args.backend == "cli":
-        print(f"  vision: cli (Max) / {model_id}")
-        print("  marginal cost: $0 (Max subscription)")
-    else:
-        print(f"  vision: local / {model_id} @ {args.local_base_url}")
-        print("  marginal cost: $0 (fully local)")
-    print()
-
-    # Backend wiring (mirrors fdx main)
-    api_client = None
-    if args.backend == "api":
-        api_key = resolve_anthropic_key()
-        if not api_key:
-            sys.exit(
-                "--backend api requires ANTHROPIC_API_KEY env or "
-                "~/.claude/credentials/anthropic-key.txt"
-            )
-        import anthropic as _anthropic
-
-        api_client = _anthropic.Anthropic(api_key=api_key)
-        print("Vision: direct Anthropic API\n")
-    elif args.backend == "cli":
-        if not check_claude_cli():
-            sys.exit(
-                "--backend cli requires the `claude` CLI on PATH. "
-                "Install Claude Code or pass --backend api."
-            )
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            print(
-                "NOTE: ANTHROPIC_API_KEY is set; will be scrubbed from each\n"
-                "      `claude` subprocess so calls go via Max subscription.\n"
-            )
-        else:
-            print("Vision: claude CLI -> Max subscription\n")
-    else:
-        ok, info = check_local_endpoint(args.local_base_url)
-        if not ok:
-            sys.exit(f"--backend local: cannot reach {args.local_base_url} ({info}).")
-        print(f"Vision: local LM Studio at {args.local_base_url} ({info})\n")
-
-    face_conn = None
-    if not args.no_faces:
-        ok, info = face_db.init_face_app()
-        if not ok:
-            print(f"Face detection unavailable: {info}")
-        else:
-            face_conn = face_db.open_db(Path(args.face_db))
-            stats = face_db.db_stats(face_conn)
-            print(f"Face detection: insightface ({info})")
-            print(
-                f"Face DB: {args.face_db} (currently {stats['faces']} faces, "
-                f"{stats['clusters']} clusters, {stats['named_clusters']} named)\n"
-            )
-
-    print(f"Loading Whisper model: {args.whisper_model}")
-    whisper_model = whisperx.load_model(
-        args.whisper_model, device="cpu", compute_type="int8"
-    )
-    print("Whisper ready.")
-
-    whisper_fixes: list[tuple[re.Pattern[str], str]] = []
-    if not args.no_whisper_prompt:
-        whisper_fixes = load_whisper_fixes(Path(args.whisper_fixes).expanduser())
-        if whisper_fixes:
-            print(f"Whisper canonical fixes: {len(whisper_fixes)} rule(s)")
-
-    diarize_pipeline = None
-    if not args.no_diarize:
-        hf = resolve_hf_token()
-        if hf:
-            try:
-                from whisperx.diarize import DiarizationPipeline
-            except ImportError:
-                DiarizationPipeline = getattr(whisperx, "DiarizationPipeline", None)
-            if DiarizationPipeline is not None:
-                import inspect
-
-                try:
-                    params = inspect.signature(DiarizationPipeline.__init__).parameters
-                except (ValueError, TypeError):
-                    params = {}  # type: ignore[assignment]
-                auth_kwarg = pick_diar_auth_kwarg(params)
-                try:
-                    diarize_pipeline = DiarizationPipeline(
-                        **{auth_kwarg: hf}, device="cpu"
-                    )
-                    print(f"Diarization pipeline ready (auth kwarg: {auth_kwarg}).")
-                except Exception as e:
-                    print(f"Failed to load diarization pipeline: {e}")
-        else:
-            print(
-                "HF_TOKEN not set — running without diarization. "
-                "Pass --no-diarize to silence."
-            )
+    api_client = runner.wire_vision_backend(args)
+    face_conn = runner.setup_face_db(args)
+    whisper_model, align_models, diarize_pipeline, whisper_fixes = setup_whisper(args)
 
     geocoder = NominatimRateLimiter() if not args.no_geocode else None
 
@@ -422,6 +305,7 @@ def main() -> int:
     )
     ctx = ProcessContext(
         whisper_model=whisper_model,
+        align_models=align_models,
         diarize_pipeline=diarize_pipeline,
         geocoder=geocoder,
         api_client=api_client,
@@ -431,11 +315,8 @@ def main() -> int:
     # tmp dir for materialized iCloud assets (only used when --download fetches)
     tmp_root = Path(tempfile.mkdtemp(prefix="fdx-photos-download-"))
 
-    processed = 0
-    errors = 0
-    skipped_too_long = 0
+    tally = runner.RunTally()
     skipped_missing = 0
-    actual_cost = 0.0
 
     try:
         for i, asset in enumerate(todo, start=1):
@@ -475,38 +356,12 @@ def main() -> int:
                     omit_path=status == "downloaded",
                     proper_nouns=[],  # Photos has no .video-context.md chain
                 )
-
-                if result.skipped_reason == "short":
-                    print("  skipped (duration < 0.5s)")
-                    continue
-                if result.skipped_reason == "too_long":
-                    print(
-                        f"  skipped (duration > --max-duration {args.max_duration} min)"
-                    )
-                    skipped_too_long += 1
-                    continue
-                if result.skipped_reason == "vision_error":
-                    # Vision backend failed; no sidecar written so the asset is
-                    # retried next run. Count it as an error (non-zero exit).
-                    errors += 1
-                    continue
-
-                assert result.sidecar is not None
-                actual_cost += result.cost
-                processed += 1
-                faces_note = (
-                    f", {len(result.detected_faces)} faces"
-                    if result.detected_faces
-                    else ""
+                runner.record_result(
+                    result,
+                    tally,
+                    backend=args.backend,
+                    max_duration_min=args.max_duration,
                 )
-                rating_note = f", rated {result.rating}"
-                if args.backend == "api":
-                    print(
-                        f"  -> {result.sidecar.name}  "
-                        f"(cost ~${actual_cost:.2f}{rating_note}{faces_note})"
-                    )
-                else:
-                    print(f"  -> {result.sidecar.name}  ({rating_note}{faces_note})")
             except KeyboardInterrupt:
                 print(
                     "\nInterrupted. Re-run to resume — finished sidecars are "
@@ -514,7 +369,7 @@ def main() -> int:
                 )
                 break
             except Exception as e:
-                errors += 1
+                tally.errors += 1
                 print(f"  ERROR: {e}")
                 traceback.print_exc()
                 continue
@@ -522,13 +377,15 @@ def main() -> int:
         # Clean up materialized iCloud downloads
         shutil.rmtree(tmp_root, ignore_errors=True)
 
-    summary = f"\nDone. Processed: {processed}, Errors: {errors}"
-    if skipped_too_long:
-        summary += f", Skipped (too long): {skipped_too_long}"
+    summary = f"\nDone. Processed: {tally.processed}, Errors: {tally.errors}"
+    if tally.skipped_too_long:
+        summary += f", Skipped (too long): {tally.skipped_too_long}"
+    if tally.skipped_no_preview:
+        summary += f", Skipped (no preview): {tally.skipped_no_preview}"
     if skipped_missing:
         summary += f", Skipped (missing/iCloud): {skipped_missing}"
     if args.backend == "api":
-        summary += f", Approx cost: ${actual_cost:.2f}"
+        summary += f", Approx cost: ${tally.actual_cost:.2f}"
     print(summary)
     if face_conn is not None:
         s = face_db.db_stats(face_conn)
@@ -537,7 +394,7 @@ def main() -> int:
             f"({s['named_clusters']} named)."
         )
         face_conn.close()
-    return 0 if errors == 0 else 2
+    return 0 if tally.errors == 0 else 2
 
 
 if __name__ == "__main__":

@@ -485,6 +485,11 @@ def main() -> int:
                     )
                     skipped_too_long += 1
                     continue
+                if result.skipped_reason == "vision_error":
+                    # Vision backend failed; no sidecar written so the asset is
+                    # retried next run. Count it as an error (non-zero exit).
+                    errors += 1
+                    continue
 
                 assert result.sidecar is not None
                 actual_cost += result.cost

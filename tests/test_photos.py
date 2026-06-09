@@ -12,7 +12,7 @@ import sys
 import types
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -229,6 +229,113 @@ class TestProjection:
         photo = self._make_photoinfo(location=(None, None))
         asset = photos._project(photo)
         assert asset.lat is None and asset.lon is None
+
+    def test_ismovie_true_marks_video(self) -> None:
+        asset = photos._project(self._make_photoinfo(ismovie=True))
+        assert asset.media_type == "video"
+
+    def test_ismovie_false_marks_image(self) -> None:
+        asset = photos._project(self._make_photoinfo(ismovie=False))
+        assert asset.media_type == "image"
+
+    def test_missing_ismovie_attr_defaults_to_image(self) -> None:
+        # A PhotoInfo with no `ismovie` attribute (defensive) is treated as a
+        # still — Live Photos and plain images are stills.
+        photo = self._make_photoinfo()  # builder omits ismovie
+        assert not hasattr(photo, "ismovie")
+        asset = photos._project(photo)
+        assert asset.media_type == "image"
+
+
+class _FakeDB:
+    """Captures the db.photos(images=, movies=) call and returns canned photos."""
+
+    last_kwargs: ClassVar[dict[str, Any]] = {}
+    canned: ClassVar[list[Any]] = []
+
+    def __init__(self, **kw: Any) -> None:
+        pass
+
+    def photos(self, *, images: bool, movies: bool) -> list[Any]:
+        _FakeDB.last_kwargs = {"images": images, "movies": movies}
+        return list(_FakeDB.canned)
+
+
+def _photoinfo(**overrides: Any) -> types.SimpleNamespace:
+    defaults: dict[str, Any] = {
+        "uuid": "U-0000",
+        "filename": "x.jpg",
+        "original_filename": "x.jpg",
+        "date": datetime(2024, 6, 1),
+        "location": None,
+        "persons": [],
+        "albums": [],
+        "keywords": [],
+        "hasadjustments": False,
+        "path": None,
+        "ismovie": False,
+    }
+    defaults.update(overrides)
+    return types.SimpleNamespace(**defaults)
+
+
+class TestEnumerateAssets:
+    def test_media_images_sets_flags(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _FakeDB.canned = []
+        monkeypatch.setattr(
+            photos, "osxphotos", types.SimpleNamespace(PhotosDB=_FakeDB)
+        )
+        photos.enumerate_assets(Path("/lib"), media="images")
+        assert _FakeDB.last_kwargs == {"images": True, "movies": False}
+
+    def test_media_videos_sets_flags(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _FakeDB.canned = []
+        monkeypatch.setattr(
+            photos, "osxphotos", types.SimpleNamespace(PhotosDB=_FakeDB)
+        )
+        photos.enumerate_assets(Path("/lib"), media="videos")
+        assert _FakeDB.last_kwargs == {"images": False, "movies": True}
+
+    def test_media_all_sets_both_flags(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _FakeDB.canned = []
+        monkeypatch.setattr(
+            photos, "osxphotos", types.SimpleNamespace(PhotosDB=_FakeDB)
+        )
+        photos.enumerate_assets(Path("/lib"), media="all")
+        assert _FakeDB.last_kwargs == {"images": True, "movies": True}
+
+    def test_enumerate_videos_wrapper_is_movies_only(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _FakeDB.canned = []
+        monkeypatch.setattr(
+            photos, "osxphotos", types.SimpleNamespace(PhotosDB=_FakeDB)
+        )
+        photos.enumerate_videos(Path("/lib"))
+        assert _FakeDB.last_kwargs == {"images": False, "movies": True}
+
+    def test_date_bound_excludes_undated_assets(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dated = _photoinfo(uuid="D", date=datetime(2024, 6, 1))
+        undated = _photoinfo(uuid="U", date=None)
+        _FakeDB.canned = [dated, undated]
+        monkeypatch.setattr(
+            photos, "osxphotos", types.SimpleNamespace(PhotosDB=_FakeDB)
+        )
+        out = photos.enumerate_assets(Path("/lib"), since=datetime(2024, 1, 1))
+        uuids = {a.uuid for a in out}
+        assert uuids == {"D"}  # undated asset cannot satisfy a date bound
+
+    def test_no_date_bound_keeps_undated_assets(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _FakeDB.canned = [_photoinfo(uuid="U", date=None)]
+        monkeypatch.setattr(
+            photos, "osxphotos", types.SimpleNamespace(PhotosDB=_FakeDB)
+        )
+        out = photos.enumerate_assets(Path("/lib"))
+        assert {a.uuid for a in out} == {"U"}
 
 
 class TestMaterialize:

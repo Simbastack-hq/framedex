@@ -168,16 +168,26 @@ Photo sidecars add a `camera:` block, `dimensions`, `scene_type`, and `media_typ
 
 ## Apple Photos Library (macOS)
 
-`fdx-photos` indexes videos that live inside an Apple Photos library directly — no export step, no metadata loss. It reads `Photos.sqlite` via [osxphotos](https://github.com/RhetTbull/osxphotos), uses the original video bytes Photos manages, and writes sidecars to an external mirror tree (never inside the `.photoslibrary` bundle). macOS only.
+`fdx-photos` indexes media — videos **and** stills — that live inside an Apple Photos library directly, no export step, no metadata loss. It reads `Photos.sqlite` via [osxphotos](https://github.com/RhetTbull/osxphotos), uses the original bytes Photos manages, routes each asset to the same video or still pipeline `fdx` uses, and writes sidecars to an external mirror tree (never inside the `.photoslibrary` bundle). `--media images|videos|all` scopes a run (default `all`). macOS only.
 
 **The common case is dead simple.** If your Photos library is local on disk — you don't use iCloud Photos at all, or you use it but keep originals on this Mac (no Optimize Storage) — `fdx-photos` is just:
 
 ```bash
-uv pip install -e '.[photos]'   # one-time, adds osxphotos
-fdx-photos                       # indexes the whole library
+uv pip install -e '.[all]'       # one-time: osxphotos + video + image readers
+fdx-photos                       # indexes the whole library (videos + stills)
 ```
 
-No flags, no iCloud round-trip. This is the path for everyone who keeps their photos on their own machine — no iCloud+ subscription required, no monthly storage fee, no PhotoKit download flow. The iCloud-Optimized variant is a separate edge case at the bottom of this section.
+`[photos]` is the Apple Photos *source* adapter (osxphotos) only; per-media processing is composable, so install just what you index:
+
+```bash
+uv pip install -e '.[photos,images]'   # stills only — no torch/whisper
+fdx-photos --media images
+
+uv pip install -e '.[photos,video]'    # clips only
+fdx-photos --media videos
+```
+
+`fdx-photos` preflights the queued media and prints an actionable install hint if an extra is missing, so a wrong combo fails fast with the exact command to run. No iCloud round-trip for any of this — the iCloud-Optimized variant is a separate edge case at the bottom of this section.
 
 macOS privacy note: the terminal app that runs `fdx-photos` may need **Full Disk Access** to read `Photos.sqlite` inside the Photos library bundle. TCC often does not show a permission prompt for this; without it, `osxphotos` can fail with `Operation not permitted`. Grant access in **System Settings → Privacy & Security → Full Disk Access** for Terminal, iTerm, VS Code, or whichever parent app launches the command.
 
@@ -189,19 +199,24 @@ You *could* export your videos out of Photos and run regular `fdx` on the export
 - Even a clean `osxphotos export` leaves behind the Photos-side metadata that doesn't live in the file container: album membership, named-person labels from Photos' face recognition, user-added keywords, the canonical creation date Photos may have corrected.
 - An export doubles the disk space — you keep one copy in `.photoslibrary` and another in the export directory.
 
-`fdx-photos` reads the unedited original video bytes and threads Photos-side metadata (albums, persons, keywords, canonical date) straight into the sidecar frontmatter alongside the standard vision/audio passes. If Photos has edits on the clip, the sidecar records `photos_edited: true`; the indexed pixels/audio still come from the original asset.
+`fdx-photos` reads the unedited original bytes (video or still) and threads Photos-side metadata (albums, persons, keywords, canonical date, GPS) straight into the sidecar frontmatter alongside the standard vision/audio/EXIF passes. If Photos has edits on the asset, the sidecar records `photos_edited: true`; the indexed pixels still come from the original. Stills additionally get the full camera/EXIF block (`fdx --media images` schema) on top of the Photos-side fields.
 
 ### Setup
 
 ```bash
-uv pip install -e '.[photos]'   # adds osxphotos
+uv pip install -e '.[all]'             # everything
+# or scope it: [photos,images] for stills, [photos,video] for clips
 ```
 
 ### Usage
 
 ```bash
-# Default: ~/Pictures/Photos Library.photoslibrary → ~/framedex-photos/
+# Default: ~/Pictures/Photos Library.photoslibrary → ~/framedex-photos/, all media
 fdx-photos
+
+# Scope by media type (an images-only run never loads the whisper stack)
+fdx-photos --media images
+fdx-photos --media videos
 
 # Filter by album / person / date — all repeatable, OR-combined within a flag
 fdx-photos --album "Yosemite 2024" --max-files 5
@@ -211,12 +226,14 @@ fdx-photos --keyword sunset --keyword drone
 # Custom output tree (still must be outside the .photoslibrary)
 fdx-photos --output ~/Documents/photos-kb
 
-# Re-process a single problem clip by UUID
+# Re-process a single problem asset by UUID
 fdx-photos --uuid ABCD1234-EF56-7890-ABCD-1234567890AB --force
 
 # Materialize iCloud-only originals on demand (only needed if Optimize Storage is on)
 fdx-photos --download
 ```
+
+A bare `fdx-photos` on a large library is a big job (stills usually outnumber videos 10-100x). It runs incrementally and is fully resumable — sidecars appear as it goes, and you can Ctrl-C and re-run to continue — so above ~1000 unfiltered assets it prints a loud heads-up rather than blocking. Narrow with `--album`/`--person`/`--since` or test with `--max-files N` first.
 
 ### Sidecar layout
 
@@ -225,8 +242,8 @@ Sidecars mirror the library by date:
 ```text
 ~/framedex-photos/
 ├── 2024-08/
-│   ├── IMG_4827__a1b2c3d4.MOV.description.md
-│   └── IMG_4831__e5f6a7b8.MOV.description.md
+│   ├── IMG_4827__a1b2c3d4.MOV.description.md     # video
+│   └── IMG_4830__b2c3d4e5.HEIC.description.md    # still
 ├── 2024-09/
 │   └── IMG_4912__c9d0e1f2.MOV.description.md
 └── _undated/
@@ -374,7 +391,7 @@ Already-indexed clips are skipped on re-runs (a sidecar existing = done). Ctrl-C
 | Command | Script | Purpose |
 |---|---|---|
 | `fdx` | `index_videos.py` | Main indexer |
-| `fdx-photos` | `photos_indexer.py` | Index videos directly from an Apple Photos library (no export) |
+| `fdx-photos` | `photos_indexer.py` | Index media (videos + stills) directly from an Apple Photos library (no export); `--media images\|videos\|all` |
 | `fdx-summary` | `trip_summary.py` | Recursive per-folder summaries |
 | `fdx-master` | `master_index.py` | Drive-level `_INDEX.md` + `_INDEX.json` |
 | `fdx-query` | `query.py` | Filter sidecars by rating, lighting, person, keyword, location, language |

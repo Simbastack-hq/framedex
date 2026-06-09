@@ -174,13 +174,25 @@ Notes:
 4. No change to `pipeline.py`, `images.py`, `write_sidecar`, or the sidecar
    bytes. The golden video-sidecar test and the image tests stay green.
 
-**Behavior-preserving caveat (intended, minimal):** the duplicated code is
-moved verbatim, so user-visible output is unchanged. One existing test
-(`test_image_only_run_never_loads_whisper`) monkeypatches
-`index_videos.check_claude_cli`; since the cli check now lives in
-`runner.wire_vision_backend`, that patch target updates to
-`runner.check_claude_cli`. The test's actual claim (an image-only `fdx` run
-never imports whisperx) is preserved.
+**Behavior-preserving caveat (intended, minimal).** The byte-identical claim is
+scoped to what matters: the **per-file processing output, the sidecar bytes, the
+vision/cost-announce + backend + face lines, the result-reporting lines, the
+run summary, and exit codes** — all verbatim (Codex code-review confirmed no
+tally/exit drift). Three *intended* output changes fall out of removing the
+duplicated copies, all on startup/diagnostic or failure paths:
+
+1. `fdx-photos`' backend-wiring and face-DB **failure** messages now match
+   `fdx`'s (more complete) shared text — failure paths only.
+2. `fdx-photos` **video** runs now print `fdx`'s shared **whisper-setup banner**
+   (via the reused `setup_whisper`: e.g. the canonical-fixes "loaded N rules
+   from <path>" / "none" lines) instead of the old inline copy's terser
+   variant. This is the point of the dedupe — one whisper setup — not a
+   regression; the per-clip output and sidecar bytes are unchanged.
+3. One existing test (`test_image_only_run_never_loads_whisper`) monkeypatches
+   `index_videos.check_claude_cli`; since the cli check now lives in
+   `runner.wire_vision_backend`, that patch target updates to
+   `runner.check_claude_cli`. Its claim (an image-only `fdx` run never imports
+   whisperx) is preserved.
 
 ### Phase 2 — `fdx-photos --media images|videos|all`
 
@@ -361,6 +373,22 @@ Verdict: **GO-WITH-CHANGES**. Findings folded into the contract above:
   sidecar H1 + prompt context while `file:` carries the nice original — this
   exactly matches `process_one_video`'s existing behavior; changing only the
   image side would diverge the two. Left consistent.
+
+## Code review triage (Codex gpt-5.5, high effort)
+
+Verdict: **GO-WITH-CHANGES** (no tally/exit drift; ruff + mypy-strict pass).
+Folded in:
+- **Byte-identity claim narrowed** to the processing/sidecar/cost/summary output
+  (see the Phase-1 caveat above); the `fdx-photos` whisper-setup banner and
+  failure messages now match `fdx`'s shared text by design.
+- **Extras preflight checks `pillow-heif`, not just `PIL`.** `[images]` ships
+  both; an Apple Photos library is HEIC-heavy, so requiring both avoids a
+  false-pass that would fail mid-run on the first HEIC.
+- **Subprocess import-safety test** added: a clean interpreter (no `osxphotos`
+  stub) proves `import framedex.photos_indexer` succeeds and doesn't pull
+  `osxphotos` at import time.
+- **Stale "videos" wording** in the parser description + `photos.py` docstring
+  updated to "media/assets".
 
 ## Rollout
 

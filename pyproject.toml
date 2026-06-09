@@ -30,8 +30,10 @@ images = [
     "pillow-heif>=0.16.0",
 ]
 photos = [
-    # fdx-photos indexes the library's *videos*, so it needs the video stack too.
-    "whisperx>=3.1.0",
+    # The Apple Photos *source* adapter only. Per-media processing is
+    # composable: add [video] to index clips and [images] to index stills
+    # (e.g. framedex[photos,images]), or [all]. fdx-photos preflights the
+    # missing extra and prints an actionable install hint.
     "osxphotos>=0.69.0; sys_platform == 'darwin'",
 ]
 all = [

@@ -45,7 +45,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from framedex import face_db, images, pipeline, runner
+from framedex import face_db, frame_sampling, images, pipeline, runner
 from framedex.parsing import (
     coerce_people_count,
     pick_diar_auth_kwarg,
@@ -325,17 +325,37 @@ def get_metadata(video: Path) -> dict[str, Any]:
     }
 
 
-def extract_frames(video: Path, out_dir: Path, num_frames: int = 5) -> list[Path]:
-    meta = get_metadata(video)
-    duration = meta["duration_seconds"]
-    if duration < 0.5:
-        return []
-    if duration < 3:
-        num_frames = min(num_frames, 3)
-    timestamps = [duration * (i + 1) / (num_frames + 1) for i in range(num_frames)]
-    frames: list[Path] = []
-    for i, ts in enumerate(timestamps):
-        out = out_dir / f"frame_{i:02d}.jpg"
+def _extract_one_frame(video: Path, ts: float, out: Path, width_cap: int) -> bool:
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-ss",
+        f"{ts:.2f}",
+        "-i",
+        str(video),
+        "-vframes",
+        "1",
+        "-q:v",
+        "2",  # higher quality jpeg
+        "-vf",
+        f"scale='min({width_cap},iw)':-2",
+        "-loglevel",
+        "error",
+        str(out),
+    ]
+    subprocess.run(cmd, capture_output=True)
+    return out.exists() and out.stat().st_size > 0
+
+
+def _extract_candidate_pool(
+    video: Path, out_dir: Path, cand_ts: list[float]
+) -> tuple[list[Path], list[float]]:
+    """Low-res thumbnail per candidate timestamp via fast-seek. Quality 5 is
+    plenty for histograms; keeps the pool I/O tiny."""
+    thumbs: list[Path] = []
+    kept_ts: list[float] = []
+    for k, ts in enumerate(cand_ts):
+        out = out_dir / f"cand_{k:03d}.jpg"
         cmd = [
             "ffmpeg",
             "-y",
@@ -346,16 +366,57 @@ def extract_frames(video: Path, out_dir: Path, num_frames: int = 5) -> list[Path
             "-vframes",
             "1",
             "-q:v",
-            "2",  # higher quality jpeg
+            "5",
             "-vf",
-            f"scale='min({FRAME_MAX_WIDTH},iw)':-2",
+            f"scale={frame_sampling.THUMB_WIDTH}:-2",
             "-loglevel",
             "error",
             str(out),
         ]
         subprocess.run(cmd, capture_output=True)
         if out.exists() and out.stat().st_size > 0:
-            frames.append(out)
+            thumbs.append(out)
+            kept_ts.append(ts)
+    return thumbs, kept_ts
+
+
+def extract_frames(
+    video: Path,
+    out_dir: Path,
+    num_frames: int = 5,
+    duration: float | None = None,
+    sampling: str = "diverse",
+) -> list[tuple[Path, float]]:
+    """Extract num_frames JPEGs and return (path, timestamp) pairs.
+
+    'diverse' samples a pool of low-res thumbnails across the clip and keeps
+    the most mutually different, sharpest moments (frame_sampling module);
+    'even' is the legacy evenly-spaced sampling. Static clips, short clips,
+    and any selection failure fall back to even spacing, so the function
+    always returns up to num_frames frames.
+    """
+    if duration is None:
+        duration = get_metadata(video)["duration_seconds"]
+    if duration < 0.5:
+        return []
+    if duration < 3:
+        num_frames = min(num_frames, 3)
+
+    timestamps = frame_sampling.even_timestamps(duration, num_frames)
+    if sampling == "diverse" and duration >= frame_sampling.SHORT_CLIP_EVEN_CUTOFF:
+        cand_ts = frame_sampling.candidate_timestamps(duration)
+        thumbs, kept_ts = _extract_candidate_pool(video, out_dir, cand_ts)
+        chosen = frame_sampling.choose_frame_timestamps(thumbs, kept_ts, num_frames)
+        for t in thumbs:
+            t.unlink(missing_ok=True)
+        if chosen:
+            timestamps = chosen
+
+    frames: list[tuple[Path, float]] = []
+    for i, ts in enumerate(timestamps):
+        out = out_dir / f"frame_{i:02d}.jpg"
+        if _extract_one_frame(video, ts, out, FRAME_MAX_WIDTH):
+            frames.append((out, ts))
     return frames
 
 
@@ -897,12 +958,15 @@ def process_one_video(
     structured: dict[str, Any] = {}
     description: str = ""
     try:
-        frames = extract_frames(video, tmp_frames, num_frames=5)
-        duration = metadata["duration_seconds"]
-        num = len(frames)
-        frame_timestamps = (
-            [duration * (i + 1) / (num + 1) for i in range(num)] if num else []
+        frame_pairs = extract_frames(
+            video,
+            tmp_frames,
+            num_frames=5,
+            duration=metadata["duration_seconds"],
+            sampling=opts.frame_sampling,
         )
+        frames = [p for p, _ in frame_pairs]
+        frame_timestamps = [ts for _, ts in frame_pairs]
 
         context = {
             "filename": video.name,

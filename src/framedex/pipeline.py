@@ -495,6 +495,7 @@ class ProcessOptions:
     local_model: str | None
     cost_per_call: float
     no_whisper_prompt: bool
+    frame_sampling: str = "diverse"  # 'diverse' | 'even' (legacy)
     whisper_fixes: list[tuple[re.Pattern[str], str]] = field(default_factory=list)
     max_duration_seconds: int | None = None
 

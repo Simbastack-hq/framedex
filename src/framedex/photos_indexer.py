@@ -249,6 +249,15 @@ def main() -> int:
         default=str(WHISPER_FIXES_DEFAULT),
         help=f"Path to JSON regex fixes (default: {WHISPER_FIXES_DEFAULT})",
     )
+    parser.add_argument(
+        "--frame-sampling",
+        choices=["diverse", "even"],
+        default="diverse",
+        help="How vision frames are picked. 'diverse' (default) samples "
+        "small thumbnails across the clip and keeps the most mutually "
+        "different, sharpest moments. 'even' is the legacy evenly-spaced "
+        "sampling.",
+    )
     args = parser.parse_args()
 
     library = Path(args.library).expanduser().resolve()
@@ -409,6 +418,7 @@ def main() -> int:
         local_model=args.local_model,
         cost_per_call=float(cost_per_call),
         no_whisper_prompt=args.no_whisper_prompt,
+        frame_sampling=args.frame_sampling,
         whisper_fixes=whisper_fixes,
         max_duration_seconds=max_duration_seconds,
     )

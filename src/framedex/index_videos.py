@@ -636,6 +636,7 @@ def _build_vision_prompt(
     context: dict[str, Any],
     folder_context: str,
     include_paths: bool,
+    timestamps: list[float] | None = None,
 ) -> str:
     """Shared prompt builder. include_paths=True for CLI mode (Claude Code reads
     via its Read tool); False for direct API / local where images go as
@@ -660,12 +661,27 @@ def _build_vision_prompt(
     if folder_context:
         folder_block = f"\nDrive/folder context (use this to interpret the scene):\n{folder_context}\n"
 
-    intro = (
-        f"Read these {len(frames)} JPEG frames in order, then analyze the video clip."
-        if include_paths
-        else f"Analyze this short video clip based on these {len(frames)} frames "
-        "(evenly sampled across the clip)."
-    )
+    sampled_at = ""
+    if timestamps:
+        sampled_at = ", ".join(_fmt_time(t) for t in timestamps)
+
+    if include_paths:
+        intro = (
+            f"Read these {len(frames)} JPEG frames in order, then analyze "
+            "the video clip."
+        )
+        if sampled_at:
+            intro += f" Frames were sampled at {sampled_at}."
+    elif sampled_at:
+        intro = (
+            f"Analyze this short video clip based on these {len(frames)} "
+            f"frames, sampled at {sampled_at}."
+        )
+    else:
+        intro = (
+            f"Analyze this short video clip based on these {len(frames)} frames "
+            "(evenly sampled across the clip)."
+        )
 
     paths_block = ""
     if include_paths:
@@ -985,20 +1001,32 @@ def process_one_video(
         if opts.backend == "api":
             assert ctx.api_client is not None
             prompt = _build_vision_prompt(
-                frames, context, str(clip_context), include_paths=False
+                frames,
+                context,
+                str(clip_context),
+                include_paths=False,
+                timestamps=frame_timestamps,
             )
             raw = describe_frames_api(
                 ctx.api_client, frames, prompt, opts.vision_model_id
             )
         elif opts.backend == "cli":
             prompt = _build_vision_prompt(
-                frames, context, str(clip_context), include_paths=True
+                frames,
+                context,
+                str(clip_context),
+                include_paths=True,
+                timestamps=frame_timestamps,
             )
             raw = describe_frames_cli(frames, prompt, opts.vision_model_id)
             time.sleep(CLI_INTER_CALL_DELAY)
         else:  # local
             prompt = _build_vision_prompt(
-                frames, context, str(clip_context), include_paths=False
+                frames,
+                context,
+                str(clip_context),
+                include_paths=False,
+                timestamps=frame_timestamps,
             )
             raw = describe_frames_local(
                 frames, prompt, opts.local_base_url, opts.local_model
@@ -1272,6 +1300,15 @@ def main() -> int:
         f"no fixes. Schema: "
         f'{{"fixes": [{{"pattern": "...", "replace": "..."}}]}}.',
     )
+    parser.add_argument(
+        "--frame-sampling",
+        choices=["diverse", "even"],
+        default="diverse",
+        help="How vision frames are picked. 'diverse' (default) samples "
+        "small thumbnails across the clip and keeps the most mutually "
+        "different, sharpest moments. 'even' is the legacy evenly-spaced "
+        "sampling.",
+    )
     args = parser.parse_args()
 
     root = Path(args.root).expanduser().resolve()
@@ -1355,6 +1392,7 @@ def main() -> int:
         local_model=args.local_model,
         cost_per_call=float(cost_per_call),
         no_whisper_prompt=args.no_whisper_prompt,
+        frame_sampling=args.frame_sampling,
         whisper_fixes=whisper_fixes,
         max_duration_seconds=max_duration_seconds,
     )

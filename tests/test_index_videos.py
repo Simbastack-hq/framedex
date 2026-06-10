@@ -293,3 +293,34 @@ def test_short_clip_three_frame_clamp_still_applies(
         Path("clip.mov"), tmp_path, num_frames=5, duration=2.0, sampling="diverse"
     )
     assert len(pairs) == 3
+
+
+def test_vision_prompt_includes_frame_timestamps() -> None:
+    ctx = {
+        "filename": "clip.mov",
+        "parent_folder": "drone",
+        "duration_seconds": 60.0,
+        "transcript": "",
+    }
+    prompt = index_videos._build_vision_prompt(
+        [Path("f0.jpg"), Path("f1.jpg")],
+        ctx,
+        "",
+        include_paths=False,
+        timestamps=[3.0, 41.0],
+    )
+    assert "00:00:03" in prompt and "00:00:41" in prompt
+    assert "evenly sampled" not in prompt
+
+
+def test_vision_prompt_without_timestamps_keeps_legacy_wording() -> None:
+    ctx = {
+        "filename": "clip.mov",
+        "parent_folder": "drone",
+        "duration_seconds": 60.0,
+        "transcript": "",
+    }
+    prompt = index_videos._build_vision_prompt(
+        [Path("f0.jpg")], ctx, "", include_paths=False
+    )
+    assert "evenly sampled across the clip" in prompt

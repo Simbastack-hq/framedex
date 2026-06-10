@@ -5,8 +5,6 @@ Python lists. The cv2-dependent signature step is exercised indirectly via
 monkeypatching in the choose_frame_timestamps tests.
 """
 
-from pathlib import Path
-
 import pytest
 
 from framedex import frame_sampling as fs
@@ -69,3 +67,44 @@ def test_select_diverse_returns_sorted_and_deterministic() -> None:
 def test_select_diverse_handles_num_ge_pool() -> None:
     d = _dist([0.0, 1.0])
     assert fs.select_diverse(d, 5) == [0, 1]
+
+
+def test_brightness_gate_drops_dark_and_blown() -> None:
+    mean_vs = [10.0, 128.0, 250.0, 60.0]
+    assert fs.brightness_gate(mean_vs) == [1, 3]
+
+
+def test_is_static_thresholds_on_max_distance() -> None:
+    assert fs.is_static([[0.0, 0.01], [0.01, 0.0]]) is True
+    assert fs.is_static([[0.0, 0.2], [0.2, 0.0]]) is False
+
+
+def test_sharpness_swap_picks_sharper_near_duplicate() -> None:
+    # Candidates 0,1,2 nearly identical (d=0.01); 1 selected but 2 is sharper.
+    d = [
+        [0.00, 0.01, 0.01, 0.90],
+        [0.01, 0.00, 0.01, 0.90],
+        [0.01, 0.01, 0.00, 0.90],
+        [0.90, 0.90, 0.90, 0.00],
+    ]
+    sharp = [5.0, 5.0, 50.0, 5.0]
+    assert fs.sharpness_swap([1, 3], d, sharp) == [2, 3]
+
+
+def test_sharpness_swap_refuses_content_change() -> None:
+    # Neighbor 2 is sharper but visually different (d=0.5): no swap.
+    d = [
+        [0.00, 0.01, 0.50],
+        [0.01, 0.00, 0.50],
+        [0.50, 0.50, 0.00],
+    ]
+    sharp = [5.0, 5.0, 50.0]
+    assert fs.sharpness_swap([1], d, sharp) == [1]
+
+
+def test_sharpness_swap_never_collides_with_another_pick() -> None:
+    # 0 and 1 are near-dups, both selected; 1 sharper but already a pick,
+    # so 0 must stay 0 rather than collapse the result to one frame.
+    d = [[0.00, 0.01], [0.01, 0.00]]
+    sharp = [5.0, 50.0]
+    assert fs.sharpness_swap([0, 1], d, sharp) == [0, 1]

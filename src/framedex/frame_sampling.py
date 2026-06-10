@@ -10,8 +10,6 @@ cv2 is imported lazily inside the signature step, mirroring face_db.py.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 # One candidate thumbnail every ~2s of footage, clamped: POOL_MAX caps the
 # worst-case pool cost (~96 fast-seeks ≈ 26s); POOL_MIN keeps short clips
 # meaningfully sampled.
@@ -82,3 +80,38 @@ def select_diverse(dist: list[list[float]], num_frames: int) -> list[int]:
                 best, best_min = i, d_min
         selected.append(best)
     return sorted(selected)
+
+
+def brightness_gate(mean_vs: list[float]) -> list[int]:
+    """Indices of candidates whose mean V is within the usable range."""
+    return [i for i, v in enumerate(mean_vs) if GATE_V_DARK <= v <= GATE_V_BLOWN]
+
+
+def is_static(dist: list[list[float]]) -> bool:
+    """True when no candidate pair differs enough to justify selection."""
+    return max(max(row) for row in dist) < STATIC_GUARD
+
+
+def sharpness_swap(
+    selected: list[int], dist: list[list[float]], sharpness: list[float]
+) -> list[int]:
+    """Replace each pick with its sharpest near-duplicate temporal neighbor
+    (±1, distance < NEAR_DUP_D). Never swaps onto another pick and never
+    crosses into different content."""
+    result = list(selected)
+    taken = set(selected)
+    for pos, idx in enumerate(result):
+        best = idx
+        for nb in (idx - 1, idx + 1):
+            if (
+                0 <= nb < len(sharpness)
+                and nb not in taken
+                and dist[idx][nb] < NEAR_DUP_D
+                and sharpness[nb] > sharpness[best]  # strict: ties keep the pick
+            ):
+                best = nb
+        if best != idx:
+            taken.discard(idx)
+            taken.add(best)
+            result[pos] = best
+    return sorted(result)

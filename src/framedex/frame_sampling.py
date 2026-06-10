@@ -10,6 +10,8 @@ cv2 is imported lazily inside the signature step, mirroring face_db.py.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 # One candidate thumbnail every ~2s of footage, clamped: POOL_MAX caps the
 # worst-case pool cost (~96 fast-seeks ≈ 26s); POOL_MIN keeps short clips
 # meaningfully sampled.
@@ -115,3 +117,72 @@ def sharpness_swap(
             taken.add(best)
             result[pos] = best
     return sorted(result)
+
+
+# H-S histogram bins. V (brightness) is deliberately excluded from the
+# signature: phone auto-exposure breathing alone otherwise registers as
+# "content change" at or above the level of a genuine pan.
+_H_BINS = 16
+_S_BINS = 16
+
+
+def _signatures(
+    thumb_paths: list[Path],
+) -> tuple[list[object], list[float], list[float]]:
+    """Per-thumbnail (H-S histogram, sharpness, mean V). cv2 imported
+    lazily — a base dep at runtime, absent in CI."""
+    import cv2
+
+    hists: list[object] = []
+    sharpness: list[float] = []
+    mean_v: list[float] = []
+    for p in thumb_paths:
+        img = cv2.imread(str(p))
+        if img is None:
+            raise ValueError(f"unreadable thumbnail: {p}")
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        hist = cv2.calcHist([hsv], [0, 1], None, [_H_BINS, _S_BINS], [0, 180, 0, 256])
+        cv2.normalize(hist, hist)
+        hists.append(hist)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        sharpness.append(float(cv2.Laplacian(gray, cv2.CV_64F).var()))
+        mean_v.append(float(hsv[:, :, 2].mean()))
+    return hists, sharpness, mean_v
+
+
+def pairwise_distances(hists: list[object]) -> list[list[float]]:
+    """Bhattacharyya distance matrix between H-S histograms (0 = identical)."""
+    import cv2
+
+    n = len(hists)
+    dist = [[0.0] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(i + 1, n):
+            d = float(cv2.compareHist(hists[i], hists[j], cv2.HISTCMP_BHATTACHARYYA))
+            dist[i][j] = dist[j][i] = d
+    return dist
+
+
+def choose_frame_timestamps(
+    thumb_paths: list[Path],
+    thumb_timestamps: list[float],
+    num_frames: int,
+) -> list[float] | None:
+    """Pick num_frames timestamps maximizing visual diversity, or None to
+    signal "fall back to even spacing" (static clip, gated-out pool, or any
+    signature failure). Never raises."""
+    try:
+        hists, sharpness, mean_v = _signatures(thumb_paths)
+        kept = brightness_gate(mean_v)
+        if len(kept) < GATE_MIN_FACTOR * num_frames:
+            return None
+        kept_hists = [hists[i] for i in kept]
+        dist = pairwise_distances(kept_hists)
+        if is_static(dist):
+            return None
+        kept_sharp = [sharpness[i] for i in kept]
+        picks = select_diverse(dist, num_frames)
+        picks = sharpness_swap(picks, dist, kept_sharp)
+        return sorted(thumb_timestamps[kept[i]] for i in picks)
+    except Exception:
+        return None

@@ -61,3 +61,14 @@ Transcripts still work; they just won't have speaker labels.
 
 Part of [framedex](../README.md), an open-source project from
 **[SimbaStack](https://simbastack.com/)**.
+
+## Frame sampling
+
+`fdx` picks the 5 vision frames by sampling small thumbnails across the clip
+(one per ~2s, capped at 96) and keeping the most mutually different, sharpest
+moments — so a clip that pans from a beach to a street gets frames from both,
+not five near-duplicates. Brightness is excluded from the difference metric so
+auto-exposure drift doesn't count as change. Static clips, clips under 20s,
+and night footage that fails the brightness gates keep the legacy evenly-
+spaced sampling, as does `--frame-sampling even`. Pool size and thresholds
+are documented constants in `src/framedex/frame_sampling.py`.

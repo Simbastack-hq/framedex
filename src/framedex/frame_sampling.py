@@ -11,6 +11,7 @@ cv2 is imported lazily inside the signature step, mirroring face_db.py.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 # One candidate thumbnail every ~2s of footage, clamped: POOL_MAX caps the
 # worst-case pool cost (~96 fast-seeks ≈ 26s); POOL_MIN keeps short clips
@@ -128,12 +129,12 @@ _S_BINS = 16
 
 def _signatures(
     thumb_paths: list[Path],
-) -> tuple[list[object], list[float], list[float]]:
+) -> tuple[list[Any], list[float], list[float]]:
     """Per-thumbnail (H-S histogram, sharpness, mean V). cv2 imported
     lazily — a base dep at runtime, absent in CI."""
     import cv2
 
-    hists: list[object] = []
+    hists: list[Any] = []
     sharpness: list[float] = []
     mean_v: list[float] = []
     for p in thumb_paths:
@@ -150,7 +151,7 @@ def _signatures(
     return hists, sharpness, mean_v
 
 
-def pairwise_distances(hists: list[object]) -> list[list[float]]:
+def pairwise_distances(hists: list[Any]) -> list[list[float]]:
     """Bhattacharyya distance matrix between H-S histograms (0 = identical)."""
     import cv2
 

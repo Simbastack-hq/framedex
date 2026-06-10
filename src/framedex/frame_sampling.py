@@ -51,3 +51,34 @@ def candidate_timestamps(duration: float) -> list[float]:
     """Centers of M equal slices of the clip, M clamped to [POOL_MIN, POOL_MAX]."""
     m = max(POOL_MIN, min(POOL_MAX, round(duration / POOL_SECONDS_PER_CANDIDATE)))
     return [(k + 0.5) * duration / m for k in range(m)]
+
+
+def medoid(dist: list[list[float]]) -> int:
+    """Index with the smallest summed distance to all others — the most
+    representative candidate. Ties break to the lowest index (determinism)."""
+    sums = [sum(row) for row in dist]
+    return min(range(len(sums)), key=lambda i: (sums[i], i))
+
+
+def select_diverse(dist: list[list[float]], num_frames: int) -> list[int]:
+    """Greedy farthest-point selection seeded at the medoid.
+
+    The medoid seed resists outlier-chasing (a garbage frame maximally far
+    from everything must beat real content on min-distance to win a slot,
+    not just be extreme). Returns chronologically sorted indices.
+    """
+    n = len(dist)
+    if n <= num_frames:
+        return list(range(n))
+    selected = [medoid(dist)]
+    while len(selected) < num_frames:
+        best = -1
+        best_min = -1.0
+        for i in range(n):
+            if i in selected:
+                continue
+            d_min = min(dist[i][j] for j in selected)
+            if d_min > best_min:  # strict: ties keep the lowest index
+                best, best_min = i, d_min
+        selected.append(best)
+    return sorted(selected)

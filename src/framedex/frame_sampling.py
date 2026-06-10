@@ -1,0 +1,53 @@
+"""
+framedex.frame_sampling — content-aware selection of vision frames.
+
+Picks the N most mutually different, sharpest moments of a clip from a pool
+of cheap low-res thumbnails (design: docs/superpowers/specs/
+2026-06-10-diverse-frame-sampling-design.md). Selection math is pure Python
+over plain lists so its tests stay hermetic (CI installs no cv2/numpy);
+cv2 is imported lazily inside the signature step, mirroring face_db.py.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+# One candidate thumbnail every ~2s of footage, clamped: POOL_MAX caps the
+# worst-case pool cost (~96 fast-seeks ≈ 26s); POOL_MIN keeps short clips
+# meaningfully sampled.
+POOL_SECONDS_PER_CANDIDATE = 2.0
+POOL_MIN = 20
+POOL_MAX = 96
+# 160px thumbnails are enough for H-S histograms and blur scoring while
+# keeping decode and I/O negligible.
+THUMB_WIDTH = 160
+# Below this duration the candidate pool costs more than it can return over
+# plain even spacing (5 seeks vs 20+); keep legacy behavior.
+SHORT_CLIP_EVEN_CUTOFF = 20.0
+# Mean-V brightness gates: drop near-black (lens cap, pocket) and blown
+# (pointed-at-the-sun) candidates — a blown frame is maximally distant from
+# everything and would otherwise always win a diversity slot.
+GATE_V_DARK = 20.0
+GATE_V_BLOWN = 245.0
+# If gating leaves fewer than this multiple of num_frames, the clip is too
+# dark/degenerate to select from; fall back to even spacing.
+GATE_MIN_FACTOR = 2
+# Max pairwise H-S distance below which the clip is visually static and
+# "diversity" would just amplify noise; fall back to even spacing.
+STATIC_GUARD = 0.05
+# A temporal neighbor closer than this to a pick is "the same moment"; the
+# sharpest member of the group represents it. (H-S metric, V excluded, so
+# auto-exposure breathing does not register as content change.)
+NEAR_DUP_D = 0.10
+
+
+def even_timestamps(duration: float, num_frames: int) -> list[float]:
+    """The legacy evenly-spaced formula. Must never change: --frame-sampling
+    even and several fallback paths pin this exact output."""
+    return [duration * (i + 1) / (num_frames + 1) for i in range(num_frames)]
+
+
+def candidate_timestamps(duration: float) -> list[float]:
+    """Centers of M equal slices of the clip, M clamped to [POOL_MIN, POOL_MAX]."""
+    m = max(POOL_MIN, min(POOL_MAX, round(duration / POOL_SECONDS_PER_CANDIDATE)))
+    return [(k + 0.5) * duration / m for k in range(m)]

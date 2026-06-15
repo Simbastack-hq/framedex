@@ -6,6 +6,7 @@ frontmatter/body output, which the pipeline.py extraction must keep
 byte-for-byte identical.
 """
 
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -14,7 +15,7 @@ from typing import Any, cast
 import pytest
 import yaml
 
-from framedex import images, index_videos, pipeline
+from framedex import frame_sampling, images, index_videos, pipeline
 from framedex.index_videos import write_sidecar
 
 METADATA = {
@@ -174,3 +175,152 @@ def test_image_only_run_never_loads_whisper(
     )
     assert index_videos.main() == 0
     assert "whisperx" not in sys.modules
+
+
+# ---------------------------------------------------------------------------
+# extract_frames — (path, timestamp) pairs + sampling modes
+# ---------------------------------------------------------------------------
+
+
+class _FakeRun:
+    """subprocess.run stand-in: records ffmpeg commands, creates the output
+    file (last arg) so extract_frames sees a successful frame write."""
+
+    def __init__(self, fail_outputs: set[str] | None = None) -> None:
+        self.commands: list[list[str]] = []
+        self.fail_outputs = fail_outputs or set()
+
+    def __call__(self, cmd: list[str], **kwargs: Any) -> Any:
+        self.commands.append(cmd)
+        out = Path(cmd[-1])
+        if out.name not in self.fail_outputs:
+            out.write_bytes(b"jpeg")
+
+        class R:
+            returncode = 0
+
+        return R()
+
+
+def test_extract_frames_even_returns_legacy_timestamp_pairs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _FakeRun()
+    monkeypatch.setattr(subprocess, "run", fake)
+    pairs = index_videos.extract_frames(
+        Path("clip.mov"), tmp_path, num_frames=5, duration=12.0, sampling="even"
+    )
+    assert [ts for _, ts in pairs] == [12.0 * (i + 1) / 6 for i in range(5)]
+    assert all(p.exists() for p, _ in pairs)
+    # 5 full-res seeks, no thumbnail pool.
+    assert len(fake.commands) == 5
+
+
+def test_extract_frames_failed_write_keeps_pairs_aligned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for the timestamp desync bug: a failed middle frame must
+    drop its own timestamp, not shift the others (faces.db frame_time)."""
+    fake = _FakeRun(fail_outputs={"frame_02.jpg"})
+    monkeypatch.setattr(subprocess, "run", fake)
+    pairs = index_videos.extract_frames(
+        Path("clip.mov"), tmp_path, num_frames=5, duration=12.0, sampling="even"
+    )
+    even = [12.0 * (i + 1) / 6 for i in range(5)]
+    assert [ts for _, ts in pairs] == even[:2] + even[3:]
+
+
+def test_extract_frames_short_clip_skips_pool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _FakeRun()
+    monkeypatch.setattr(subprocess, "run", fake)
+    called: list[int] = []
+    monkeypatch.setattr(
+        frame_sampling,
+        "choose_frame_timestamps",
+        lambda *a, **k: called.append(1),
+    )
+    pairs = index_videos.extract_frames(
+        Path("clip.mov"), tmp_path, num_frames=5, duration=10.0, sampling="diverse"
+    )
+    assert not called  # under SHORT_CLIP_EVEN_CUTOFF -> no pool, no selection
+    assert [ts for _, ts in pairs] == [10.0 * (i + 1) / 6 for i in range(5)]
+
+
+def test_extract_frames_diverse_uses_chosen_timestamps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _FakeRun()
+    monkeypatch.setattr(subprocess, "run", fake)
+    monkeypatch.setattr(
+        frame_sampling,
+        "choose_frame_timestamps",
+        lambda paths, ts, n: [3.0, 17.0, 31.0, 44.0, 58.0],
+    )
+    pairs = index_videos.extract_frames(
+        Path("clip.mov"), tmp_path, num_frames=5, duration=60.0, sampling="diverse"
+    )
+    assert [ts for _, ts in pairs] == [3.0, 17.0, 31.0, 44.0, 58.0]
+    # Pool thumbnails (30 for a 60s clip) + 5 full-res frames.
+    assert len(fake.commands) == 30 + 5
+    # Thumbnails were cleaned up after selection.
+    assert not list(tmp_path.glob("cand_*.jpg"))
+
+
+def test_extract_frames_diverse_falls_back_when_selection_declines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _FakeRun()
+    monkeypatch.setattr(subprocess, "run", fake)
+    monkeypatch.setattr(
+        frame_sampling,
+        "choose_frame_timestamps",
+        lambda paths, ts, n: None,
+    )
+    pairs = index_videos.extract_frames(
+        Path("clip.mov"), tmp_path, num_frames=5, duration=60.0, sampling="diverse"
+    )
+    assert [ts for _, ts in pairs] == [60.0 * (i + 1) / 6 for i in range(5)]
+
+
+def test_short_clip_three_frame_clamp_still_applies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _FakeRun()
+    monkeypatch.setattr(subprocess, "run", fake)
+    pairs = index_videos.extract_frames(
+        Path("clip.mov"), tmp_path, num_frames=5, duration=2.0, sampling="diverse"
+    )
+    assert len(pairs) == 3
+
+
+def test_vision_prompt_includes_frame_timestamps() -> None:
+    ctx = {
+        "filename": "clip.mov",
+        "parent_folder": "drone",
+        "duration_seconds": 60.0,
+        "transcript": "",
+    }
+    prompt = index_videos._build_vision_prompt(
+        [Path("f0.jpg"), Path("f1.jpg")],
+        ctx,
+        "",
+        include_paths=False,
+        timestamps=[3.0, 41.0],
+    )
+    assert "00:00:03" in prompt and "00:00:41" in prompt
+    assert "evenly sampled" not in prompt
+
+
+def test_vision_prompt_without_timestamps_keeps_legacy_wording() -> None:
+    ctx = {
+        "filename": "clip.mov",
+        "parent_folder": "drone",
+        "duration_seconds": 60.0,
+        "transcript": "",
+    }
+    prompt = index_videos._build_vision_prompt(
+        [Path("f0.jpg")], ctx, "", include_paths=False
+    )
+    assert "evenly sampled across the clip" in prompt

@@ -8,6 +8,14 @@ public surface (CLI flags, sidecar schema) can still shift between minor version
 
 ### Added
 
+- **Content-diverse frame sampling** (issue #5). The 5 vision frames are now the
+  most mutually different, sharpest moments of a clip (H-S histogram
+  farthest-point selection over a fast-seek thumbnail pool) instead of
+  evenly-spaced grabs, so a clip that pans across scenes no longer sends five
+  near-duplicates. Exactly 5 frames as before — vision cost is unchanged — and
+  static/short clips keep the old even spacing. `--frame-sampling even`
+  restores legacy behavior. No new dependencies.
+
 - **Still-photo indexing.** `fdx` now indexes photos (RAW / JPEG / HEIC) alongside
   video in a single pass. `--media images|videos|all` scopes a run. Photos get the
   same `.description.md` sidecars — an EXIF `camera:` block (make, lens, focal
@@ -17,6 +25,12 @@ public surface (CLI flags, sidecar schema) can still shift between minor version
   embedded JPEG preview (no libraw); EXIF orientation is normalized.
 - `fdx-query --media image|video` filter (accepts the plural `images`/`videos`
   too); `fdx-master` reports media-neutral counts.
+
+### Fixed
+
+- Frame timestamps recorded for face detection (`faces.db` `frame_time`) now
+  come from the actual extraction instead of being re-derived, fixing a silent
+  desync when a frame write failed mid-clip.
 
 ### Changed
 

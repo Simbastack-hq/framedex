@@ -87,7 +87,10 @@ fdx-master  /Volumes/SSD-2024
 1. `ffprobe` → metadata (duration, codec, resolution, creation date)
 2. `exiftool` → GPS lat/lon/altitude
 3. Nominatim → reverse-geocoded place name (rate-limited 1/sec, polite UA)
-4. `ffmpeg` → 5 evenly-spaced JPEG frames (≤1920px wide)
+4. `ffmpeg` → 5 content-diverse JPEG frames (≤1920px wide): small thumbnails
+   are sampled across the clip and the 5 most mutually different, sharpest
+   moments are kept (static or short clips keep plain even spacing;
+   `--frame-sampling even` restores the legacy behavior)
 5. `ffmpeg` → mono 16k WAV
 6. WhisperX → Whisper transcribe + word-level alignment + pyannote diarization
 7. WhisperX translate mode → English translation (non-English only)
@@ -199,6 +202,7 @@ Album/person/date filters, the sidecar mirror layout, Photos-side frontmatter, a
 | `--no-faces` | Skip face detection + embeddings |
 | `--no-geocode` | Skip Nominatim reverse geocoding (GPS still recorded) |
 | `--max-duration MINUTES` | Skip clips longer than N minutes (default: 30; 0 = no limit) |
+| `--frame-sampling diverse\|even` | How the 5 vision frames are picked (default: diverse; `even` = legacy evenly-spaced) |
 | `--exclude PATTERN` | Skip paths matching substring (repeatable) |
 | `--backend cli\|api\|local` | Vision backend (see below) |
 | `--vision-model haiku\|sonnet` | Claude model for `cli`/`api`. Default `haiku` |
@@ -250,7 +254,6 @@ fdx-query /Volumes/SSD-2024 --place-contains California --language es
 
 ## Known limitations
 
-- Frame sampling is evenly-spaced, not scene-detected
 - pyannote diarization degrades on heavy ambient noise (wind, music, crowd)
 - WhisperX runs on CPU on Apple Silicon
 - Face cluster IDs are temporary hashes until the `fdx-faces` labeling tool ships; embeddings are captured now, so no re-indexing will be needed

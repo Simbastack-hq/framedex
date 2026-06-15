@@ -12,7 +12,7 @@ Cross-project, cross-drive. An entire video archive turned into a portable plain
 1. `ffprobe` — metadata
 2. `exiftool` — GPS lat/lon/altitude (iPhone, DJI, drone all supported)
 3. Nominatim — reverse-geocoded place name (rate-limited 1/sec, free, no key)
-4. `ffmpeg` — 5 representative JPEG frames @ 1920px max
+4. `ffmpeg` — 5 content-diverse JPEG frames @ 1920px max (most mutually different, sharpest moments from a thumbnail pool; `--frame-sampling even` for legacy even spacing)
 5. `ffmpeg` — audio extraction → WhisperX transcribe + diarization + alignment
 6. WhisperX translate-mode — English translation for non-English clips
 7. `insightface` (RetinaFace + ArcFace) — face detection + 512-dim embeddings on the same frames
@@ -264,7 +264,6 @@ Run on each drive separately. Sidecars travel with the data; the face DB is cent
 
 ## Known limitations (v1)
 
-- Frame sampling is evenly-spaced, not scene-detected (future: ffmpeg `select=gt(scene,0.4)`)
 - pyannote diarization degrades on heavy ambient noise (wind, music, crowd)
 - WhisperX runs on CPU on Apple Silicon (CTranslate2 doesn't have M-series GPU acceleration yet; 64GB CPU is still plenty)
 - `fdx-faces` (clustering + labeling tool) not built yet — face embeddings are captured but cluster IDs are temporary hashes until that tool ships

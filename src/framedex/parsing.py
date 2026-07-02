@@ -8,7 +8,7 @@ runtime stack.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, TypeGuard
 
 
 def coerce_people_count(value: Any, face_count: int) -> int:
@@ -50,6 +50,16 @@ def coerce_people_count(value: Any, face_count: int) -> int:
         if s in {"none", "no one", "empty", "no people", "no one in frame", ""}:
             return 0
     return 0
+
+
+def is_usable_path(value: Any) -> TypeGuard[str]:
+    """True if a sidecar `path` field is a usable, non-empty string.
+
+    A record whose `path` is missing, blank, or a non-string is not directly
+    usable for output that pipes to a media player. Callers warn and skip such
+    records rather than crash on `Path()` or emit the `.description.md` sidecar
+    path as if it were the media path (issue #14)."""
+    return isinstance(value, str) and bool(value.strip())
 
 
 def is_permission_denied(text: str) -> bool:

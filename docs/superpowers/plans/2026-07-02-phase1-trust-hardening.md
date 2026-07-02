@@ -88,20 +88,22 @@ The sidecar is the resume marker; it must be written **last**.
 
 ## Task 5 — lock down `claude -p` transport (§1.5)
 
-- **pipeline.py** (`describe_frames_cli`): derive `tmp_dir = frames[0].parent`;
-  replace `--permission-mode bypassPermissions` with:
-  ```python
-  "--permission-mode", "dontAsk",
-  "--allowedTools", f"Read({tmp_dir}/**)",
-  ```
+- **pipeline.py** (`describe_frames_cli`): replace `--permission-mode
+  bypassPermissions` with `--permission-mode dontAsk` + `--allowedTools Read`.
   No `--max-turns` (absent from CLI). Keep the `is_permission_denied` guard — a
   denied Read surfaces as a permission-denied text/rc and becomes a retryable
   `vision_error`.
-- **Implementation-time live check** (NOT CI): one real `claude -p` run that
-  attempts a Bash/denied tool under `dontAsk` + scoped Read, confirming it is
-  denied (not silently run) and that a normal frame read still succeeds. If the
-  path-scoped `Read(...)` syntax is rejected, fall back to unscoped
-  `--allowedTools Read` and note it in the README.
+- **Live smoke test — DONE, findings folded in.** Ran real `claude -p` calls:
+  - `dontAsk` + `Read` → frame Read **allowed**, benign Bash `touch` **denied**
+    (marker file never created). ✓
+  - `dontAsk` + `Read(<dir>/**)` (and `Read(<dir>)`, `Read(<dir>/*)`, `**/*`) →
+    **all reads denied** — the CLI does not honor path-scoped Read allowlists.
+  - `default` + `Read` also works, but `dontAsk` is the explicit "deny, never
+    prompt" mode (doesn't rely on headless-prompt-becomes-deny), so we keep it.
+  Conclusion: ship **unscoped `--allowedTools Read`** (the PRD's pre-approved
+  fallback). Residual: the agent can read other local files but cannot execute
+  or write, and its only output is the local sidecar — a far smaller surface
+  than the prior Bash access. Documented in README.
 - **Test** (`tests/test_pipeline.py`): pure argv assertion (subprocess already
   mocked) — built command contains `--permission-mode dontAsk`, a `Read`-scoped
   `--allowedTools`, and does **not** contain `bypassPermissions`.

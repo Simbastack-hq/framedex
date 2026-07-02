@@ -185,6 +185,7 @@ CREATE TABLE IF NOT EXISTS faces (
     inserted_at     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_faces_video ON faces(video_path);
+CREATE INDEX IF NOT EXISTS idx_faces_sidecar ON faces(sidecar_path);
 CREATE INDEX IF NOT EXISTS idx_faces_cluster ON faces(cluster_id);
 CREATE INDEX IF NOT EXISTS idx_faces_person ON faces(person_name);
 
@@ -213,13 +214,38 @@ def write_faces(
     sidecar_path: Path,
     faces: list[DetectedFace],
 ) -> None:
-    """Insert detected faces for a clip into the DB. Removes any prior entries
-    for this video first so re-running with --force replaces cleanly."""
+    """Insert detected faces for a media file into the DB, idempotently.
+
+    Removes any prior rows for this file first — keyed on ``video_path`` OR
+    ``sidecar_path`` — so a re-run replaces cleanly. The OR is load-bearing for
+    fdx-photos: ``--download`` materializes each asset into a fresh mkdtemp per
+    run (so ``video_path`` differs run-to-run) while the mirror ``sidecar_path``
+    is stable; without it, downloaded assets accumulate duplicate rows forever.
+
+    ``member_count`` is recomputed from the ``faces`` table rather than
+    incremented, so repeated runs can't inflate it. Clusters left with no
+    members are reaped unless a user has named them (a label is real work that
+    must survive a re-index)."""
     import struct
 
     now = datetime.now().isoformat(timespec="seconds")
     cur = conn.cursor()
-    cur.execute("DELETE FROM faces WHERE video_path = ?", (str(video_path),))
+    vp, sp = str(video_path), str(sidecar_path)
+
+    # Capture clusters touched by the rows we're about to delete, so we can
+    # recompute their counts afterward. Recomputing only the new clusters would
+    # leave a stale count on a cluster whose last row we just removed.
+    old_ids = {
+        r[0]
+        for r in cur.execute(
+            "SELECT DISTINCT cluster_id FROM faces "
+            "WHERE video_path = ? OR sidecar_path = ?",
+            (vp, sp),
+        )
+    }
+    cur.execute("DELETE FROM faces WHERE video_path = ? OR sidecar_path = ?", (vp, sp))
+
+    new_ids: set[str] = set()
     for f in faces:
         emb_blob = struct.pack(f"{EMBEDDING_DIM}f", *f.embedding)
         cur.execute(
@@ -228,8 +254,8 @@ def write_faces(
             "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 f.cluster_id,
-                str(video_path),
-                str(sidecar_path),
+                vp,
+                sp,
                 f.frame_time_seconds,
                 f.bbox[0],
                 f.bbox[1],
@@ -240,13 +266,31 @@ def write_faces(
                 now,
             ),
         )
-        # Upsert cluster row
+        # Ensure the cluster row exists; do NOT touch member_count here — it's
+        # recomputed below so re-runs can't inflate it.
         cur.execute(
             "INSERT INTO clusters (cluster_id, member_count, created_at, last_seen_at) "
-            "VALUES (?, 1, ?, ?) "
-            "ON CONFLICT(cluster_id) DO UPDATE SET "
-            "member_count = member_count + 1, last_seen_at = excluded.last_seen_at",
+            "VALUES (?, 0, ?, ?) "
+            "ON CONFLICT(cluster_id) DO UPDATE SET last_seen_at = excluded.last_seen_at",
             (f.cluster_id, now, now),
+        )
+        new_ids.add(f.cluster_id)
+
+    affected = old_ids | new_ids
+    if affected:
+        placeholders = ",".join("?" * len(affected))
+        params = tuple(affected)
+        cur.execute(
+            f"UPDATE clusters SET member_count = (SELECT COUNT(*) FROM faces "
+            f"WHERE faces.cluster_id = clusters.cluster_id) "
+            f"WHERE cluster_id IN ({placeholders})",
+            params,
+        )
+        # Reap clusters this write left empty, but never a named one.
+        cur.execute(
+            f"DELETE FROM clusters WHERE member_count = 0 AND person_name IS NULL "
+            f"AND cluster_id IN ({placeholders})",
+            params,
         )
     conn.commit()
 

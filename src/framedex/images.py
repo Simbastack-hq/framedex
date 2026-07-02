@@ -522,10 +522,15 @@ def process_one_image(
             f.unlink(missing_ok=True)
         tmp_dir.rmdir()
 
-    # A "[...]" sentinel means the vision call failed; don't persist a sidecar
-    # (that would permanently skip the photo on re-runs). Retry next time.
-    if not structured and description.startswith("["):
-        print(f"  vision call failed: {description[:200]}")
+    # No structured YAML parsed → the result is unusable. Skip and retry next
+    # run rather than persist a defaults-only sidecar (rating:review, all
+    # "unclear") that would mark the photo indexed forever. Covers both a
+    # transport "[...]" sentinel and a response that carried no parseable fence.
+    if not structured:
+        if description.startswith("["):
+            print(f"  vision call failed: {description[:200]}")
+        else:
+            print("  vision response had no parsable YAML block — will retry next run")
         return pipeline.ProcessResult(sidecar=None, skipped_reason="vision_error")
 
     fm = build_image_frontmatter(
@@ -541,11 +546,15 @@ def process_one_image(
         omit_path=omit_path,
     )
     sidecar = sidecar_path_override or pipeline.sidecar_path(image)
-    sidecar = pipeline.serialize_sidecar(
-        sidecar, fm, image.name, [("Description", description)]
-    )
-    if ctx.face_conn is not None and detected_faces:
+    # Faces first, sidecar last: the sidecar is the resume marker, so it must be
+    # the last thing written for a file — a crash in the gap re-runs the file
+    # cleanly (write_faces deletes prior rows first). Write even when zero faces
+    # were detected so a re-run that now finds none still reaches the DELETE and
+    # clears stale rows. Detection was attempted whenever face_conn is set (the
+    # preview exists past the early no_preview return).
+    if ctx.face_conn is not None:
         face_db.write_faces(ctx.face_conn, image, sidecar, detected_faces)
+    pipeline.serialize_sidecar(sidecar, fm, image.name, [("Description", description)])
 
     return pipeline.ProcessResult(
         sidecar=sidecar,

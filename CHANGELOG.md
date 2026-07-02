@@ -28,6 +28,33 @@ public surface (CLI flags, sidecar schema) can still shift between minor version
 
 ### Fixed
 
+- **Trust hardening — the resumability/idempotency promise now holds under
+  Ctrl-C, re-runs, and hostile input.**
+  - Sidecars and the `_INDEX.*` / folder-summary files are written atomically
+    (temp file + `os.replace`), so an interrupt or disk-full mid-write can no
+    longer leave a truncated, permanently-"indexed" file.
+  - Faces are committed to `faces.db` *before* the sidecar (the sidecar is the
+    resume marker), and face rows are now rewritten even when a re-run detects
+    zero faces — so a crash between the two writes, or a changed detection
+    result, no longer strands stale rows.
+  - `faces.db` is now idempotent: re-runs dedupe on `video_path` **or**
+    `sidecar_path` (fixing duplicate rows for `fdx-photos --download` assets,
+    whose temp path changes each run), `member_count` is recomputed instead of
+    incremented (no more inflation on `--force`), and unnamed zero-member
+    clusters are reaped while user-named ones are kept.
+  - `fdx-photos --since/--until` no longer crashes with a timezone
+    `TypeError` when the library has tz-aware dates or any undated asset.
+  - The `cli` vision backend no longer runs `claude -p` with
+    `bypassPermissions`. It uses `--permission-mode dontAsk` plus a read-only
+    allowlist scoped to the run's frame directory, so untrusted transcript /
+    `.video-context.md` text embedded in the prompt can't drive tool use.
+  - A vision response with no parseable YAML block is retried on the next run
+    (loud stderr line) instead of being silently written as a defaults-only
+    sidecar (`rating: review`, all `unclear`) that skipped the file forever.
+  - `fdx-query` and `fdx-master` now warn and skip a sidecar whose `path` field
+    is missing, blank, or non-string instead of crashing or emitting the
+    `.description.md` path as if it were the media path; Photos-managed assets
+    (which omit `path` by design) are unaffected. Closes #14.
 - Frame timestamps recorded for face detection (`faces.db` `frame_time`) now
   come from the actual extraction instead of being re-derived, fixing a silent
   desync when a frame write failed mid-clip.

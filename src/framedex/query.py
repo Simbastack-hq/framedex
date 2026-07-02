@@ -27,6 +27,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from framedex.parsing import is_usable_path
+
 try:
     import yaml
 except ImportError:
@@ -249,6 +251,7 @@ def main() -> int:
 
     sidecars = sorted(root.rglob("*.description.md"))
     matched: list[dict[str, Any]] = []
+    n_bad_path = 0
     for s in sidecars:
         rec = parse_sidecar(s)
         if rec is None:
@@ -257,10 +260,24 @@ def main() -> int:
         # back to an absolute path so the printed output is usable for piping
         # (xargs, ffplay, etc.). Older sidecars with absolute paths pass through.
         p = rec.get("path")
-        if p and not Path(p).is_absolute():
-            rec["path"] = str(root / p)
+        if is_usable_path(p):
+            if not Path(p).is_absolute():
+                rec["path"] = str(root / p)
+        elif not rec.get("photos_uuid"):
+            # No usable media path and not a Photos-managed asset (which omits
+            # `path` by design) → the record is broken. Warn and skip rather than
+            # crash on Path() or print the sidecar path as if it were the media.
+            print(
+                f"warning: skipping {s}: missing or unusable 'path' field",
+                file=sys.stderr,
+            )
+            n_bad_path += 1
+            continue
         if matches(rec, args):
             matched.append(rec)
+
+    if n_bad_path:
+        print(f"skipped {n_bad_path} sidecar(s) with unusable path", file=sys.stderr)
 
     if args.limit:
         matched = matched[: args.limit]

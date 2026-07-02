@@ -84,6 +84,22 @@ def has_sidecar(media: Path) -> bool:
     return sidecar_path(media).exists()
 
 
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write `text` to `path` atomically: a same-directory temp file, then
+    `os.replace`. Readers and the resume check (`has_sidecar`) never observe a
+    partial file, so a Ctrl-C / crash / disk-full mid-write can't leave a
+    truncated sidecar or index that marks a file permanently indexed.
+
+    The temp is same-directory (`os.replace` is only atomic within one
+    filesystem), dot-prefixed (both discovery walkers skip hidden files, so a
+    stale temp is invisible to discovery and `has_sidecar`), and pid-suffixed
+    (two runs racing on the same root can't collide on one temp path). A stale
+    `.<name>.<pid>.tmp` from a killed run is inert and safe to delete."""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
 # ---------------------------------------------------------------------------
 # GPS + reverse geocoding
 # ---------------------------------------------------------------------------
@@ -338,6 +354,21 @@ def describe_frames_cli(
     env.pop("ANTHROPIC_API_KEY", None)
     env.pop("CLAUDE_API_KEY", None)
 
+    # The prompt embeds untrusted text (up to 800 chars of Whisper transcript
+    # from arbitrary footage + user-editable .video-context.md). The vision task
+    # needs exactly one capability: reading the frame JPEGs. Grant Read only.
+    # `dontAsk` denies anything not on the allowlist without prompting, so an
+    # injected "use Bash to run rm -rf" becomes a denied tool call surfaced as a
+    # retryable vision_error — not an auto-approved Bash (the old
+    # bypassPermissions was arbitrary code execution).
+    #
+    # Verified live against the installed CLI (see the Phase 1 plan smoke test):
+    #   dontAsk + "Read"            -> frame Read allowed, Bash denied  ✓
+    #   dontAsk + "Read(<dir>/**)"  -> ALL reads denied (path-scoping for Read is
+    #                                  not honored by --allowedTools in this CLI)
+    # so we grant unscoped read-only `Read`. Residual: the agent could read other
+    # local files, but it cannot execute anything and its only output is the
+    # local sidecar text — a far smaller surface than the prior Bash access.
     cmd = [
         "claude",
         "-p",
@@ -346,11 +377,10 @@ def describe_frames_cli(
         model_id,
         "--output-format",
         "json",
-        # Headless mode: auto-approve tool uses (Claude Code needs Read to open
-        # the frame JPEGs we created in /tmp). Without this, the CLI returns
-        # "I need permission to read the image frames" as the response text.
         "--permission-mode",
-        "bypassPermissions",
+        "dontAsk",
+        "--allowedTools",
+        "Read",
     ]
 
     try:
@@ -552,5 +582,5 @@ def serialize_sidecar(
     parts = ["---", fm_text, "---", "", f"# {title}"]
     for heading, content in body_sections:
         parts += ["", f"## {heading}", "", content]
-    sidecar.write_text("\n".join(parts) + "\n")
+    atomic_write_text(sidecar, "\n".join(parts) + "\n")
     return sidecar

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import sys
 import types
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -326,6 +326,46 @@ class TestEnumerateAssets:
         out = photos.enumerate_assets(Path("/lib"), since=datetime(2024, 1, 1))
         uuids = {a.uuid for a in out}
         assert uuids == {"D"}  # undated asset cannot satisfy a date bound
+
+    def test_tz_aware_asset_with_naive_since_bound(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """osxphotos returns tz-aware dates in practice; a naive --since bound
+        (from _parse_date on 'YYYY-MM-DD') must not raise on comparison."""
+        aware = _photoinfo(uuid="A", date=datetime(2024, 6, 1, tzinfo=timezone.utc))
+        _FakeDB.canned = [aware]
+        monkeypatch.setattr(
+            photos, "osxphotos", types.SimpleNamespace(PhotosDB=_FakeDB)
+        )
+        out = photos.enumerate_assets(Path("/lib"), since=datetime(2024, 1, 1))
+        assert {a.uuid for a in out} == {"A"}
+
+    def test_naive_asset_with_tz_aware_bound(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        naive = _photoinfo(uuid="N", date=datetime(2024, 6, 1))
+        _FakeDB.canned = [naive]
+        monkeypatch.setattr(
+            photos, "osxphotos", types.SimpleNamespace(PhotosDB=_FakeDB)
+        )
+        out = photos.enumerate_assets(
+            Path("/lib"), until=datetime(2024, 12, 1, tzinfo=timezone.utc)
+        )
+        assert {a.uuid for a in out} == {"N"}
+
+    def test_mixed_aware_and_undated_assets_sort_without_crashing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The sort key must not mix naive datetime.min with aware dates —
+        one undated asset alongside aware ones would otherwise TypeError."""
+        aware = _photoinfo(uuid="A", date=datetime(2024, 6, 1, tzinfo=timezone.utc))
+        undated = _photoinfo(uuid="U", date=None)
+        _FakeDB.canned = [aware, undated]
+        monkeypatch.setattr(
+            photos, "osxphotos", types.SimpleNamespace(PhotosDB=_FakeDB)
+        )
+        out = photos.enumerate_assets(Path("/lib"))  # no bound → undated kept
+        assert {a.uuid for a in out} == {"A", "U"}
 
     def test_no_date_bound_keeps_undated_assets(
         self, monkeypatch: pytest.MonkeyPatch

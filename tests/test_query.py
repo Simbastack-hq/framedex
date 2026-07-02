@@ -206,3 +206,87 @@ def test_query_absolute_path_passthrough(
 
     assert main() == 0
     assert capsys.readouterr().out.strip() == abs_path
+
+
+# --- fail loud on malformed `path` (issue #14) -----------------------------
+
+
+def _write_raw_sidecar(root: Path, name: str, body: str) -> None:
+    (root / f"{name}.description.md").write_text(body)
+
+
+def test_query_skips_non_string_path(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-string `path` (e.g. a bare int) must not crash the whole query on
+    Path(); warn to stderr, skip that record, keep going for the good ones."""
+    _write_raw_sidecar(
+        tmp_path,
+        "bad",
+        "---\nfile: x\npath: 123\nrating: keep\n---\n\n## Description\n\nx\n",
+    )
+    _write_sidecar(tmp_path, "good", "/Volumes/D/good.mov")
+    monkeypatch.setattr(sys, "argv", ["fdx-query", str(tmp_path), "--rating", "keep"])
+
+    assert main() == 0
+    cap = capsys.readouterr()
+    assert cap.out.strip() == "/Volumes/D/good.mov"  # good record still emitted
+    assert "bad.description.md" in cap.err
+    assert "skipped 1" in cap.err
+
+
+def test_query_skips_blank_path(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_raw_sidecar(
+        tmp_path,
+        "blank",
+        '---\nfile: x\npath: "   "\nrating: keep\n---\n\n## Description\n\nx\n',
+    )
+    monkeypatch.setattr(sys, "argv", ["fdx-query", str(tmp_path), "--rating", "keep"])
+    assert main() == 0
+    cap = capsys.readouterr()
+    assert cap.out.strip() == ""  # nothing usable emitted
+    assert "skipped 1" in cap.err
+
+
+def test_query_skips_missing_path_without_photos_uuid(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A folder-mode sidecar always carries `path`; one missing it (and not a
+    Photos-managed asset) is broken — skip rather than print the .md path as if
+    it were the media path."""
+    _write_raw_sidecar(
+        tmp_path, "nopath", "---\nfile: x\nrating: keep\n---\n\n## Description\n\nx\n"
+    )
+    monkeypatch.setattr(sys, "argv", ["fdx-query", str(tmp_path), "--rating", "keep"])
+    assert main() == 0
+    cap = capsys.readouterr()
+    assert cap.out.strip() == ""
+    assert "skipped 1" in cap.err
+
+
+def test_query_keeps_photos_asset_without_path(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """fdx-photos mirror sidecars for downloaded iCloud assets legitimately omit
+    `path` (the original lives in Photos, not on disk) and carry photos_uuid.
+    These must NOT be skipped — they fall back to the sidecar path in output."""
+    _write_raw_sidecar(
+        tmp_path,
+        "photo",
+        "---\nfile: IMG.jpg\nphotos_uuid: ABCD1234\nrating: keep\n---\n\n## Description\n\nx\n",
+    )
+    monkeypatch.setattr(sys, "argv", ["fdx-query", str(tmp_path), "--rating", "keep"])
+    assert main() == 0
+    cap = capsys.readouterr()
+    assert cap.out.strip() == str(tmp_path / "photo.description.md")  # fallback
+    assert "skipped" not in cap.err

@@ -304,6 +304,114 @@ def test_process_one_image_vision_error_writes_no_sidecar(
     assert not pipeline.has_sidecar(img)
 
 
+def _std_image_mocks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Wire the standard monkeypatches for a successful process_one_image run
+    and return the image path."""
+    img = tmp_path / "DSC.jpg"
+    img.write_bytes(b"x")
+    monkeypatch.setattr(images, "get_image_metadata", lambda p: {"size_bytes": 1})
+    monkeypatch.setattr(pipeline, "get_gps", lambda p: {})
+    monkeypatch.setattr(images, "render_preview", lambda img, out: out / "preview.jpg")
+    monkeypatch.setattr("framedex.images.time.sleep", lambda s: None)
+    monkeypatch.setattr(
+        pipeline,
+        "describe_frames_cli",
+        lambda *a, **k: "```yaml\nrating: keep\n```\n\n## Description\n\nx\n",
+    )
+    return img
+
+
+def _face(cluster_id: str = "tmp_aaaa") -> Any:
+    from framedex import face_db
+
+    return face_db.DetectedFace(
+        cluster_id=cluster_id,
+        frame_time_seconds=0.0,
+        bbox=[0, 0, 10, 10],
+        detection_score=0.9,
+        embedding=[0.1] * 512,
+    )
+
+
+def test_process_one_image_writes_faces_before_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sidecar is the resume marker; it MUST be written last. If a crash
+    lands between the two writes, faces are already committed and the file
+    re-runs cleanly (principle 1)."""
+    from framedex import face_db
+
+    img = _std_image_mocks(tmp_path, monkeypatch)
+    conn = face_db.open_db(tmp_path / "faces.db")
+    monkeypatch.setattr(face_db, "detect_faces_in_frames", lambda f, t: [_face()])
+
+    order: list[str] = []
+    real_write_faces = face_db.write_faces
+    real_serialize = pipeline.serialize_sidecar
+
+    def spy_faces(*a: Any, **k: Any) -> Any:
+        order.append("faces")
+        return real_write_faces(*a, **k)
+
+    def spy_sidecar(*a: Any, **k: Any) -> Any:
+        order.append("sidecar")
+        return real_serialize(*a, **k)
+
+    monkeypatch.setattr(face_db, "write_faces", spy_faces)
+    monkeypatch.setattr(pipeline, "serialize_sidecar", spy_sidecar)
+
+    images.process_one_image(
+        img, tmp_path, _opts(), pipeline.ProcessContext(face_conn=conn)
+    )
+    assert order == ["faces", "sidecar"]
+
+
+def test_process_one_image_zero_face_rerun_clears_stale_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A re-run that now detects zero faces must delete the file's prior face
+    rows. Today the write is gated on a non-empty face list, so the DELETE is
+    never reached and stale rows survive forever."""
+    from framedex import face_db
+
+    img = _std_image_mocks(tmp_path, monkeypatch)
+    conn = face_db.open_db(tmp_path / "faces.db")
+    ctx = pipeline.ProcessContext(face_conn=conn)
+
+    monkeypatch.setattr(face_db, "detect_faces_in_frames", lambda f, t: [_face()])
+    images.process_one_image(img, tmp_path, _opts(), ctx)
+    assert conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0] == 1
+
+    # --force reprocessing: sidecar removed, and this time zero faces detected.
+    pipeline.sidecar_path(img).unlink()
+    monkeypatch.setattr(face_db, "detect_faces_in_frames", lambda f, t: [])
+    images.process_one_image(img, tmp_path, _opts(), ctx)
+    assert conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0] == 0
+
+
+def test_process_one_image_no_yaml_fence_writes_no_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A response with prose but no parseable YAML fence (and not a '[' error
+    sentinel) must NOT persist a defaults-only sidecar (rating:review, all
+    'unclear') that permanently skips the file. It retries as a vision_error."""
+    img = tmp_path / "DSC.jpg"
+    img.write_bytes(b"x")
+    monkeypatch.setattr(images, "get_image_metadata", lambda p: {"size_bytes": 1})
+    monkeypatch.setattr(pipeline, "get_gps", lambda p: {})
+    monkeypatch.setattr(images, "render_preview", lambda img, out: out / "preview.jpg")
+    monkeypatch.setattr("framedex.images.time.sleep", lambda s: None)
+    # Model returned prose only — no ```yaml fence, does not start with "[".
+    monkeypatch.setattr(
+        pipeline, "describe_frames_cli", lambda *a, **k: "The photo shows a giraffe."
+    )
+
+    result = images.process_one_image(img, tmp_path, _opts(), pipeline.ProcessContext())
+    assert result.skipped_reason == "vision_error"
+    assert result.sidecar is None
+    assert not pipeline.has_sidecar(img)
+
+
 def test_process_one_image_metadata_override_threads_creation_time(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

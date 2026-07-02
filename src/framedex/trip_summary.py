@@ -26,6 +26,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from framedex.pipeline import atomic_write_text
+
 try:
     import anthropic
     import yaml
@@ -318,7 +320,7 @@ def main() -> int:
         except Exception as e:
             print(f"    ERROR: {e}")
             continue
-        out.write_text(summary + "\n")
+        atomic_write_text(out, summary + "\n")
         print(f"    -> {out.relative_to(root) if folder != root else SUMMARY_FILE}")
 
     return 0

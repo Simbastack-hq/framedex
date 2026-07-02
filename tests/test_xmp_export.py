@@ -124,6 +124,23 @@ def test_build_xmp_is_valid_parseable_xml() -> None:
     minidom.parseString(xmp)  # raises if not well-formed
 
 
+def test_build_xmp_strips_xml_forbidden_control_chars() -> None:
+    """Keywords/scene come from an LLM (local models included). A stray C0
+    control char would make the XMP not-well-formed and Lightroom would silently
+    reject it — so those chars are dropped and the document is always parseable."""
+    import xml.dom.minidom as minidom
+
+    xmp = xmp_export.build_xmp(
+        _fm(keywords=["lion\x01cub", "gold\x0chour"]), "Dawn\x1blight over the plain."
+    )
+    minidom.parseString(xmp)  # must be well-formed
+    for bad in ("\x01", "\x0c", "\x1b"):
+        assert bad not in xmp
+    # surrounding text survives, only the control char is removed
+    assert "<rdf:li>lioncub</rdf:li>" in xmp
+    assert "Dawnlight over the plain." in xmp
+
+
 # --- naming ----------------------------------------------------------------
 
 

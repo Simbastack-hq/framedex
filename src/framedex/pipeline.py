@@ -96,7 +96,10 @@ def atomic_write_text(path: Path, text: str) -> None:
     (two runs racing on the same root can't collide on one temp path). A stale
     `.<name>.<pid>.tmp` from a killed run is inert and safe to delete."""
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(text)
+    # Explicit utf-8 (not the platform default) so the bytes on disk are
+    # locale-independent — fdx-xmp hashes the payload it writes and compares it
+    # to the file's bytes on re-run, which only holds if the encoding is fixed.
+    tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
 
 

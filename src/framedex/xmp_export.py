@@ -52,6 +52,17 @@ _SKIP_SCENE_TYPES = {"", "unclear", "other"}
 
 _SCENE_RE = re.compile(r"\*\*Scene:\*\*\s*(.+)")
 
+# Characters XML 1.0 forbids even escaped (C0 controls except tab/newline/CR).
+# Keywords/scene come from an LLM, so a stray one would make the .xmp
+# not-well-formed and Lightroom would silently reject it — strip them.
+_XML_INVALID_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _xml_text(s: str) -> str:
+    """Escape a string for XML element text, first dropping the control
+    characters XML 1.0 forbids, so the payload is always well-formed."""
+    return escape(_XML_INVALID_RE.sub("", s))
+
 
 # ---------------------------------------------------------------------------
 # Sidecar reading (local: also pulls the body's Scene sentence, which
@@ -130,12 +141,12 @@ def build_xmp(frontmatter: dict[str, Any], scene: str) -> str:
 
     tags = _subject_tags(frontmatter)
     if tags:
-        bag = "".join(f"<rdf:li>{escape(t)}</rdf:li>" for t in tags)
+        bag = "".join(f"<rdf:li>{_xml_text(t)}</rdf:li>" for t in tags)
         lines.append(f"   <dc:subject><rdf:Bag>{bag}</rdf:Bag></dc:subject>")
     if scene:
         lines.append(
             "   <dc:description><rdf:Alt>"
-            f'<rdf:li xml:lang="x-default">{escape(scene)}</rdf:li>'
+            f'<rdf:li xml:lang="x-default">{_xml_text(scene)}</rdf:li>'
             "</rdf:Alt></dc:description>"
         )
 

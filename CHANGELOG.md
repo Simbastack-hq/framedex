@@ -8,6 +8,21 @@ public surface (CLI flags, sidecar schema) can still shift between minor version
 
 ### Added
 
+- **`fdx-xmp` — get framedex ratings into Lightroom.** A new standalone command
+  that projects the rating, keywords, and one-line scene caption from
+  `.description.md` sidecars into standard `.xmp` sidecars next to proprietary-RAW
+  originals, so Lightroom Classic / Bridge pick them up via *Read Metadata from
+  Files*. `keep`/`review`/`cull` → 3★/2★/1★, `cull` also gets a Red label;
+  keywords + scene_type → `dc:subject`; the Scene sentence → `dc:description`.
+  It's a **regenerable view** (delete every `.xmp` and re-run) and strictly
+  non-destructive: it never edits an original and never overwrites a `.xmp` it
+  didn't write — a foreign or hand-edited sidecar is reported as a conflict and
+  skipped (ownership tracked by a content hash in `_XMP_MANIFEST.json`).
+  `--dry-run` previews. Pure stdlib, no new dependency. Scope in v1 is
+  proprietary RAW → Lightroom (`.dng` and JPEG/HEIC/TIFF embed metadata in-file,
+  which framedex never touches).
+
+
 - **Content-diverse frame sampling** (issue #5). The 5 vision frames are now the
   most mutually different, sharpest moments of a clip (H-S histogram
   farthest-point selection over a fast-seek thumbnail pool) instead of

@@ -14,10 +14,15 @@ originals. XMP is a **regenerable view** — delete every `.xmp`, re-run, get th
 back. Originals and foreign `.xmp` files are never touched.
 
 ```
-fdx-xmp /Volumes/SSD-2024                 # RAW files with sidecars (default)
-fdx-xmp /Volumes/SSD-2024 --all-files     # every image format
+fdx-xmp /Volumes/SSD-2024                 # proprietary-RAW files with sidecars
 fdx-xmp /Volumes/SSD-2024 --dry-run       # print would-write list, write nothing
 ```
+
+**Scope decision (Codex plan review): `--all-files` is CUT from Phase 2.** The
+99% value is proprietary-RAW → Lightroom Classic. `--all-files` would pull in
+JPEG/HEIC/TIFF/DNG semantics, other-editor (darktable/digiKam) naming, and the
+stem-collision matrix for marginal reach. The export set is always
+`XMP_SIDECAR_EXTENSIONS`; re-adding `--all-files` later is a small follow-up.
 
 ## Constants (module-level, one-line comments)
 
@@ -41,33 +46,40 @@ same split as `query.parse_sidecar`) **plus** the body's `**Scene:**` sentence
   only (not Subjects/Composition lines).
 
 ### Task 2 — XMP payload (`build_xmp(frontmatter, scene) -> str`)
-Stdlib RDF/XML via `xml.sax.saxutils.escape`. `xmp:Rating` from `RATING_MAP`
-(default 2 for an unknown/missing rating — matches the sidecar default `review`);
-`xmp:Label="Red"` only for `cull`; `dc:subject` rdf:Bag = `keywords` +
-`scene_type` (deduped, non-empty, `unclear`/`other` scene_type dropped);
+Stdlib RDF/XML via `xml.sax.saxutils.escape`. `xmp:Rating` from `RATING_MAP`;
+**an unknown/missing rating is not guessed** — the record is warned+skipped
+(real sidecars always carry keep/review/cull; a missing one means a malformed
+sidecar). `xmp:Label="Red"` only for `cull`; `dc:subject` rdf:Bag = `keywords`
++ `scene_type` (deduped, non-empty, `unclear`/`other` scene_type dropped);
 `dc:description` x-default alt = the one Scene sentence (omit the block if empty);
 `xmp:CreatorTool = CREATOR_TOOL`.
 - Tests: golden byte-comparison per rating (keep/review/cull); keywords escaped
   (`&`, `<`); empty keywords → no `dc:subject`; empty scene → no `dc:description`;
-  `scene_type: unclear` not added to the bag.
+  `scene_type: unclear` not added to the bag; non-ASCII scene round-trips as
+  UTF-8 bytes.
 
-### Task 3 — file targeting
+### Task 3 — file targeting (pre-pass, not streaming)
 For each sidecar, the original is `sidecar.parent / name-without(".description.md")`
-(the sidecar sits next to it). Skip when: `media_type == "video"`;
-`photos_uuid` present (Photos-managed mirror sidecar); the original's extension is
-not in the active set (`XMP_SIDECAR_EXTENSIONS`, or all image exts with
-`--all-files`). XMP target = `original.with_suffix(".xmp")` (`DSC_1.RAF` →
-`DSC_1.xmp`).
-- **Stem collision** (both `DSC_1.RAF` and `DSC_1.JPG` have sidecars → same
-  `DSC_1.xmp`): the RAW wins (it's the edit target); print a one-line notice,
-  skip the JPEG's write.
-- Tests: video skipped; photos_uuid skipped; `.dng` skipped by default but
-  included with `--all-files`; JPEG skipped by default; RAW-wins on collision.
+(the sidecar sits next to it). **Skip + warn + count** when: `media_type ==
+"video"`; `photos_uuid` present (Photos mirror sidecar); the original's extension
+∉ `XMP_SIDECAR_EXTENSIONS`; or **the derived original file does not exist**
+(moved/deleted → don't write an orphan `.xmp`). XMP target =
+`original.with_suffix(".xmp")` (`DSC_1.RAF` → `DSC_1.xmp`; `IMG.2024.RAF` →
+`IMG.2024.xmp`).
+- Build the full {target_xmp → source} map first (pre-pass), THEN write. A
+  same-run collision (two RAW originals sharing a stem, e.g. `DSC_1.CR2` +
+  `DSC_1.NEF` → `DSC_1.xmp`) is resolved deterministically (first by sorted
+  original path), the loser skipped+warned — no streaming clobber.
+- Tests: video skipped; photos_uuid skipped; `.dng` skipped; JPEG skipped;
+  missing-original skipped+warned; `IMG.2024.RAF` → `IMG.2024.xmp`; same-stem
+  RAW/RAW collision resolves to one deterministic write.
 
 ### Task 4 — overwrite safety (manifest)
 `_XMP_MANIFEST.json` at the scan root (written atomically via
-`pipeline.atomic_write_text`), mapping the xmp path → SHA-1 of the payload we
-wrote. Decision per target, in order:
+`pipeline.atomic_write_text`), mapping the **root-relative** xmp path → SHA-1 of
+the **exact UTF-8 payload bytes** we wrote (`payload.encode("utf-8")`; on re-run
+compare against the existing file's `read_bytes()` — `atomic_write_text` writes
+the payload verbatim, no added newline). Decision per target, in order:
 1. No existing `.xmp` → **write**, record hash.
 2. Existing `.xmp` whose current bytes SHA-1 == the manifest entry → unchanged
    since we wrote it → **overwrite** (atomic), update hash.
@@ -80,12 +92,15 @@ A missing/deleted manifest degrades safe: every existing `.xmp` is case 3.
   case 2 overwrite, manifest updated.
 
 ### Task 5 — `main()` / CLI
-argparse: `root`, `--all-files`, `--dry-run`. Walk sidecars, apply Tasks 1–4,
-write via `atomic_write_text`, update the manifest once at the end (atomic).
-`--dry-run` prints the would-write list and writes nothing (no file, no manifest).
-Summary line: `wrote N, skipped M (conflicts), K up-to-date`.
+argparse: `root`, `--dry-run` (no `--all-files` — cut). Walk sidecars, apply
+Tasks 1–4, write via `atomic_write_text`, update the manifest once at the end
+(atomic). `--dry-run` prints the would-write list and writes nothing (no file,
+no manifest). Fail-loud summary with per-category counts:
+`wrote N, up-to-date K, conflicts C, skipped (video V, photos P, non-raw R,
+missing-original O, malformed X)`.
 - Tests: `--dry-run` writes nothing; end-to-end over a tmp tree with a RAW
-  sidecar → `.xmp` exists with the right Rating; conflict count surfaced.
+  sidecar → `.xmp` exists with the right Rating; conflict + missing-original
+  counts surfaced.
 
 ## Non-goals (PRD)
 Writing into originals (never); embedded-XMP for JPEG/DNG (never — same reason);

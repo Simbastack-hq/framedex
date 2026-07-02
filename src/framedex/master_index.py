@@ -90,7 +90,10 @@ def main() -> int:
             if not Path(p).is_absolute():
                 r["path"] = str(root / p)
             records.append(r)
-        elif r.get("photos_uuid"):
+        elif p is None and r.get("photos_uuid"):
+            # Photos-managed asset: `path` omitted by design. Keep it (buckets
+            # under "(unknown)" trip). Only a truly-omitted path qualifies — a
+            # present-but-malformed path is broken and skipped below.
             records.append(r)
         else:
             print(

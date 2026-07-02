@@ -46,7 +46,7 @@ public surface (CLI flags, sidecar schema) can still shift between minor version
     `TypeError` when the library has tz-aware dates or any undated asset.
   - The `cli` vision backend no longer runs `claude -p` with
     `bypassPermissions`. It uses `--permission-mode dontAsk` plus a read-only
-    allowlist scoped to the run's frame directory, so untrusted transcript /
+    `Read` allowlist (Bash/writes denied), so untrusted transcript /
     `.video-context.md` text embedded in the prompt can't drive tool use.
   - A vision response with no parseable YAML block is retried on the next run
     (loud stderr line) instead of being silently written as a defaults-only

@@ -971,6 +971,7 @@ def process_one_video(
 
     tmp_frames = Path(tempfile.mkdtemp(prefix="fdx-frames-"))
     detected_faces: list[face_db.DetectedFace] = []
+    face_detection_ran = False
     structured: dict[str, Any] = {}
     description: str = ""
     try:
@@ -1039,6 +1040,7 @@ def process_one_video(
                 detected_faces = face_db.detect_faces_in_frames(
                     frames, frame_timestamps
                 )
+                face_detection_ran = True
             except Exception as e:
                 print(f"  face detection failed: {e}")
     finally:
@@ -1060,10 +1062,11 @@ def process_one_video(
     sidecar = sidecar_path_override or sidecar_path(video)
     # Faces first, sidecar last: the sidecar is the resume marker, so it must be
     # the last thing written for a clip — a crash in the gap re-runs the clip
-    # cleanly (write_faces deletes prior rows first). Mirror the detection gate
-    # (face_conn set AND frames extracted) so a zero-face re-run still reaches
-    # the DELETE and clears stale rows.
-    if ctx.face_conn is not None and frames:
+    # cleanly (write_faces deletes prior rows first). Write only when detection
+    # actually ran: a *successful* zero-face detection still writes (clearing
+    # stale rows), but a detection *failure* must not — otherwise a transient
+    # error would wipe previously-committed faces for this clip.
+    if ctx.face_conn is not None and face_detection_ran:
         face_db.write_faces(ctx.face_conn, video, sidecar, detected_faces)
     write_sidecar(
         video,

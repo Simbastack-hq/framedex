@@ -389,6 +389,34 @@ def test_process_one_image_zero_face_rerun_clears_stale_rows(
     assert conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0] == 0
 
 
+def test_process_one_image_detection_failure_preserves_prior_faces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient face-detection *error* on a re-run must NOT delete the file's
+    previously-committed face rows. Only a successful zero-face detection clears
+    them — a detection failure is not the same as 'no faces'."""
+    from framedex import face_db
+
+    img = _std_image_mocks(tmp_path, monkeypatch)
+    conn = face_db.open_db(tmp_path / "faces.db")
+    ctx = pipeline.ProcessContext(face_conn=conn)
+
+    monkeypatch.setattr(face_db, "detect_faces_in_frames", lambda f, t: [_face()])
+    images.process_one_image(img, tmp_path, _opts(), ctx)
+    assert conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0] == 1
+
+    # Re-run (--force): detection raises. The prior row must survive.
+    pipeline.sidecar_path(img).unlink()
+
+    def boom(f: Any, t: Any) -> Any:
+        raise RuntimeError("insightface blew up")
+
+    monkeypatch.setattr(face_db, "detect_faces_in_frames", boom)
+    result = images.process_one_image(img, tmp_path, _opts(), ctx)
+    assert result.sidecar is not None  # detection is non-fatal; sidecar still written
+    assert conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0] == 1  # not wiped
+
+
 def test_process_one_image_no_yaml_fence_writes_no_sidecar(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -290,3 +290,23 @@ def test_query_keeps_photos_asset_without_path(
     cap = capsys.readouterr()
     assert cap.out.strip() == str(tmp_path / "photo.description.md")  # fallback
     assert "skipped" not in cap.err
+
+
+def test_query_skips_photos_asset_with_malformed_present_path(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Photos carve-out applies only when `path` is truly OMITTED. A
+    photos_uuid record with a present-but-malformed `path` (e.g. an int) is
+    corrupt — skip it, don't fall back and emit a bogus value."""
+    _write_raw_sidecar(
+        tmp_path,
+        "corrupt",
+        "---\nfile: x\nphotos_uuid: ABCD\npath: 123\nrating: keep\n---\n\n## Description\n\nx\n",
+    )
+    monkeypatch.setattr(sys, "argv", ["fdx-query", str(tmp_path), "--rating", "keep"])
+    assert main() == 0
+    cap = capsys.readouterr()
+    assert cap.out.strip() == ""
+    assert "skipped 1" in cap.err

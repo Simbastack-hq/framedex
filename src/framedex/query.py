@@ -263,10 +263,15 @@ def main() -> int:
         if is_usable_path(p):
             if not Path(p).is_absolute():
                 rec["path"] = str(root / p)
-        elif not rec.get("photos_uuid"):
-            # No usable media path and not a Photos-managed asset (which omits
-            # `path` by design) → the record is broken. Warn and skip rather than
-            # crash on Path() or print the sidecar path as if it were the media.
+        elif p is None and rec.get("photos_uuid"):
+            # Photos-managed asset: `path` is omitted by design (the original
+            # lives in the Photos library, not on disk). Keep it — output falls
+            # back to the sidecar path. Only a truly-omitted path qualifies; a
+            # present-but-malformed path is still broken and skipped below.
+            pass
+        else:
+            # No usable media path → the record is broken. Warn and skip rather
+            # than crash on Path() or print the sidecar path as if it were media.
             print(
                 f"warning: skipping {s}: missing or unusable 'path' field",
                 file=sys.stderr,

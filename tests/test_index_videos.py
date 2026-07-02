@@ -127,6 +127,31 @@ def test_process_one_video_zero_face_rerun_clears_stale_rows(
     assert conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0] == 0
 
 
+def test_process_one_video_detection_failure_preserves_prior_faces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient detection error on a re-run must not wipe prior face rows."""
+    from framedex import face_db
+
+    video = _std_video_mocks(tmp_path, monkeypatch)
+    conn = face_db.open_db(tmp_path / "faces.db")
+    ctx = pipeline.ProcessContext(face_conn=conn)
+
+    monkeypatch.setattr(face_db, "detect_faces_in_frames", lambda f, t: [_face()])
+    index_videos.process_one_video(video, tmp_path, _opts(), ctx)
+    assert conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0] == 1
+
+    pipeline.sidecar_path(video).unlink()
+
+    def boom(f: Any, t: Any) -> Any:
+        raise RuntimeError("insightface blew up")
+
+    monkeypatch.setattr(face_db, "detect_faces_in_frames", boom)
+    result = index_videos.process_one_video(video, tmp_path, _opts(), ctx)
+    assert result.sidecar is not None
+    assert conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0] == 1  # not wiped
+
+
 def test_process_one_video_no_yaml_fence_writes_no_sidecar(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

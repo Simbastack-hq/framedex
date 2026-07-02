@@ -477,6 +477,7 @@ def process_one_image(
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="fdx-image-"))
     detected_faces: list[face_db.DetectedFace] = []
+    face_detection_ran = False
     structured: dict[str, Any] = {}
     description: str = ""
     try:
@@ -515,6 +516,7 @@ def process_one_image(
         if ctx.face_conn is not None:
             try:
                 detected_faces = face_db.detect_faces_in_frames([preview], [0.0])
+                face_detection_ran = True
             except Exception as e:
                 print(f"  face detection failed: {e}")
     finally:
@@ -548,11 +550,11 @@ def process_one_image(
     sidecar = sidecar_path_override or pipeline.sidecar_path(image)
     # Faces first, sidecar last: the sidecar is the resume marker, so it must be
     # the last thing written for a file — a crash in the gap re-runs the file
-    # cleanly (write_faces deletes prior rows first). Write even when zero faces
-    # were detected so a re-run that now finds none still reaches the DELETE and
-    # clears stale rows. Detection was attempted whenever face_conn is set (the
-    # preview exists past the early no_preview return).
-    if ctx.face_conn is not None:
+    # cleanly (write_faces deletes prior rows first). Write only when detection
+    # actually ran: a *successful* zero-face detection still writes (clearing
+    # stale rows via the DELETE), but a detection *failure* must not — otherwise
+    # a transient error would wipe previously-committed faces for this file.
+    if ctx.face_conn is not None and face_detection_ran:
         face_db.write_faces(ctx.face_conn, image, sidecar, detected_faces)
     pipeline.serialize_sidecar(sidecar, fm, image.name, [("Description", description)])
 

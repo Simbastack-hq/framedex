@@ -190,6 +190,21 @@ fdx-photos                       # indexes the whole library (videos + stills)
 
 Album/person/date filters, the sidecar mirror layout, Photos-side frontmatter, and the iCloud "Optimize Storage" edge case are all in the full guide: **[docs/apple-photos.md](docs/apple-photos.md)**.
 
+## Getting ratings into Lightroom (`fdx-xmp`)
+
+The `.description.md` sidecars are the source of truth, but Lightroom can't read them. `fdx-xmp` projects the rating, keywords, and one-line caption into standard `.xmp` sidecars next to your RAW files, so an editor picks them up:
+
+```bash
+fdx-xmp /Volumes/SSD-2024            # writes DSC_1234.xmp next to DSC_1234.RAF
+fdx-xmp /Volumes/SSD-2024 --dry-run  # preview: print what it would write
+```
+
+Then in Lightroom Classic: select the photos → **Metadata → Read Metadata from Files**. `keep`/`review`/`cull` land as **3★ / 2★ / 1★**, `cull` also gets a **Red** label, keywords fill the keyword list, and the scene sentence becomes the caption. Filter by `1★` or Red to sweep the cull pile; the 3★ ceiling leaves room for your own 4/5★ picks.
+
+It's a **regenerable view**: delete every `.xmp` and re-run to rebuild them. It never edits an original, and never touches a `.xmp` it didn't write — a hand-edited or foreign sidecar is reported as a conflict and skipped (ownership is tracked by a content hash in `_XMP_MANIFEST.json`, not a filename). Don't run it while Lightroom is writing metadata to the same files.
+
+Scope in v1: **proprietary RAW → Lightroom Classic**. Lightroom reads `.xmp` *sidecars* only for proprietary RAW — for JPEG/HEIC/TIFF/DNG it reads metadata embedded in the file, which framedex never modifies, so those shooters get no Lightroom integration here. (`.dng` is excluded for the same reason.)
+
 ## Common flags
 
 | Flag | Purpose |
@@ -248,6 +263,7 @@ Writes are atomic: every sidecar and index goes to a temp file and is renamed in
 | `fdx-summary` | `trip_summary.py` | Recursive per-folder summaries |
 | `fdx-master` | `master_index.py` | Drive-level `_INDEX.md` + `_INDEX.json` |
 | `fdx-query` | `query.py` | Filter sidecars by rating, lighting, person, keyword, location, language |
+| `fdx-xmp` | `xmp_export.py` | Export ratings/keywords/caption to `.xmp` sidecars for Lightroom (RAW) |
 
 ```bash
 fdx-query /Volumes/SSD-2024 --rating keep --time-of-day golden_hour

@@ -101,6 +101,7 @@ Skip with `--no-faces` if you don't want face data.
 | `fdx-summary` | `framedex.trip_summary` | Recursive folder summaries (`_folder-summary.md` in each ≥5-clip folder) |
 | `fdx-master` | `framedex.master_index` | Drive-level `_INDEX.md` + `_INDEX.json` |
 | `fdx-query` | `framedex.query` | Filter sidecars by metadata (rating, lighting, person, keyword, etc.) |
+| `fdx-xmp` | `framedex.xmp_export` | Export ratings/keywords to Lightroom via `.xmp` sidecars (proprietary RAW; regenerable, non-destructive) |
 
 ## Set up once
 

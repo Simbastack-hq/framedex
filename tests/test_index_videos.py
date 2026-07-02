@@ -15,7 +15,7 @@ from typing import Any, cast
 import pytest
 import yaml
 
-from framedex import frame_sampling, images, index_videos, pipeline
+from framedex import face_db, frame_sampling, images, index_videos, pipeline
 from framedex.index_videos import write_sidecar
 
 METADATA = {
@@ -32,6 +32,141 @@ def _frontmatter(sidecar: Path) -> dict[str, Any]:
     return cast(
         "dict[str, Any]", yaml.safe_load(sidecar.read_text().split("---", 2)[1])
     )
+
+
+def _opts() -> pipeline.ProcessOptions:
+    return pipeline.ProcessOptions(
+        backend="cli",
+        vision_model_id="claude-haiku-4-5",
+        local_base_url="",
+        local_model=None,
+        cost_per_call=0.0,
+        no_whisper_prompt=True,
+    )
+
+
+def _std_video_mocks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Mock the whole per-clip pipeline so process_one_video reaches its persist
+    section without ffmpeg/whisper/network. Returns the video path."""
+    video = tmp_path / "clip.mov"
+    video.write_bytes(b"x")
+    monkeypatch.setattr(index_videos, "get_metadata", lambda v: dict(METADATA))
+    monkeypatch.setattr(index_videos, "get_gps", lambda v: {})
+    monkeypatch.setattr(index_videos, "transcribe_audio_whisperx", lambda *a, **k: {})
+    monkeypatch.setattr(
+        index_videos, "extract_frames", lambda *a, **k: [(tmp_path / "f0.jpg", 0.0)]
+    )
+    monkeypatch.setattr(index_videos, "load_context_for_clip", lambda *a, **k: "")
+    monkeypatch.setattr("framedex.index_videos.time.sleep", lambda s: None)
+    monkeypatch.setattr(
+        index_videos,
+        "describe_frames_cli",
+        lambda *a, **k: "```yaml\nrating: keep\n```\n\n## Description\n\nx\n",
+    )
+    return video
+
+
+def _face(cluster_id: str = "tmp_vid1") -> Any:
+    return face_db.DetectedFace(
+        cluster_id=cluster_id,
+        frame_time_seconds=0.0,
+        bbox=[0, 0, 10, 10],
+        detection_score=0.9,
+        embedding=[0.1] * 512,
+    )
+
+
+def test_process_one_video_writes_faces_before_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sidecar is the resume marker — written last, after faces (principle 1)."""
+    from framedex import face_db
+
+    video = _std_video_mocks(tmp_path, monkeypatch)
+    conn = face_db.open_db(tmp_path / "faces.db")
+    monkeypatch.setattr(face_db, "detect_faces_in_frames", lambda f, t: [_face()])
+
+    order: list[str] = []
+    real_write_faces = face_db.write_faces
+    real_write_sidecar = index_videos.write_sidecar
+
+    def spy_faces(*a: Any, **k: Any) -> Any:
+        order.append("faces")
+        return real_write_faces(*a, **k)
+
+    def spy_sidecar(*a: Any, **k: Any) -> Any:
+        order.append("sidecar")
+        return real_write_sidecar(*a, **k)
+
+    monkeypatch.setattr(face_db, "write_faces", spy_faces)
+    monkeypatch.setattr(index_videos, "write_sidecar", spy_sidecar)
+
+    index_videos.process_one_video(
+        video, tmp_path, _opts(), pipeline.ProcessContext(face_conn=conn)
+    )
+    assert order == ["faces", "sidecar"]
+
+
+def test_process_one_video_zero_face_rerun_clears_stale_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A re-run detecting zero faces must clear the clip's prior face rows."""
+    from framedex import face_db
+
+    video = _std_video_mocks(tmp_path, monkeypatch)
+    conn = face_db.open_db(tmp_path / "faces.db")
+    ctx = pipeline.ProcessContext(face_conn=conn)
+
+    monkeypatch.setattr(face_db, "detect_faces_in_frames", lambda f, t: [_face()])
+    index_videos.process_one_video(video, tmp_path, _opts(), ctx)
+    assert conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0] == 1
+
+    pipeline.sidecar_path(video).unlink()
+    monkeypatch.setattr(face_db, "detect_faces_in_frames", lambda f, t: [])
+    index_videos.process_one_video(video, tmp_path, _opts(), ctx)
+    assert conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0] == 0
+
+
+def test_process_one_video_detection_failure_preserves_prior_faces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient detection error on a re-run must not wipe prior face rows."""
+    from framedex import face_db
+
+    video = _std_video_mocks(tmp_path, monkeypatch)
+    conn = face_db.open_db(tmp_path / "faces.db")
+    ctx = pipeline.ProcessContext(face_conn=conn)
+
+    monkeypatch.setattr(face_db, "detect_faces_in_frames", lambda f, t: [_face()])
+    index_videos.process_one_video(video, tmp_path, _opts(), ctx)
+    assert conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0] == 1
+
+    pipeline.sidecar_path(video).unlink()
+
+    def boom(f: Any, t: Any) -> Any:
+        raise RuntimeError("insightface blew up")
+
+    monkeypatch.setattr(face_db, "detect_faces_in_frames", boom)
+    result = index_videos.process_one_video(video, tmp_path, _opts(), ctx)
+    assert result.sidecar is not None
+    assert conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0] == 1  # not wiped
+
+
+def test_process_one_video_no_yaml_fence_writes_no_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Prose with no parseable YAML fence must not persist a defaults-only
+    sidecar that permanently skips the clip; it retries as a vision_error."""
+    video = _std_video_mocks(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        index_videos, "describe_frames_cli", lambda *a, **k: "Just some prose."
+    )
+    result = index_videos.process_one_video(
+        video, tmp_path, _opts(), pipeline.ProcessContext()
+    )
+    assert result.skipped_reason == "vision_error"
+    assert result.sidecar is None
+    assert not pipeline.has_sidecar(video)
 
 
 def test_sidecar_path_is_relative_to_root(tmp_path: Path) -> None:

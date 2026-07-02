@@ -48,3 +48,45 @@ def test_master_index_absolute_path_passthrough(
 
     index = json.loads((tmp_path / "_INDEX.json").read_text())
     assert index["clips"][0]["path"] == abs_path
+
+
+def test_master_index_skips_non_string_path(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-string `path` must warn+skip, not crash Path() and abort the whole
+    index; valid records are still recorded (issue #14)."""
+    (tmp_path / "bad.description.md").write_text(
+        "---\nfile: x\npath: 123\nrating: cull\nduration_seconds: 5.0\n---\n"
+        "\n## Description\n\nx\n"
+    )
+    _write_sidecar(tmp_path, "2024/good.mov", "2024/good.mov")
+    monkeypatch.setattr(sys, "argv", ["fdx-master", str(tmp_path)])
+
+    assert main() == 0
+    index = json.loads((tmp_path / "_INDEX.json").read_text())
+    paths = [c["path"] for c in index["clips"]]
+    assert str(tmp_path / "2024/good.mov") in paths
+    assert index["clip_count"] == 1  # bad record excluded
+    assert "skipped 1" in capsys.readouterr().err
+
+
+def test_master_index_skips_photos_asset_with_malformed_path(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Photos carve-out is path-OMITTED-only. A photos_uuid record with a
+    present-but-malformed path must be skipped, not kept (Path(123) would
+    otherwise crash the whole index)."""
+    (tmp_path / "corrupt.description.md").write_text(
+        "---\nfile: x\nphotos_uuid: ABCD\npath: 123\nrating: cull\n"
+        "duration_seconds: 5.0\n---\n\n## Description\n\nx\n"
+    )
+    monkeypatch.setattr(sys, "argv", ["fdx-master", str(tmp_path)])
+
+    assert main() == 0  # must not crash on Path(123)
+    index = json.loads((tmp_path / "_INDEX.json").read_text())
+    assert index["clip_count"] == 0
+    assert "skipped 1" in capsys.readouterr().err

@@ -971,6 +971,7 @@ def process_one_video(
 
     tmp_frames = Path(tempfile.mkdtemp(prefix="fdx-frames-"))
     detected_faces: list[face_db.DetectedFace] = []
+    face_detection_ran = False
     structured: dict[str, Any] = {}
     description: str = ""
     try:
@@ -1039,6 +1040,7 @@ def process_one_video(
                 detected_faces = face_db.detect_faces_in_frames(
                     frames, frame_timestamps
                 )
+                face_detection_ran = True
             except Exception as e:
                 print(f"  face detection failed: {e}")
     finally:
@@ -1046,15 +1048,27 @@ def process_one_video(
             f.unlink(missing_ok=True)
         tmp_frames.rmdir()
 
-    # The vision backends return a "[...]" sentinel on failure (timeout, HTTP
-    # error, permission-denied). Don't persist a sidecar for those — that would
-    # mark the clip permanently "indexed" and silently skip it on every re-run.
-    # Returning vision_error keeps the clip in the todo list next time.
-    if not structured and description.startswith("["):
-        print(f"  vision call failed: {description[:200]}")
+    # No structured YAML parsed → the result is unusable. Skip and retry next
+    # run rather than persist a defaults-only sidecar that would mark the clip
+    # indexed forever. Covers both a transport "[...]" sentinel (timeout, HTTP
+    # error, permission-denied) and a response that carried no parseable fence.
+    if not structured:
+        if description.startswith("["):
+            print(f"  vision call failed: {description[:200]}")
+        else:
+            print("  vision response had no parsable YAML block — will retry next run")
         return ProcessResult(sidecar=None, skipped_reason="vision_error")
 
-    sidecar = write_sidecar(
+    sidecar = sidecar_path_override or sidecar_path(video)
+    # Faces first, sidecar last: the sidecar is the resume marker, so it must be
+    # the last thing written for a clip — a crash in the gap re-runs the clip
+    # cleanly (write_faces deletes prior rows first). Write only when detection
+    # actually ran: a *successful* zero-face detection still writes (clearing
+    # stale rows), but a detection *failure* must not — otherwise a transient
+    # error would wipe previously-committed faces for this clip.
+    if ctx.face_conn is not None and face_detection_ran:
+        face_db.write_faces(ctx.face_conn, video, sidecar, detected_faces)
+    write_sidecar(
         video,
         root,
         metadata,
@@ -1064,13 +1078,11 @@ def process_one_video(
         description,
         structured,
         detected_faces,
-        sidecar_path_override=sidecar_path_override,
+        sidecar_path_override=sidecar,
         parent_folder_override=parent_folder_override,
         extra_frontmatter=extra_frontmatter,
         omit_path=omit_path,
     )
-    if ctx.face_conn is not None and detected_faces:
-        face_db.write_faces(ctx.face_conn, video, sidecar, detected_faces)
 
     return ProcessResult(
         sidecar=sidecar,

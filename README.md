@@ -221,6 +221,8 @@ Album/person/date filters, the sidecar mirror layout, Photos-side frontmatter, a
 
 For huge archives, `api` is fastest. For routine indexing on a Max plan, `cli` is free. For full privacy, `local` keeps everything on-device.
 
+The `cli` backend runs `claude -p` locked down: `--permission-mode dontAsk` plus a read-only `--allowedTools Read` allowlist. Untrusted text embedded in the prompt (a transcript snippet, your `.video-context.md`) therefore can't drive tool use — Bash, writes, and edits are denied, so a would-be injection surfaces as a per-file vision error and retries instead of running a command. (The read scope is the whole filesystem, not just the frames: the CLI doesn't honor path-scoped `Read(<dir>/**)` allowlists, and read-only-no-execute is the security boundary that matters here.) Needs a `claude` CLI new enough to support `--permission-mode dontAsk` (check `claude --help`); older builds error loudly rather than degrade silently.
+
 ## Privacy
 
 | Component | Local or cloud? |
@@ -234,6 +236,8 @@ For huge archives, `api` is fastest. For routine indexing on a Max plan, `cli` i
 ## Resumable + idempotent
 
 Already-indexed clips are skipped on re-runs (a sidecar existing = done). Ctrl-C any time; a restart picks up where it stopped. `--force` regenerates everything.
+
+Writes are atomic: every sidecar and index goes to a temp file and is renamed into place, so an interrupt mid-write never leaves a truncated, half-indexed file. Faces are committed before the sidecar (the sidecar is the "done" marker), so a crash in between just re-runs that file cleanly. A stale `.<name>.<pid>.tmp` file left by a killed run is inert (hidden from discovery) and safe to delete.
 
 ## Companion tools
 

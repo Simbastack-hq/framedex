@@ -24,6 +24,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from framedex.parsing import is_usable_path
+from framedex.pipeline import atomic_write_text
+
 try:
     import yaml
 except ImportError:
@@ -71,17 +74,36 @@ def main() -> int:
         print(f"No sidecars found under {root}. Run index_videos.py first.")
         return 0
 
-    records: list[dict[str, Any]] = [
-        r for r in (parse_sidecar(s) for s in sidecars) if r
-    ]
+    parsed = [r for r in (parse_sidecar(s) for s in sidecars) if r]
 
-    # Sidecars store `path` relative to the scan root (portable). Resolve it
-    # back to an absolute path against this run's root. Older sidecars with
-    # absolute paths pass through unchanged.
-    for r in records:
+    # Sidecars store `path` relative to the scan root (portable). Resolve it back
+    # to an absolute path against this run's root (older sidecars with absolute
+    # paths pass through). A record without a usable `path` — and not a
+    # Photos-managed asset (fdx-photos mirror sidecars omit `path` by design and
+    # carry photos_uuid) — is broken: warn and skip rather than crash on Path()
+    # or silently bucket it under trip "(unknown)" (issue #14).
+    records: list[dict[str, Any]] = []
+    n_bad_path = 0
+    for r in parsed:
         p = r.get("path")
-        if p and not Path(p).is_absolute():
-            r["path"] = str(root / p)
+        if is_usable_path(p):
+            if not Path(p).is_absolute():
+                r["path"] = str(root / p)
+            records.append(r)
+        elif p is None and r.get("photos_uuid"):
+            # Photos-managed asset: `path` omitted by design. Keep it (buckets
+            # under "(unknown)" trip). Only a truly-omitted path qualifies — a
+            # present-but-malformed path is broken and skipped below.
+            records.append(r)
+        else:
+            print(
+                f"warning: skipping {r.get('sidecar_path', '?')}: "
+                "missing or unusable 'path' field",
+                file=sys.stderr,
+            )
+            n_bad_path += 1
+    if n_bad_path:
+        print(f"skipped {n_bad_path} sidecar(s) with unusable path", file=sys.stderr)
 
     # Group by top-level subfolder
     trips: dict[str, list[dict[str, Any]]] = {}
@@ -100,7 +122,8 @@ def main() -> int:
 
     # ---- JSON ----
     json_out = root / "_INDEX.json"
-    json_out.write_text(
+    atomic_write_text(
+        json_out,
         json.dumps(
             {
                 "drive_root": str(root),
@@ -113,7 +136,7 @@ def main() -> int:
             },
             indent=2,
             default=str,
-        )
+        ),
     )
     print(f"Wrote {json_out.name} ({len(records)} records)")
 
@@ -250,7 +273,7 @@ def main() -> int:
         lines.append("")
 
     md_out = root / "_INDEX.md"
-    md_out.write_text("\n".join(lines))
+    atomic_write_text(md_out, "\n".join(lines))
     print(f"Wrote {md_out.name}")
     return 0
 

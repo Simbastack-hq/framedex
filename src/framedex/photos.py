@@ -23,9 +23,19 @@ tree outside the library. macOS-only (osxphotos depends on PyObjC).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
+
+
+def _as_aware(dt: datetime) -> datetime:
+    """Interpret a naive datetime as local time; pass aware ones through.
+
+    osxphotos returns tz-aware asset dates, but --since/--until parsed from
+    'YYYY-MM-DD' are naive. Comparing or sorting the two mixed raises
+    TypeError, so we normalize both sides to aware before any comparison."""
+    return dt.astimezone() if dt.tzinfo is None else dt
+
 
 try:
     import osxphotos
@@ -147,12 +157,17 @@ def enumerate_assets(
             continue
         # A date filter excludes undated assets: an asset with no date cannot
         # satisfy a "since"/"until" bound.
-        if since and (p.date is None or p.date < since):
+        if since and (p.date is None or _as_aware(p.date) < _as_aware(since)):
             continue
-        if until and (p.date is None or p.date > until):
+        if until and (p.date is None or _as_aware(p.date) > _as_aware(until)):
             continue
         results.append(_project(p))
-    results.sort(key=lambda a: (a.date or datetime.min, a.uuid))
+    results.sort(
+        key=lambda a: (
+            _as_aware(a.date) if a.date else datetime.min.replace(tzinfo=timezone.utc),
+            a.uuid,
+        )
+    )
     return results
 
 

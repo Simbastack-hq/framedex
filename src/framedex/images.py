@@ -477,6 +477,7 @@ def process_one_image(
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="fdx-image-"))
     detected_faces: list[face_db.DetectedFace] = []
+    face_detection_ran = False
     structured: dict[str, Any] = {}
     description: str = ""
     try:
@@ -515,6 +516,7 @@ def process_one_image(
         if ctx.face_conn is not None:
             try:
                 detected_faces = face_db.detect_faces_in_frames([preview], [0.0])
+                face_detection_ran = True
             except Exception as e:
                 print(f"  face detection failed: {e}")
     finally:
@@ -522,10 +524,15 @@ def process_one_image(
             f.unlink(missing_ok=True)
         tmp_dir.rmdir()
 
-    # A "[...]" sentinel means the vision call failed; don't persist a sidecar
-    # (that would permanently skip the photo on re-runs). Retry next time.
-    if not structured and description.startswith("["):
-        print(f"  vision call failed: {description[:200]}")
+    # No structured YAML parsed → the result is unusable. Skip and retry next
+    # run rather than persist a defaults-only sidecar (rating:review, all
+    # "unclear") that would mark the photo indexed forever. Covers both a
+    # transport "[...]" sentinel and a response that carried no parseable fence.
+    if not structured:
+        if description.startswith("["):
+            print(f"  vision call failed: {description[:200]}")
+        else:
+            print("  vision response had no parsable YAML block — will retry next run")
         return pipeline.ProcessResult(sidecar=None, skipped_reason="vision_error")
 
     fm = build_image_frontmatter(
@@ -541,11 +548,15 @@ def process_one_image(
         omit_path=omit_path,
     )
     sidecar = sidecar_path_override or pipeline.sidecar_path(image)
-    sidecar = pipeline.serialize_sidecar(
-        sidecar, fm, image.name, [("Description", description)]
-    )
-    if ctx.face_conn is not None and detected_faces:
+    # Faces first, sidecar last: the sidecar is the resume marker, so it must be
+    # the last thing written for a file — a crash in the gap re-runs the file
+    # cleanly (write_faces deletes prior rows first). Write only when detection
+    # actually ran: a *successful* zero-face detection still writes (clearing
+    # stale rows via the DELETE), but a detection *failure* must not — otherwise
+    # a transient error would wipe previously-committed faces for this file.
+    if ctx.face_conn is not None and face_detection_ran:
         face_db.write_faces(ctx.face_conn, image, sidecar, detected_faces)
+    pipeline.serialize_sidecar(sidecar, fm, image.name, [("Description", description)])
 
     return pipeline.ProcessResult(
         sidecar=sidecar,

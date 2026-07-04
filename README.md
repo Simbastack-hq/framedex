@@ -3,27 +3,26 @@
 **A queryable knowledge base for your video and photo archive.**
 
 ```text
- folders / SSDs of clips + photos        Apple Photos library (macOS)
-                |                                     |
-               fdx                               fdx-photos
-                |                                     |
-                +-----------------+-------------------+
-                                  |
-                                  v
-                  per-file pipeline (local, resumable)
-         metadata, GPS -> place, faces, AI description + rating
-          transcript + speakers + English translation (video)
-                                  |
-                                  v
-             a plain-text .description.md sidecar per file
-        (originals never modified; Photos writes a mirror tree)
-                                  |
-                                  v
-          fdx-summary / fdx-master -> _INDEX.md + _INDEX.json
-                                  |
-                                  v
-     fdx-query --person Mom --place-contains Yosemite --rating keep
-              ...or just ask Claude to read the index
+   folders / SSDs of clips + photos          an Apple Photos library
+                |  fdx                               |  fdx-photos
+                +----------------+------------------+
+                                 |
+                                 v
+                 per-file pipeline (local, resumable)
+       metadata, GPS -> place, faces, AI scene + keep/review/cull
+         transcript + speakers + English translation (video)
+                                 |
+                                 v
+            a plain-text .description.md sidecar per file
+              (originals never modified; Photos -> mirror tree)
+                                 |
+        +------------------------+------------------------+
+        |                        |                        |
+        v                        v                        v
+   ask Claude /             fdx-master               fdx-xmp
+   fdx-query                _INDEX.md + .json         ratings + keywords
+   by person, place,        whole-drive rollup        -> Lightroom / Bridge
+   rating, keyword                                    (.xmp sidecars)
 ```
 
 Turn a scattered media archive, spread across multiple SSDs and years, into a portable, plain-text knowledge base. Each video clip gets a `.description.md` sidecar with GPS location + place name, a speaker-diarized multilingual transcript, an English translation (if needed), face detection, and an AI vision scene description with a keep/review/cull rating. Each still photo gets the same treatment minus the audio, plus a camera/lens/exposure block read from EXIF.
@@ -179,17 +178,6 @@ fdx /Volumes/SSD-photos --media images                 # stills only
 
 Photo sidecars add a `camera:` block, `dimensions`, `scene_type`, and `media_type: image`, and drop the video-only audio/duration fields.
 
-## Apple Photos library (macOS)
-
-`fdx-photos` indexes videos **and** stills straight from an Apple Photos library: no export, no metadata loss. The common case is one command:
-
-```bash
-uv pip install -e '.[all]'       # one-time: osxphotos + video + image readers
-fdx-photos                       # indexes the whole library (videos + stills)
-```
-
-Album/person/date filters, the sidecar mirror layout, Photos-side frontmatter, and the iCloud "Optimize Storage" edge case are all in the full guide: **[docs/apple-photos.md](docs/apple-photos.md)**.
-
 ## Getting ratings into Lightroom (`fdx-xmp`)
 
 The `.description.md` sidecars are the source of truth, but Lightroom can't read them. `fdx-xmp` projects the rating, keywords, and one-line caption into standard `.xmp` sidecars next to your RAW files, so an editor picks them up:
@@ -201,9 +189,20 @@ fdx-xmp /Volumes/SSD-2024 --dry-run  # preview: print what it would write
 
 Then in Lightroom Classic: select the photos → **Metadata → Read Metadata from Files**. `keep`/`review`/`cull` land as **3★ / 2★ / 1★**, `cull` also gets a **Red** label, keywords fill the keyword list, and the scene sentence becomes the caption. Filter by `1★` or Red to sweep the cull pile; the 3★ ceiling leaves room for your own 4/5★ picks.
 
-It's a **regenerable view**: delete every `.xmp` and re-run to rebuild them. It never edits an original, and never touches a `.xmp` it didn't write — a hand-edited or foreign sidecar is reported as a conflict and skipped (ownership is tracked by a content hash in `_XMP_MANIFEST.json`, not a filename). Don't run it while Lightroom is writing metadata to the same files.
+It's a **regenerable view**: delete every `.xmp` and re-run to rebuild them. It never edits an original, and never touches a `.xmp` it didn't write; a hand-edited or foreign sidecar is reported as a conflict and skipped (ownership is tracked by a content hash in `_XMP_MANIFEST.json`, not a filename). Don't run it while Lightroom is writing metadata to the same files.
 
-Scope in v1: **proprietary RAW → Lightroom Classic**. Lightroom reads `.xmp` *sidecars* only for proprietary RAW — for JPEG/HEIC/TIFF/DNG it reads metadata embedded in the file, which framedex never modifies, so those shooters get no Lightroom integration here. (`.dng` is excluded for the same reason.)
+Scope in v1: **proprietary RAW → Lightroom Classic**. Lightroom reads `.xmp` *sidecars* only for proprietary RAW; for JPEG/HEIC/TIFF/DNG it reads metadata embedded in the file, which framedex never modifies, so those shooters get no Lightroom integration here. (`.dng` is excluded for the same reason.)
+
+## Apple Photos library (macOS)
+
+`fdx-photos` indexes videos **and** stills straight from an Apple Photos library: no export, no metadata loss. The common case is one command:
+
+```bash
+uv pip install -e '.[all]'       # one-time: osxphotos + video + image readers
+fdx-photos                       # indexes the whole library (videos + stills)
+```
+
+Album/person/date filters, the sidecar mirror layout, Photos-side frontmatter, and the iCloud "Optimize Storage" edge case are all in the full guide: **[docs/apple-photos.md](docs/apple-photos.md)**.
 
 ## Common flags
 
@@ -236,7 +235,7 @@ Scope in v1: **proprietary RAW → Lightroom Classic**. Lightroom reads `.xmp` *
 
 For huge archives, `api` is fastest. For routine indexing on a Max plan, `cli` is free. For full privacy, `local` keeps everything on-device.
 
-The `cli` backend runs `claude -p` locked down: `--permission-mode dontAsk` plus a read-only `--allowedTools Read` allowlist. Untrusted text embedded in the prompt (a transcript snippet, your `.video-context.md`) therefore can't drive tool use — Bash, writes, and edits are denied, so a would-be injection surfaces as a per-file vision error and retries instead of running a command. (The read scope is the whole filesystem, not just the frames: the CLI doesn't honor path-scoped `Read(<dir>/**)` allowlists, and read-only-no-execute is the security boundary that matters here.) Needs a `claude` CLI new enough to support `--permission-mode dontAsk` (check `claude --help`); older builds error loudly rather than degrade silently.
+The `cli` backend runs `claude -p` locked down: `--permission-mode dontAsk` plus a read-only `--allowedTools Read` allowlist. Untrusted text embedded in the prompt (a transcript snippet, your `.video-context.md`) therefore can't drive tool use: Bash, writes, and edits are denied, so a would-be injection surfaces as a per-file vision error and retries instead of running a command. (The read scope is the whole filesystem, not just the frames: the CLI doesn't honor path-scoped `Read(<dir>/**)` allowlists, and read-only-no-execute is the security boundary that matters here.) Needs a `claude` CLI new enough to support `--permission-mode dontAsk` (check `claude --help`); older builds error loudly rather than degrade silently.
 
 ## Privacy
 

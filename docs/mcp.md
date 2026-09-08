@@ -119,3 +119,11 @@ processing is not local inference.
 - `archive_overview` is a snapshot of the last `fdx-master` run; ratings
   made in chat show up there after the next run.
 - stdio only.
+- Video thumbnails go through ffmpeg with the container demuxer forced from the
+  file extension (`.mov`/`.mp4`/`.m4v` → mov, `.mkv`/`.webm` → matroska, `.avi`,
+  `.mts`/`.m2ts` → mpegts, `.hevc`), so a file that is really a playlist
+  (ffconcat, m3u8) is never sniffed and cannot pull in other files. What a
+  genuine container references internally is decoder behaviour, not something
+  framedex inspects; point `fdx-mcp` only at archives you would open in a
+  media player. Every ffprobe/ffmpeg/exiftool call has a 60-120 s timeout and
+  no stdin.

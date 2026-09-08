@@ -69,6 +69,9 @@ USER_AGENT = "framedex/1.0 (personal archive indexer)"
 CLI_INTER_CALL_DELAY = 0.4  # seconds, to be polite to Max TPM caps
 
 DEFAULT_LOCAL_BASE_URL = "http://localhost:1234/v1"
+# Every exiftool call is bounded: a hung read must not hang the indexer or an
+# fdx-mcp worker thread.
+EXIFTOOL_TIMEOUT_SEC = 120
 LOCAL_TIMEOUT_SEC = 180
 
 
@@ -176,7 +179,16 @@ def get_gps(media: Path) -> dict[str, Any]:
         "-LocationInformation",
         str(media),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=EXIFTOOL_TIMEOUT_SEC,
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"exiftool timed out reading GPS of {media.name}") from e
     # A failed read is an error, not "no GPS": returning {} here would let a
     # broken exiftool silently produce location-less sidecars (and, for group
     # stubs, overwrite valid coordinates with nothing).

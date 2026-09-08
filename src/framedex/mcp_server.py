@@ -64,9 +64,6 @@ def build_server(roots: Roots, *, read_only: bool) -> Any:
     )
     mcp = MCPServer("framedex", instructions=INSTRUCTIONS)
 
-    def tool_error(e: Exception) -> ToolError:
-        return ToolError(str(e))
-
     def list_roots_tool() -> list[str]:
         """Archive roots this server can see. Paths passed to the other tools
         must lie under one of them."""
@@ -121,8 +118,8 @@ def build_server(roots: Roots, *, read_only: bool) -> Any:
                 offset=offset,
                 limit=limit,
             )
-        except ValueError as e:
-            raise tool_error(e) from e
+        except (ValueError, OSError) as e:
+            raise ToolError(str(e)) from e
 
     def read_sidecar_tool(path: str) -> str:
         """The full plain-text sidecar (`.description.md`) of one media file:
@@ -131,8 +128,8 @@ def build_server(roots: Roots, *, read_only: bool) -> Any:
         latter when `path` is null)."""
         try:
             return read_sidecar(roots, path)
-        except ValueError as e:
-            raise tool_error(e) from e
+        except (ValueError, OSError) as e:
+            raise ToolError(str(e)) from e
 
     def archive_overview_tool(root: str | None = None) -> str:
         """The drive-level `_INDEX.md` (counts, top keywords and places, the
@@ -140,8 +137,8 @@ def build_server(roots: Roots, *, read_only: bool) -> Any:
         `fdx-master` run."""
         try:
             return archive_overview(roots, root)
-        except ValueError as e:
-            raise tool_error(e) from e
+        except (ValueError, OSError) as e:
+            raise ToolError(str(e)) from e
 
     def contact_sheet_tool(paths: list[str]) -> list[Any]:
         """Render 1-20 media files (stills, or one frame of a clip) into one
@@ -153,8 +150,8 @@ def build_server(roots: Roots, *, read_only: bool) -> Any:
         rendered keeps a numbered grey cell and says why in the legend."""
         try:
             jpeg, legend = build_contact_sheet(roots, paths)
-        except (ValueError, RuntimeError) as e:
-            raise tool_error(e) from e
+        except (ValueError, RuntimeError, OSError) as e:
+            raise ToolError(str(e)) from e
         return [Image(data=jpeg, format="jpeg"), "\n".join(legend)]
 
     def set_user_rating_tool(
@@ -169,8 +166,8 @@ def build_server(roots: Roots, *, read_only: bool) -> Any:
         file."""
         try:
             return set_user_rating(roots, path, rating, note)
-        except ValueError as e:
-            raise tool_error(e) from e
+        except (ValueError, OSError) as e:
+            raise ToolError(str(e)) from e
 
     # add_tool, not @mcp.tool: the SDK is an optional extra, so under the base
     # (extras-free) mypy run `mcp` is Any and a decorator would be "untyped".

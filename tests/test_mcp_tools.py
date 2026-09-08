@@ -8,6 +8,7 @@ run in the CI job that installs the [mcp] extra.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import threading
 import types
@@ -360,3 +361,134 @@ def test_server_main_rejects_missing_root(
         mcp_server.main()
     assert "not a directory" in str(exc.value)
     assert os.path.isdir(tmp_path)
+
+
+# --- containment at the I/O boundary (Codex code review) ---------------------
+
+
+def test_read_sidecar_refuses_a_derived_sidecar_symlink_that_escapes(
+    tmp_path: Path,
+) -> None:
+    """`a.jpg.description.md -> /outside/private.md`: the derived sidecar is
+    resolved and checked before any byte is read."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "a.jpg").write_bytes(b"x")
+    secret = tmp_path / "private.md"
+    secret.write_text("---\nrating: keep\n---\nSECRET\n")
+    (root / "a.jpg.description.md").symlink_to(secret)
+    roots = mt.Roots.from_args([str(root)])
+    with pytest.raises(ValueError, match="outside the configured roots"):
+        mt.read_sidecar(roots, str(root / "a.jpg"))
+    with pytest.raises(ValueError, match="outside the configured roots"):
+        mt.set_user_rating(roots, str(root / "a.jpg"), "keep")
+    assert secret.read_text().endswith("SECRET\n")
+
+
+def test_set_user_rating_never_writes_through_a_symlink_or_to_a_non_sidecar(
+    tmp_path: Path,
+) -> None:
+    """An in-root `alias.jpg.description.md -> notes.md` passes containment but
+    is not a sidecar: the setter must refuse, and notes.md must stay intact."""
+    notes = tmp_path / "notes.md"
+    notes.write_text("---\ntitle: my notes\n---\n\nprivate text\n")
+    (tmp_path / "alias.jpg").write_bytes(b"x")
+    (tmp_path / "alias.jpg.description.md").symlink_to(notes)
+    roots = mt.Roots.from_args([str(tmp_path)])
+    with pytest.raises(ValueError, match=r"symlink|not a sidecar"):
+        mt.set_user_rating(roots, str(tmp_path / "alias.jpg"), "keep")
+    with pytest.raises(ValueError, match=r"symlink|not a sidecar"):
+        mt.set_user_rating(roots, str(tmp_path / "alias.jpg.description.md"), "keep")
+    assert notes.read_text() == "---\ntitle: my notes\n---\n\nprivate text\n"
+
+
+def test_query_media_validates_before_paging_and_counts_parse_failures(
+    tmp_path: Path,
+) -> None:
+    """An escaping or unparsable record must not consume an offset or inflate
+    the total; it is counted in skipped_malformed regardless of the page."""
+    root = tmp_path / "root"
+    root.mkdir()
+    evil = root / "a-evil.NEF.description.md"
+    evil.write_text("---\nfile: a-evil.NEF\npath: ../outside.NEF\nrating: keep\n---\n")
+    (root / "b-bad.NEF.description.md").write_text("---\nrating: [unclosed\n---\n")
+    _sidecar(root, "c-ok.NEF", {"rating": "keep"})
+    _sidecar(root, "d-ok.NEF", {"rating": "keep", "location": "not-a-mapping"})
+    roots = mt.Roots.from_args([str(root)])
+    page = mt.query_media(roots, limit=1)
+    assert [Path(m["path"]).name for m in page["matches"]] == ["c-ok.NEF"]
+    assert page["total"] == 2 and page["has_more"] is True
+    assert page["skipped_malformed"] == 2
+    rest = mt.query_media(roots, offset=1, limit=1)
+    assert [Path(m["path"]).name for m in rest["matches"]] == ["d-ok.NEF"]
+    assert rest["matches"][0]["place"] is None  # a malformed field, not a crash
+    assert rest["has_more"] is False
+
+
+def test_query_media_skips_a_symlinked_sidecar_that_escapes(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside.description.md"
+    outside.write_text("---\nfile: x.jpg\npath: x.jpg\nrating: keep\n---\n")
+    (root / "x.jpg.description.md").symlink_to(outside)
+    roots = mt.Roots.from_args([str(root)])
+    out = mt.query_media(roots)
+    assert out["matches"] == [] and out["skipped_malformed"] == 1
+
+
+def test_video_frame_forces_the_demuxer_and_refuses_unknown_containers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ffmpeg auto-detects playlist formats (ffconcat, m3u8) from file content;
+    a `.mov` that is really a playlist could pull in files outside the root.
+    Forcing the demuxer by extension closes that door."""
+    clip = tmp_path / "c.mov"
+    clip.write_bytes(b"ffconcat version 1.0\nfile link.mp4\n")
+    calls: list[list[str]] = []
+
+    def run(cmd: list[str], **kw: Any) -> Any:
+        calls.append(cmd)
+        assert kw["stdin"] is subprocess.DEVNULL
+        if cmd[0] == "ffprobe":
+            return types.SimpleNamespace(returncode=0, stdout="4.0\n", stderr="")
+        Path(cmd[-1]).write_bytes(b"jpg")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("framedex.mcp_tools.subprocess.run", run)
+    mt.video_frame(clip, tmp_path, timestamp=None)
+    for cmd in calls:
+        assert cmd[cmd.index("-f") + 1] == "mov"
+        assert cmd.index("-f") < cmd.index(str(clip))  # forced before the input
+    weird = tmp_path / "c.xyz"
+    weird.write_bytes(b"x")
+    with pytest.raises(RuntimeError, match="no fixed demuxer"):
+        mt.video_frame(weird, tmp_path, timestamp=None)
+
+
+def test_set_user_rating_identical_concurrent_requests_serialise(
+    tmp_path: Path,
+) -> None:
+    """Two identical requests at once: exactly one writes (changed=True); the
+    other sees the first's result and leaves the timestamp alone. Without the
+    per-sidecar lock both would read the original and both would write."""
+    p = _sidecar(tmp_path, "a.NEF", {"rating": "keep"})
+    roots = mt.Roots.from_args([str(tmp_path)])
+    barrier = threading.Barrier(2)
+    results: list[dict[str, Any]] = []
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            barrier.wait()
+            results.append(mt.set_user_rating(roots, str(p), "cull", note="dup"))
+        except BaseException as e:  # pragma: no cover - reported below
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    assert sorted(r["changed"] for r in results) == [False, True]
+    assert len({r["user_rated_at"] for r in results}) == 1

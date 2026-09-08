@@ -198,6 +198,7 @@ def _load_manifest(root: Path) -> dict[str, str]:
 @dataclass
 class ExportSummary:
     wrote: int = 0
+    invalid_user_ratings: int = 0  # user_rating present but not keep/review/cull
     up_to_date: int = 0
     conflicts: int = 0
     skipped_video: int = 0
@@ -258,6 +259,8 @@ def run(root: Path, *, dry_run: bool = False) -> ExportSummary:
             print(f"skip: {sidecar.name} — original {original.name} not found")
             summary.skipped_missing_original += 1
             continue
+        if fm.get("user_rating") is not None and not is_user_rated(fm):
+            summary.invalid_user_ratings += 1
         if effective_rating(fm) not in RATING_MAP:
             print(f"skip: {original.name} — unknown rating {effective_rating(fm)!r}")
             summary.skipped_malformed += 1
@@ -296,6 +299,12 @@ def run(root: Path, *, dry_run: bool = False) -> ExportSummary:
 
     if not dry_run and (summary.wrote or summary.up_to_date):
         atomic_write_text(root / MANIFEST_NAME, json.dumps(manifest, indent=2) + "\n")
+    if summary.invalid_user_ratings:
+        print(
+            f"warning: {summary.invalid_user_ratings} sidecar(s) carry an invalid "
+            "user_rating (not keep/review/cull); the indexer's rating was exported",
+            file=sys.stderr,
+        )
     return summary
 
 

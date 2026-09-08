@@ -36,7 +36,7 @@ from framedex.parsing import (
     is_user_rated,
     scene_sentence,
 )
-from framedex.pipeline import split_frontmatter
+from framedex.pipeline import SIDECAR_SUFFIX, split_frontmatter
 
 try:
     import yaml
@@ -103,6 +103,19 @@ class QueryResult:
     invalid_user_ratings: int  # records whose user_rating is not keep/review/cull
 
 
+def _mapping(rec: dict[str, Any], key: str) -> dict[str, Any]:
+    """A frontmatter field that must be a mapping, or {} when it is not
+    (a hand-edited or model-garbled value must not crash a query)."""
+    v = rec.get(key)
+    return v if isinstance(v, dict) else {}
+
+
+def _strings(rec: dict[str, Any], key: str) -> list[str]:
+    """A frontmatter field that must be a list of strings, or [] when not."""
+    v = rec.get(key)
+    return [x for x in v if isinstance(x, str)] if isinstance(v, list) else []
+
+
 def matches(rec: dict[str, Any], args: Any) -> bool:
     """Apply all filters (`args` is a Filters or an argparse Namespace with
     the same attribute names). Returns True if record passes all."""
@@ -131,14 +144,12 @@ def matches(rec: dict[str, Any], args: Any) -> bool:
         wanted = {v.strip() for v in args.language.split(",")}
         if rec.get("language_detected") not in wanted:
             return False
-    if args.focus and (rec.get("technical") or {}).get("focus") != args.focus:
+    technical = _mapping(rec, "technical")
+    if args.focus and technical.get("focus") != args.focus:
         return False
-    if (
-        args.stability
-        and (rec.get("technical") or {}).get("stability") != args.stability
-    ):
+    if args.stability and technical.get("stability") != args.stability:
         return False
-    if args.exposure and (rec.get("technical") or {}).get("exposure") != args.exposure:
+    if args.exposure and technical.get("exposure") != args.exposure:
         return False
     if args.people_count is not None:
         pc = rec.get("people_count")
@@ -176,7 +187,7 @@ def matches(rec: dict[str, Any], args: Any) -> bool:
         if (rec.get("media_type") or "video") not in wanted:
             return False
     if args.place_contains:
-        place = ((rec.get("location") or {}).get("place") or "").lower()
+        place = str(_mapping(rec, "location").get("place") or "").lower()
         if args.place_contains.lower() not in place:
             return False
     if args.face_count is not None:
@@ -197,18 +208,22 @@ def matches(rec: dict[str, Any], args: Any) -> bool:
                 return False
     if args.person:
         # Search face cluster_ids in this clip for matching name (case-insensitive)
-        faces = rec.get("faces") or []
-        names = {(f.get("cluster_id") or "").lower() for f in faces}
+        faces = rec.get("faces")
+        names = {
+            str(f.get("cluster_id") or "").lower()
+            for f in (faces if isinstance(faces, list) else [])
+            if isinstance(f, dict)
+        }
         # Once fdx-faces relabels, cluster_id will be like "alex" or "sam"
         if args.person.lower() not in names:
             return False
     if args.keyword:
-        kws = set(k.lower() for k in (rec.get("keywords") or []))
+        kws = {k.lower() for k in _strings(rec, "keywords")}
         for required in args.keyword:
             if required.lower() not in kws:
                 return False
     if args.dominant_color:
-        dcs = set(c.lower() for c in (rec.get("dominant_colors") or []))
+        dcs = {c.lower() for c in _strings(rec, "dominant_colors")}
         if args.dominant_color.lower() not in dcs:
             return False
     if args.has_speech:
@@ -362,22 +377,43 @@ def main() -> int:
     return 0
 
 
-def run_query(root: Path, filters: Filters) -> QueryResult:
+def _under(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
+def run_query(
+    root: Path, filters: Filters, *, require_media_under_root: bool = False
+) -> QueryResult:
     """Scan every sidecar under `root` (or `root/folder`), resolve each
-    record's media path against `root`, apply the filters, then page. Sidecar
-    warnings go to stderr; counts come back in the result."""
+    record's media path against `root`, apply the filters, then page.
+    Validation happens during the scan, before paging, so a bad record never
+    consumes an offset: a sidecar that resolves outside the root (a symlink),
+    one that does not parse, and — with `require_media_under_root` (fdx-mcp)
+    — one whose media path resolves outside the root are skipped and counted
+    in `skipped_malformed`. The CLI leaves media paths alone so legacy
+    absolute paths still print. Warnings go to stderr."""
+    root = root.resolve()
     scan_root = root
     if filters.folder:
         scan_root = (root / filters.folder).resolve()
-        if scan_root != root and root not in scan_root.parents:
+        if not _under(scan_root, root):
             raise ValueError(f"--folder must be inside the root: {filters.folder!r}")
-    sidecars = sorted(scan_root.rglob("*.description.md"))
+    sidecars = sorted(scan_root.rglob("*" + SIDECAR_SUFFIX))
     matched: list[dict[str, Any]] = []
     n_bad_path = 0
     n_invalid_user = 0
     for s in sidecars:
+        real = s.resolve()
+        if not (
+            _under(real, root) and real.name.endswith(SIDECAR_SUFFIX) and real.is_file()
+        ):
+            print(f"warning: skipping {s}: resolves outside {root}", file=sys.stderr)
+            n_bad_path += 1
+            continue
         rec = parse_sidecar(s)
         if rec is None:
+            print(f"warning: skipping {s}: unparsable sidecar", file=sys.stderr)
+            n_bad_path += 1
             continue
         # Sidecars store `path` relative to the scan root (portable). Resolve it
         # back to an absolute path so the printed output is usable for piping
@@ -386,6 +422,15 @@ def run_query(root: Path, filters: Filters) -> QueryResult:
         if is_usable_path(p):
             if not Path(p).is_absolute():
                 rec["path"] = str(root / p)
+            if require_media_under_root and not _under(
+                Path(rec["path"]).resolve(), root
+            ):
+                print(
+                    f"warning: skipping {s}: media path resolves outside {root}",
+                    file=sys.stderr,
+                )
+                n_bad_path += 1
+                continue
         elif p is None and rec.get("photos_uuid"):
             # Photos-managed asset: `path` is omitted by design (the original
             # lives in the Photos library, not on disk). Keep it — output falls

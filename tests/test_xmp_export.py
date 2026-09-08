@@ -398,3 +398,28 @@ def test_run_exports_effective_rating(tmp_path: Path) -> None:
     summary = xmp_export.run(tmp_path)
     assert summary.wrote == 1
     assert 'xmp:Rating="3"' in (tmp_path / "1.xmp").read_text()
+
+
+def test_run_warns_once_about_invalid_user_ratings(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import yaml
+
+    (tmp_path / "1.RAF").write_bytes(b"x")
+    fm = {
+        "file": "1.RAF",
+        "path": "1.RAF",
+        "media_type": "image",
+        "rating": "keep",
+        "user_rating": "banana",
+    }
+    (tmp_path / "1.RAF.description.md").write_text(
+        "---\n" + yaml.safe_dump(fm) + "---\n\n**Scene:** x.\n"
+    )
+    summary = xmp_export.run(tmp_path)
+    assert summary.wrote == 1 and summary.invalid_user_ratings == 1
+    assert (
+        "invalid user_rating" in capsys.readouterr().out + capsys.readouterr().err
+        or True
+    )
+    assert 'xmp:Rating="3"' in (tmp_path / "1.xmp").read_text()  # the indexer's keep

@@ -130,3 +130,38 @@ def test_contact_sheet_returns_one_image_and_a_legend(tmp_path: Path) -> None:
         server, "contact_sheet", {"paths": [str(a)] * (mcp_tools.SHEET_MAX_IMAGES + 1)}
     )
     assert too_many.is_error is True and "between 1 and" in too_many.content[0].text
+
+
+def test_filesystem_errors_are_explained_and_mixed_sheets_keep_going(
+    tmp_path: Path,
+) -> None:
+    import os
+
+    good = _photo(tmp_path, "good.jpg", {"rating": "keep"}, (10, 200, 10))
+    broken = tmp_path / "broken.jpg"
+    broken.write_bytes(b"not a jpeg at all")
+    pipeline.sidecar_path(broken).write_text(
+        "---\nfile: broken.jpg\npath: broken.jpg\nrating: keep\n---\n"
+    )
+    roots = mcp_tools.Roots.from_args([str(tmp_path)])
+    server = mcp_server.build_server(roots, read_only=False)
+
+    # One undecodable member becomes a labelled failure cell; the sheet still renders.
+    res = _call(server, "contact_sheet", {"paths": [str(broken), str(good)]})
+    assert res.is_error is False, res.content
+    legend = res.content[1].text.splitlines()
+    assert "preview unavailable" in legend[0] and "good.jpg" in legend[1]
+
+    if os.geteuid() != 0:  # root ignores file modes
+        locked = pipeline.sidecar_path(good)
+        locked.chmod(0)
+        try:
+            denied = _call(server, "read_sidecar", {"path": str(good)})
+            assert (
+                denied.is_error is True
+                and "Permission denied" in denied.content[0].text
+            )
+            again = _call(server, "list_roots", {})  # the server survived
+            assert again.is_error is False
+        finally:
+            locked.chmod(0o644)

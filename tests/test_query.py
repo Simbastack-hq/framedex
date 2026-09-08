@@ -436,3 +436,53 @@ def test_query_cli_folder_and_offset_flags(
     )
     assert main() == 0
     assert capsys.readouterr().out.splitlines() == [str(tmp_path / "a/2.NEF")]
+
+
+def test_run_query_counts_unparsable_and_escaping_sidecars_and_tolerates_bad_shapes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from framedex.query import Filters, run_query
+
+    (tmp_path / "bad.NEF.description.md").write_text("---\nrating: [unclosed\n---\n")
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.description.md"
+    outside.write_text("---\nfile: o.jpg\npath: o.jpg\nrating: keep\n---\n")
+    (tmp_path / "o.jpg.description.md").symlink_to(outside)
+    _sidecar(
+        tmp_path,
+        "shape.NEF",
+        {
+            "rating": "keep",
+            "location": "Mara",
+            "technical": "sharp",
+            "keywords": "lion",
+        },
+    )
+    _sidecar(tmp_path, "ok.NEF", {"rating": "keep", "location": {"place": "Mara"}})
+    try:
+        res = run_query(tmp_path, Filters(place_contains="mara", focus="sharp"))
+        assert [
+            Path(r["path"]).name for r in res.records
+        ] == []  # bad shapes never match…
+        res = run_query(tmp_path, Filters(place_contains="mara"))
+        assert [Path(r["path"]).name for r in res.records] == ["ok.NEF"]
+        assert (
+            res.skipped_malformed == 2
+        )  # …and the unparsable + escaping ones are counted
+        assert "unparsable" in capsys.readouterr().err
+    finally:
+        outside.unlink()
+
+
+def test_run_query_media_path_containment_is_opt_in(tmp_path: Path) -> None:
+    """The CLI keeps printing legacy absolute paths; fdx-mcp asks for
+    containment, which drops a record whose media path resolves outside."""
+    from framedex.query import Filters, run_query
+
+    _sidecar(tmp_path, "in.NEF", {"rating": "keep"})
+    (tmp_path / "esc.NEF.description.md").write_text(
+        "---\nfile: esc.NEF\npath: ../esc.NEF\nrating: keep\n---\n"
+    )
+    assert len(run_query(tmp_path, Filters()).records) == 2
+    strict = run_query(tmp_path, Filters(), require_media_under_root=True)
+    assert [Path(r["path"]).name for r in strict.records] == ["in.NEF"]
+    assert strict.skipped_malformed == 1

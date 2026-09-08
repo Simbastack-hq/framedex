@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from framedex import grouping
 from framedex.pipeline import (
     CLI_INTER_CALL_DELAY,
+    EXIFTOOL_TIMEOUT_SEC,
     FRAME_MAX_WIDTH,
 )
 
@@ -150,7 +151,16 @@ def get_image_metadata(image: Path) -> dict[str, Any]:
         "dimensions": "",
         "camera": {},
     }
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=EXIFTOOL_TIMEOUT_SEC,
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"exiftool timed out reading {image.name}") from e
     # A failed read is an error, not "no EXIF": returning blanks would let a
     # broken exiftool silently produce camera-less sidecars (and, for group
     # stubs, overwrite valid metadata with nothing).
@@ -207,10 +217,17 @@ def _extract_raw_preview(raw_image: Path, out_dir: Path) -> Path | None:
     extracted JPEG path, or None if the RAW carries no usable preview."""
     for tag in ("-JpgFromRaw", "-PreviewImage"):
         out = out_dir / "raw_preview.jpg"
-        result = subprocess.run(
-            ["exiftool", "-b", tag, str(raw_image)],
-            capture_output=True,
-        )
+        try:
+            result = subprocess.run(
+                ["exiftool", "-b", tag, str(raw_image)],
+                capture_output=True,
+                timeout=EXIFTOOL_TIMEOUT_SEC,
+                stdin=subprocess.DEVNULL,
+            )
+        except subprocess.TimeoutExpired as e:
+            raise RuntimeError(
+                f"exiftool timed out extracting the preview of {raw_image.name}"
+            ) from e
         if result.returncode == 0 and result.stdout:
             out.write_bytes(result.stdout)
             if out.stat().st_size > 0:

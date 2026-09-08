@@ -47,7 +47,7 @@ from framedex.pipeline import (
     sidecar_path,
     split_frontmatter,
 )
-from framedex.query import Filters, run_query
+from framedex.query import Filters, _mapping, _strings, run_query
 
 # A contact sheet is one bounded image: at most this many thumbnails, in a
 # fixed 4-column grid of 384 px cells (about 1600 px wide).
@@ -133,21 +133,39 @@ class Roots:
         return r
 
 
-def sidecar_for(roots: Roots, ref: str) -> tuple[Path, Path | None]:
+def sidecar_for(
+    roots: Roots, ref: str, *, for_write: bool = False
+) -> tuple[Path, Path | None]:
     """(sidecar, media) for a media path or a sidecar path under the roots.
-    The sidecar must exist; the media may not (Photos-managed assets)."""
+    The *derived* sidecar is resolved and contained before any byte is read
+    (a `x.jpg.description.md` symlink could point anywhere), and the canonical
+    target must itself be a sidecar file. A write never goes through a
+    symlink at all. The media may not exist (Photos-managed assets)."""
     if ref.endswith(SIDECAR_SUFFIX):
-        sidecar = roots.resolve(ref)
-        media = sidecar.with_name(sidecar.name[: -len(SIDECAR_SUFFIX)])
-        return sidecar, (media if media.exists() else None)
-    media = roots.resolve(ref)
-    sidecar = sidecar_path(media)
-    if not sidecar.exists():
+        given = Path(ref).expanduser()
+        if not given.is_absolute() and len(roots.roots) == 1:
+            given = roots.roots[0] / given
+        media_guess: Path | None = None
+    else:
+        media_guess = roots.resolve(ref)
+        given = sidecar_path(media_guess)
+        if not given.exists():
+            raise ValueError(
+                f"not indexed: {ref} has no {SIDECAR_SUFFIX} sidecar. "
+                f"Run: fdx {roots.root_of(media_guess)}"
+            )
+    sidecar = roots.resolve(given)
+    if not sidecar.name.endswith(SIDECAR_SUFFIX) or not sidecar.is_file():
+        raise ValueError(f"{ref}: not a sidecar ({sidecar})")
+    if for_write and given.is_symlink():
         raise ValueError(
-            f"not indexed: {ref} has no {SIDECAR_SUFFIX} sidecar. "
-            f"Run: fdx {roots.root_of(media)}"
+            f"{ref}: refusing to write through a symlink ({given} -> {sidecar})"
         )
-    return sidecar, media
+    if media_guess is None:
+        media_guess = sidecar.with_name(sidecar.name[: -len(SIDECAR_SUFFIX)])
+        if not media_guess.exists():
+            media_guess = None
+    return sidecar, media_guess
 
 
 # ---------------------------------------------------------------------------
@@ -201,42 +219,32 @@ def query_media(
         offset=offset,
         limit=limit,
     )
-    result = run_query(base, filters)
-    matches: list[dict[str, Any]] = []
-    dropped = 0
-    for rec in result.records:
-        try:
-            sidecar = roots.resolve(rec["_sidecar_path"])
-            media_path = (
-                roots.resolve(rec["path"], must_exist=False)
-                if rec.get("path")
-                else None
-            )
-        except ValueError:
-            dropped += 1  # a symlinked sidecar or a `path` pointing outside the root
-            continue
-        matches.append(
-            {
-                "path": str(media_path) if media_path else None,
-                "sidecar_path": str(sidecar),
-                "media_type": rec.get("media_type") or "video",
-                "rating": rec.get("rating"),  # the indexer's; see effective_rating
-                "user_rating": rec.get("user_rating") if is_user_rated(rec) else None,
-                "effective_rating": effective_rating(rec),
-                "place": (rec.get("location") or {}).get("place"),
-                "keywords": rec.get("keywords") or [],
-                "scene": rec.get("_scene") or "",
-                "creation_time": rec.get("creation_time"),
-                "group_alternate": is_group_stub(rec),
-            }
-        )
+    # Containment and parse validation happen inside the scan, before paging,
+    # so a bad record never consumes an offset or inflates the total.
+    result = run_query(base, filters, require_media_under_root=True)
+    matches = [
+        {
+            "path": rec.get("path"),
+            "sidecar_path": rec["_sidecar_path"],
+            "media_type": rec.get("media_type") or "video",
+            "rating": rec.get("rating"),  # the indexer's; see effective_rating
+            "user_rating": rec.get("user_rating") if is_user_rated(rec) else None,
+            "effective_rating": effective_rating(rec),
+            "place": _mapping(rec, "location").get("place"),
+            "keywords": _strings(rec, "keywords"),
+            "scene": rec.get("_scene") or "",
+            "creation_time": rec.get("creation_time"),
+            "group_alternate": is_group_stub(rec),
+        }
+        for rec in result.records
+    ]
     return {
         "matches": matches,
         "total": result.total,
         "offset": offset,
         "limit": limit,
         "has_more": offset + len(result.records) < result.total,
-        "skipped_malformed": result.skipped_malformed + dropped,
+        "skipped_malformed": result.skipped_malformed,
         "invalid_user_ratings": result.invalid_user_ratings,
     }
 
@@ -299,7 +307,7 @@ def set_user_rating(
             f"rating must be one of {', '.join(RATING_VALUES)}, or '' to clear; got {rating!r}"
         )
     note = note or ""
-    sidecar, media = sidecar_for(roots, ref)
+    sidecar, media = sidecar_for(roots, ref, for_write=True)
     with _lock_for(sidecar):
         raw = sidecar.read_bytes()
         try:
@@ -403,7 +411,11 @@ def parse_timestamp(text: str | None) -> float | None:
 def _run(cmd: list[str], what: str, name: str) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
-            cmd, capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT_SEC
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_TIMEOUT_SEC,
+            stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError as e:
         raise RuntimeError(
@@ -415,14 +427,38 @@ def _run(cmd: list[str], what: str, name: str) -> subprocess.CompletedProcess[st
         ) from e
 
 
+# The demuxer is forced per extension: ffmpeg otherwise sniffs the content and
+# would happily treat a `.mov` that is really an ffconcat/m3u8 playlist as one,
+# pulling in whatever files it references (a sibling symlink out of the root).
+FFMPEG_DEMUXERS = {
+    ".mp4": "mov",
+    ".mov": "mov",
+    ".m4v": "mov",
+    ".mkv": "matroska",
+    ".webm": "matroska",
+    ".avi": "avi",
+    ".mts": "mpegts",
+    ".m2ts": "mpegts",
+    ".hevc": "hevc",
+}
+
+
 def video_frame(path: Path, out_dir: Path, *, timestamp: float | None) -> Path:
     """One JPEG frame from a clip: at `timestamp` when it is finite and inside
-    the clip, else the midpoint. Loud on every failure."""
+    the clip, else the midpoint. The container demuxer is forced from the
+    extension (never sniffed). Loud on every failure."""
+    demuxer = FFMPEG_DEMUXERS.get(path.suffix.lower())
+    if demuxer is None:
+        raise RuntimeError(
+            f"{path.name}: no fixed demuxer for {path.suffix!r}; not rendered"
+        )
     probe = _run(
         [
             "ffprobe",
             "-v",
             "error",
+            "-f",
+            demuxer,
             "-show_entries",
             "format=duration",
             "-of",
@@ -455,6 +491,8 @@ def video_frame(path: Path, out_dir: Path, *, timestamp: float | None) -> Path:
             "-y",
             "-ss",
             str(t),
+            "-f",
+            demuxer,
             "-i",
             str(path),
             "-frames:v",
@@ -484,10 +522,12 @@ def render_thumb(media: Path, out_dir: Path, notable: str | None) -> Path | None
     return images.render_preview(media, out_dir)
 
 
-def _sidecar_summary(media: Path) -> tuple[dict[str, Any] | None, str]:
-    """(frontmatter, scene) for an indexed file; (None, "") when not indexed."""
-    sidecar = sidecar_path(media)
-    if not sidecar.exists():
+def _sidecar_summary(roots: Roots, media: Path) -> tuple[dict[str, Any] | None, str]:
+    """(frontmatter, scene) for an indexed file; (None, "") when not indexed
+    or when the sidecar resolves outside the roots (never read)."""
+    try:
+        sidecar, _ = sidecar_for(roots, str(media))
+    except ValueError:
         return None, ""
     parts = split_frontmatter(sidecar.read_bytes().decode("utf-8", errors="replace"))
     if parts is None:
@@ -520,26 +560,21 @@ def build_contact_sheet(roots: Roots, paths: list[str]) -> tuple[bytes, list[str
     tmp = Path(tempfile.mkdtemp(prefix="fdx-sheet-"))
     try:
         for (idx, x, y), media in zip(cells, medias, strict=True):
-            fm, scene = _sidecar_summary(media)
-            if fm:
-                label = f"effective_rating={effective_rating(fm) or 'unrated'}"
-                if is_user_rated(fm):
-                    label += " (user)"
-            else:
-                label = "not indexed"
-            if scene:
-                label += f" — scene={scene}"
             sub = tmp / str(idx)
             sub.mkdir()
+            label = "not indexed"
             reason: str | None = None
-            thumb: Path | None = None
             try:
+                fm, scene = _sidecar_summary(roots, media)
+                if fm:
+                    label = f"effective_rating={effective_rating(fm) or 'unrated'}"
+                    if is_user_rated(fm):
+                        label += " (user)"
+                if scene:
+                    label += f" — scene={scene}"
                 thumb = render_thumb(media, sub, (fm or {}).get("notable_timestamp"))
                 if thumb is None:
-                    reason = "RAW without an embedded preview"
-            except (RuntimeError, OSError) as e:
-                reason = str(e)
-            if thumb is not None:
+                    raise RuntimeError("RAW without an embedded preview")
                 with Image.open(thumb) as im:
                     im2 = im.convert("RGB")
                     im2.thumbnail((SHEET_THUMB_PX, SHEET_THUMB_PX))
@@ -551,13 +586,16 @@ def build_contact_sheet(roots: Roots, paths: list[str]) -> tuple[bytes, list[str
                         ),
                     )
                 rendered += 1
-            else:
+            except (RuntimeError, OSError, ValueError) as e:
+                # One bad member (unreadable sidecar, undecodable file, hung
+                # decoder) keeps its numbered cell; the sheet still renders.
+                reason = str(e) or e.__class__.__name__
                 draw.rectangle(
                     [x, y, x + SHEET_THUMB_PX, y + SHEET_THUMB_PX], fill=(200, 200, 200)
                 )
                 draw.text(
                     (x + 8, y + SHEET_THUMB_PX // 2),
-                    f"no preview: {(reason or '')[:40]}",
+                    f"no preview: {reason[:40]}",
                     fill=(60, 60, 60),
                 )
             draw.rectangle([x, y, x + 30, y + 20], fill=(0, 0, 0))

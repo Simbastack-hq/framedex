@@ -627,3 +627,30 @@ def test_process_one_image_before_sidecar_failure_writes_no_sidecar(
             img, tmp_path, _opts(), pipeline.ProcessContext(), before_sidecar=hook
         )
     assert not pipeline.has_sidecar(img)
+
+
+def test_extract_raw_preview_is_bounded_and_loud_on_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hung exiftool must not hang a worker (fdx-mcp) or the indexer."""
+    import subprocess
+
+    raw = tmp_path / "x.NEF"
+    raw.write_bytes(b"x")
+    seen: dict[str, Any] = {}
+
+    def run(cmd: list[str], **kw: Any) -> Any:
+        seen.update(kw)
+        return types.SimpleNamespace(returncode=0, stdout=b"jpegbytes", stderr=b"")
+
+    monkeypatch.setattr("framedex.images.subprocess.run", run)
+    out = images._extract_raw_preview(raw, tmp_path)
+    assert out is not None and seen["timeout"] == pipeline.EXIFTOOL_TIMEOUT_SEC
+    assert seen["stdin"] is subprocess.DEVNULL
+
+    def hang(cmd: list[str], **kw: Any) -> Any:
+        raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+
+    monkeypatch.setattr("framedex.images.subprocess.run", hang)
+    with pytest.raises(RuntimeError, match="timed out"):
+        images._extract_raw_preview(raw, tmp_path)

@@ -258,6 +258,13 @@ def main() -> int:
         "different, sharpest moments. 'even' is the legacy evenly-spaced "
         "sampling.",
     )
+    parser.add_argument(
+        "--no-group",
+        action="store_true",
+        help="Accepted for parity with fdx. Apple Photos burst grouping is not "
+        "implemented yet (Photos exposes native burst info via osxphotos — a "
+        "planned follow-up), so this flag currently has no effect.",
+    )
     args = parser.parse_args()
 
     library = Path(args.library).expanduser().resolve()

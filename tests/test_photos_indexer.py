@@ -246,3 +246,44 @@ def test_preflight_exits_when_required_extra_missing(
     )
     with pytest.raises(SystemExit):
         photos_indexer.main()
+
+
+def test_no_group_flag_is_accepted_as_a_no_op(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Parity with fdx: the flag parses; Apple Photos burst grouping is not
+    implemented yet, so the run is unchanged."""
+    lib = tmp_path / "L.photoslibrary"
+    lib.mkdir()
+    img = tmp_path / "p.heic"
+    img.write_bytes(b"x")
+    monkeypatch.setattr(
+        "framedex.photos.enumerate_assets",
+        lambda *a, **k: [_asset("image", img, "I-1")],
+    )
+    _patch_engine(monkeypatch)
+    routed: list[Path] = []
+
+    def fake_image(path: Path, root: Path, opts: Any, ctx: Any, **kw: Any) -> Any:
+        routed.append(path)
+        return pipeline.ProcessResult(sidecar=tmp_path / "i.sidecar", rating="keep")
+
+    monkeypatch.setattr("framedex.images.process_one_image", fake_image)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "fdx-photos",
+            "--library",
+            str(lib),
+            "--output",
+            str(tmp_path / "mirror"),
+            "--media",
+            "images",
+            "--no-faces",
+            "--no-geocode",
+            "--no-group",
+        ],
+    )
+    assert photos_indexer.main() == 0
+    assert routed == [img]

@@ -205,6 +205,26 @@ keywords: [giraffe, waterhole, drinking, savanna]
 RAW is read from the embedded full-res JPEG preview (no libraw). Requires the
 `[images]` extra (`Pillow` + `pillow-heif`); video indexing needs `[video]`.
 
+**Bursts + RAW/JPEG pairs (folder mode, on by default).** Before the per-file
+loop, `fdx` pairs a RAW with its same-stem camera JPEG (RAW = primary, JPEG =
+preview source) and chains frames from one camera in one folder shot <=2s apart
+(>=3 frames) into a burst. One vision call per group, on the sharpest member
+(local Laplacian variance, no model pick); every other member gets a stub
+sidecar that copies the primary's assessment fields (not faces) and carries a
+`group:` block (`kind`, `id`, `primary`, `primary_file`, `members`,
+`sharpness`). A group is done only when every member has a sidecar (stubs are
+written before the primary). Vision calls = groups + ungrouped files.
+
+```bash
+fdx /Volumes/SSD-photos --media images --dry-run      # shows [burst x12 -> 1 call] items
+fdx /Volumes/SSD-photos --media images --no-group     # every file individually
+fdx-query /Volumes/SSD-photos --rating keep --primary-only   # hide burst alternates
+```
+
+`fdx-master` counts ratings/keywords/faces/cull pile over primaries only;
+`fdx-xmp` tags members `burst-pick` / `burst-alternate`. `fdx-photos` accepts
+`--no-group` for parity but does not group yet. Thresholds: `docs/tuning.md`.
+
 ### Apple Photos library
 
 If the library is local on disk (no iCloud, or iCloud without Optimize Storage),

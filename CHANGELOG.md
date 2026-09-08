@@ -8,6 +8,23 @@ public surface (CLI flags, sidecar schema) can still shift between minor version
 
 ### Added
 
+- **Burst grouping + RAW/JPEG pairing: one moment, one vision call.** Before
+  the per-file loop, `fdx` groups a folder's stills: a RAW and its same-stem
+  camera JPEG become one pair (RAW primary, JPEG as preview source), and 3+
+  frames from one camera shot <=2s apart become a burst (a burst of pairs is
+  one burst). Each group gets a single vision call on its sharpest member
+  (local Laplacian variance, no model pick); every other member gets a stub
+  sidecar that copies the primary's assessment fields (not faces), carries its
+  own EXIF/GPS, and points at the primary via a `group:` block. Vision calls
+  per archive = groups + ungrouped files, never more than before. Resume is
+  group-aware: stubs are written before the primary, and a group is redone
+  whole if any member lacks a sidecar. `--no-group` (both `fdx` and
+  `fdx-photos`; a documented no-op in the latter until Photos-native burst
+  support) indexes every file individually. `fdx-master` counts ratings,
+  keywords, faces, and the cull pile over primaries only and reports
+  `Grouped: N files in M groups`; `fdx-query --primary-only` hides stubs;
+  `fdx-xmp` tags burst members `burst-pick` / `burst-alternate`. Thresholds
+  are constants documented in `docs/tuning.md`. No new dependency.
 - **`fdx-xmp` — get framedex ratings into Lightroom.** A new standalone command
   that projects the rating, keywords, and one-line scene caption from
   `.description.md` sidecars into standard `.xmp` sidecars next to proprietary-RAW

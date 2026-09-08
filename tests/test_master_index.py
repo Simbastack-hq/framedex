@@ -211,3 +211,26 @@ def test_master_index_scopes_group_ids_by_directory(
     assert main() == 0
     idx = json.loads((tmp_path / "_INDEX.json").read_text())
     assert idx["group_count"] == 2 and idx["grouped_file_count"] == 4
+
+
+def test_master_index_counts_effective_ratings_and_marks_user_decisions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_fm(
+        tmp_path,
+        "1.NEF",
+        {"rating": "cull", "cull_reason": "blur", "user_rating": "keep"},
+    )
+    _write_fm(
+        tmp_path, "2.NEF", {"rating": "keep", "user_rating": "cull", "user_note": "dup"}
+    )
+    _write_fm(tmp_path, "3.NEF", {"rating": "review", "user_rating": "banana"})
+    monkeypatch.setattr(sys, "argv", ["fdx-master", str(tmp_path)])
+    assert main() == 0
+    md = (tmp_path / "_INDEX.md").read_text()
+    assert "1 keep, 1 review, 1 cull" in md  # overrides applied, invalid one ignored
+    assert "- **User ratings:** 2 files" in md
+    assert (
+        f"- `{tmp_path / '2.NEF'}` — dup (user)" in md
+    )  # the human's cull, with the note
+    assert "1.NEF" not in md.split("## Cull pile")[1].split("## Trips")[0]

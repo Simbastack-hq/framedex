@@ -29,6 +29,7 @@ import yaml
 
 import framedex
 from framedex import images
+from framedex.parsing import effective_rating, is_user_rated, scene_sentence
 from framedex.pipeline import SIDECAR_SUFFIX, atomic_write_text, split_frontmatter
 
 # Lightroom Classic reads `.xmp` *sidecars* only for proprietary RAW; DNG (like
@@ -49,8 +50,6 @@ MANIFEST_NAME = "_XMP_MANIFEST.json"
 
 # Uninformative scene_type values that shouldn't pollute the keyword bag.
 _SKIP_SCENE_TYPES = {"", "unclear", "other"}
-
-_SCENE_RE = re.compile(r"\*\*Scene:\*\*\s*(.+)")
 
 # Characters XML 1.0 forbids even escaped (C0 controls except tab/newline/CR).
 # Keywords/scene come from an LLM, so a stray one would make the .xmp
@@ -88,9 +87,7 @@ def read_sidecar_for_xmp(path: Path) -> tuple[dict[str, Any], str] | None:
         return None
     if not isinstance(fm, dict):
         return None
-    m = _SCENE_RE.search(parts[1])
-    scene = m.group(1).strip() if m else ""
-    return fm, scene
+    return fm, scene_sentence(parts[1])
 
 
 # ---------------------------------------------------------------------------
@@ -120,14 +117,21 @@ def _subject_tags(frontmatter: dict[str, Any]) -> list[str]:
         tag = "burst-primary" if group.get("primary") else "burst-alternate"
         if tag not in tags:
             tags.append(tag)
+    # Stars from a person, not the model: filterable in Lightroom.
+    if is_user_rated(frontmatter) and "user-rated" not in tags:
+        tags.append("user-rated")
     return tags
 
 
 def build_xmp(frontmatter: dict[str, Any], scene: str) -> str:
-    """Build the `.xmp` sidecar payload (RDF/XML) for one media file. `rating`
-    must be a valid key of RATING_MAP (the caller validates + skips otherwise)."""
-    stars = RATING_MAP[frontmatter["rating"]]
-    label = CULL_LABEL if frontmatter["rating"] == "cull" else ""
+    """Build the `.xmp` sidecar payload (RDF/XML) for one media file. The
+    effective rating (a valid user_rating, else the model's) must be a key of
+    RATING_MAP (the caller validates + skips otherwise). A human `keep` is
+    still 3★ (the 4/5★ picks stay the photographer's own work in Lightroom);
+    the `user-rated` keyword says the stars came from a person."""
+    rating = effective_rating(frontmatter)
+    stars = RATING_MAP[rating]
+    label = CULL_LABEL if rating == "cull" else ""
 
     desc_attrs = [
         'rdf:about=""',
@@ -254,8 +258,8 @@ def run(root: Path, *, dry_run: bool = False) -> ExportSummary:
             print(f"skip: {sidecar.name} — original {original.name} not found")
             summary.skipped_missing_original += 1
             continue
-        if fm.get("rating") not in RATING_MAP:
-            print(f"skip: {original.name} — unknown rating {fm.get('rating')!r}")
+        if effective_rating(fm) not in RATING_MAP:
+            print(f"skip: {original.name} — unknown rating {effective_rating(fm)!r}")
             summary.skipped_malformed += 1
             continue
         target = xmp_target(original)

@@ -22,12 +22,19 @@ Multiple values within a single flag (e.g. --rating keep,review) OR together.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from framedex.parsing import is_group_stub, is_usable_path
+from framedex.parsing import (
+    effective_rating,
+    is_group_stub,
+    is_usable_path,
+    is_user_rated,
+)
 from framedex.pipeline import split_frontmatter
 
 try:
@@ -56,15 +63,55 @@ def parse_sidecar(path: Path) -> dict[str, Any] | None:
     return None
 
 
-def matches(rec: dict[str, Any], args: argparse.Namespace) -> bool:
-    """Apply all filters. Returns True if record passes all."""
+@dataclass
+class Filters:
+    """One field per fdx-query filter, with the CLI defaults. The CLI parser
+    fills one; fdx-mcp builds one directly from validated arguments, so the
+    two can never drift."""
+
+    rating: str | None = None
+    media: str | None = None
+    lighting: str | None = None
+    time_of_day: str | None = None
+    audio_quality: str | None = None
+    language: str | None = None
+    focus: str | None = None
+    stability: str | None = None
+    exposure: str | None = None
+    people_count: str | None = None
+    face_count: str | None = None
+    person: str | None = None
+    keyword: list[str] = field(default_factory=list)
+    dominant_color: str | None = None
+    place_contains: str | None = None
+    min_duration: float | None = None
+    max_duration: float | None = None
+    has_speech: bool = False
+    primary_only: bool = False
+    folder: str | None = None  # only sidecars below root/folder
+    offset: int = 0  # paging: skip the first N matches
+    limit: int | None = None  # paging: at most N matches
+
+
+@dataclass
+class QueryResult:
+    records: list[dict[str, Any]]  # the page: matches[offset : offset + limit]
+    total: int  # matches before paging
+    skipped_malformed: int  # sidecars without a usable path
+    invalid_user_ratings: int  # records whose user_rating is not keep/review/cull
+
+
+def matches(rec: dict[str, Any], args: Any) -> bool:
+    """Apply all filters (`args` is a Filters or an argparse Namespace with
+    the same attribute names). Returns True if record passes all."""
     # Burst / RAW+JPEG members carry a copied assessment; hide them on request.
     if args.primary_only and is_group_stub(rec):
         return False
-    # Rating (csv → OR within flag)
+    # Rating (csv → OR within flag), matched against the effective rating: a
+    # valid user_rating (the human's decision) wins over the model's.
     if args.rating:
         wanted = {v.strip() for v in args.rating.split(",")}
-        if rec.get("rating") not in wanted:
+        if effective_rating(rec) not in wanted:
             return False
     if args.lighting:
         wanted = {v.strip() for v in args.lighting.split(",")}
@@ -233,6 +280,12 @@ def main() -> int:
         help="Hide burst / RAW+JPEG members whose assessment is copied from a "
         "group primary (group.primary: false).",
     )
+    parser.add_argument(
+        "--folder",
+        default=None,
+        help="Only sidecars under ROOT/FOLDER (a trip or shoot subfolder). "
+        "ROOT stays the scan root the sidecars were written from.",
+    )
 
     # Output flags
     parser.add_argument(
@@ -251,6 +304,12 @@ def main() -> int:
     parser.add_argument(
         "--limit", type=int, default=None, help="Show at most N results."
     )
+    parser.add_argument(
+        "--offset",
+        type=int,
+        default=0,
+        help="Skip the first N matches (paging, with --limit).",
+    )
 
     args = parser.parse_args()
 
@@ -258,9 +317,62 @@ def main() -> int:
     if not root.exists() or not root.is_dir():
         sys.exit(f"Not a directory: {root}")
 
-    sidecars = sorted(root.rglob("*.description.md"))
+    filters = Filters(
+        **{f.name: getattr(args, f.name) for f in dataclasses.fields(Filters)}
+    )
+    try:
+        result = run_query(root, filters)
+    except ValueError as e:
+        sys.exit(str(e))
+    if result.invalid_user_ratings:
+        print(
+            f"warning: {result.invalid_user_ratings} sidecar(s) carry an invalid "
+            "user_rating (not keep/review/cull); ignored",
+            file=sys.stderr,
+        )
+    matched = result.records
+
+    if args.count:
+        print(result.total)
+        return 0
+
+    if args.json:
+        print(json.dumps(matched, indent=2, default=str))
+        return 0
+
+    for rec in matched:
+        path = rec.get("path") or rec.get("_sidecar_path", "")
+        if args.with_description:
+            rating = str(effective_rating(rec) or "?")
+            if is_user_rated(rec):
+                rating += " (user)"
+            # Videos show duration; photos show pixel dimensions in that column.
+            if rec.get("duration_seconds") is not None:
+                size_col = f"{rec['duration_seconds']:.1f}s"
+            else:
+                size_col = rec.get("dimensions") or rec.get("media_type") or ""
+            place = ((rec.get("location") or {}).get("place") or "")[:40]
+            kws = ",".join((rec.get("keywords") or [])[:5])
+            line = f"{path}\t{rating}\t{size_col}\t{place}\t{kws}"
+            print(line)
+        else:
+            print(path)
+    return 0
+
+
+def run_query(root: Path, filters: Filters) -> QueryResult:
+    """Scan every sidecar under `root` (or `root/folder`), resolve each
+    record's media path against `root`, apply the filters, then page. Sidecar
+    warnings go to stderr; counts come back in the result."""
+    scan_root = root
+    if filters.folder:
+        scan_root = (root / filters.folder).resolve()
+        if scan_root != root and root not in scan_root.parents:
+            raise ValueError(f"--folder must be inside the root: {filters.folder!r}")
+    sidecars = sorted(scan_root.rglob("*.description.md"))
     matched: list[dict[str, Any]] = []
     n_bad_path = 0
+    n_invalid_user = 0
     for s in sidecars:
         rec = parse_sidecar(s)
         if rec is None:
@@ -287,39 +399,19 @@ def main() -> int:
             )
             n_bad_path += 1
             continue
-        if matches(rec, args):
+        if rec.get("user_rating") is not None and not is_user_rated(rec):
+            n_invalid_user += 1
+        rec["effective_rating"] = effective_rating(rec)
+        if matches(rec, filters):
             matched.append(rec)
 
     if n_bad_path:
         print(f"skipped {n_bad_path} sidecar(s) with unusable path", file=sys.stderr)
 
-    if args.limit:
-        matched = matched[: args.limit]
-
-    if args.count:
-        print(len(matched))
-        return 0
-
-    if args.json:
-        print(json.dumps(matched, indent=2, default=str))
-        return 0
-
-    for rec in matched:
-        path = rec.get("path") or rec.get("_sidecar_path", "")
-        if args.with_description:
-            rating = rec.get("rating", "?")
-            # Videos show duration; photos show pixel dimensions in that column.
-            if rec.get("duration_seconds") is not None:
-                size_col = f"{rec['duration_seconds']:.1f}s"
-            else:
-                size_col = rec.get("dimensions") or rec.get("media_type") or ""
-            place = ((rec.get("location") or {}).get("place") or "")[:40]
-            kws = ",".join((rec.get("keywords") or [])[:5])
-            line = f"{path}\t{rating}\t{size_col}\t{place}\t{kws}"
-            print(line)
-        else:
-            print(path)
-    return 0
+    total = len(matched)
+    start = max(filters.offset, 0)
+    end = start + filters.limit if filters.limit else None
+    return QueryResult(matched[start:end], total, n_bad_path, n_invalid_user)
 
 
 if __name__ == "__main__":

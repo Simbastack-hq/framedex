@@ -39,6 +39,9 @@ if TYPE_CHECKING:
     import anthropic
 
 SIDECAR_SUFFIX = ".description.md"
+# Frontmatter keys written by a human (fdx-mcp set_user_rating), never by the
+# indexer; preserved across every sidecar rewrite.
+USER_KEYS = ("user_rating", "user_note", "user_rated_at")
 
 # Default vision models — overridable via --vision-model. Maps shorthand to the
 # full IDs the API expects and the shorthand the CLI accepts.
@@ -638,7 +641,17 @@ def serialize_sidecar(
     """Write a `.description.md` sidecar: YAML frontmatter fence, an H1 title,
     then each (heading, content) as a `## heading` section. `indexed_at` is
     stamped as the final frontmatter key. Each pipeline assembles its own
-    frontmatter dict and body sections; this only serializes."""
+    frontmatter dict and body sections; this only serializes.
+
+    Keys the photographer wrote (`USER_KEYS`, via fdx-mcp) are carried over
+    from an existing sidecar unless the new frontmatter sets them: a re-index
+    (--force, regrouping) must not erase a human decision."""
+    if sidecar.exists():
+        existing = read_sidecar_frontmatter(sidecar)
+        if existing:
+            for key in USER_KEYS:
+                if key in existing and key not in frontmatter:
+                    frontmatter[key] = existing[key]
     frontmatter["indexed_at"] = datetime.now().isoformat(timespec="seconds")
     fm_text = yaml.safe_dump(
         frontmatter, sort_keys=False, allow_unicode=True, default_flow_style=False

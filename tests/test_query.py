@@ -349,3 +349,90 @@ def test_parse_sidecar_triple_hyphen_in_value_is_not_a_fence(tmp_path: Path) -> 
     p.write_text("---\nfile: a---b.NEF\nrating: keep\n---\n\n## Description\n\nx\n")
     fm = parse_sidecar(p)
     assert fm is not None and fm["file"] == "a---b.NEF"
+
+
+# --- Filters / run_query (shared by the CLI and fdx-mcp) -------------------
+
+
+def _sidecar(root: Path, rel: str, fm: dict[str, object], body: str = "") -> None:
+    import yaml
+
+    full = {"file": Path(rel).name, "path": rel, "media_type": "image", **fm}
+    p = root / f"{rel}.description.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        "---\n"
+        + yaml.safe_dump(full, sort_keys=False)
+        + "---\n\n## Description\n\n"
+        + body
+    )
+
+
+def test_run_query_returns_effective_ratings_total_and_paging(tmp_path: Path) -> None:
+    from framedex.query import Filters, run_query
+
+    _sidecar(
+        tmp_path,
+        "a/1.NEF",
+        {"rating": "cull", "user_rating": "keep"},
+        "**Scene:** A lion.\n",
+    )
+    _sidecar(tmp_path, "a/2.NEF", {"rating": "keep"})
+    _sidecar(tmp_path, "b/3.NEF", {"rating": "keep", "user_rating": "banana"})
+    _sidecar(tmp_path, "b/4.NEF", {"rating": "review"})
+
+    res = run_query(tmp_path, Filters(rating="keep"))
+    assert [r["path"] for r in res.records] == [
+        str(tmp_path / p) for p in ("a/1.NEF", "a/2.NEF", "b/3.NEF")
+    ]
+    assert res.total == 3 and res.skipped_malformed == 0
+    assert res.records[0]["effective_rating"] == "keep"  # the human override wins
+    assert res.invalid_user_ratings == 1  # "banana" is reported, not silently used
+
+    page = run_query(tmp_path, Filters(rating="keep", offset=1, limit=1))
+    assert [r["path"] for r in page.records] == [str(tmp_path / "a/2.NEF")]
+    assert page.total == 3
+
+    sub = run_query(tmp_path, Filters(folder="b"))
+    assert sorted(Path(r["path"]).name for r in sub.records) == ["3.NEF", "4.NEF"]
+
+
+def test_run_query_folder_must_be_inside_root(tmp_path: Path) -> None:
+    from framedex.query import Filters, run_query
+
+    with pytest.raises(ValueError, match="folder"):
+        run_query(tmp_path, Filters(folder="../elsewhere"))
+
+
+def test_query_cli_shows_effective_rating_and_user_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _sidecar(
+        tmp_path,
+        "1.NEF",
+        {"rating": "cull", "user_rating": "keep", "keywords": ["lion"]},
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["fdx-query", str(tmp_path), "--rating", "keep", "--with-description"],
+    )
+    assert main() == 0
+    out = capsys.readouterr().out
+    assert "\tkeep (user)\t" in out
+    monkeypatch.setattr(sys, "argv", ["fdx-query", str(tmp_path), "--rating", "cull"])
+    assert main() == 0
+    assert capsys.readouterr().out.strip() == ""  # the model's cull no longer matches
+
+
+def test_query_cli_folder_and_offset_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _sidecar(tmp_path, "a/1.NEF", {"rating": "keep"})
+    _sidecar(tmp_path, "a/2.NEF", {"rating": "keep"})
+    _sidecar(tmp_path, "b/3.NEF", {"rating": "keep"})
+    monkeypatch.setattr(
+        sys, "argv", ["fdx-query", str(tmp_path), "--folder", "a", "--offset", "1"]
+    )
+    assert main() == 0
+    assert capsys.readouterr().out.splitlines() == [str(tmp_path / "a/2.NEF")]

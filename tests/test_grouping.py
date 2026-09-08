@@ -422,7 +422,7 @@ def test_read_group_metadata_warns_about_files_missing_from_output(
     meta = g.read_group_metadata([a, b])
     assert set(meta) == {a}
     assert (
-        "no EXIF for 1 of 2 files; indexing them individually"
+        "no EXIF for 1 of 2 files; excluded from burst detection"
         in capsys.readouterr().err
     )
 

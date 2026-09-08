@@ -114,6 +114,14 @@ def _subject_tags(frontmatter: dict[str, Any]) -> list[str]:
         and scene_type not in tags
     ):
         tags.append(scene_type)
+    # Burst members: the photographer filters `burst-alternate` in Lightroom to
+    # sweep non-picks after confirming the picks (framedex suggests, the human
+    # culls). A RAW+JPEG pair is not a burst and gets neither tag.
+    group = frontmatter.get("group")
+    if isinstance(group, dict) and group.get("kind") == "burst":
+        tag = "burst-pick" if group.get("primary") else "burst-alternate"
+        if tag not in tags:
+            tags.append(tag)
     return tags
 
 

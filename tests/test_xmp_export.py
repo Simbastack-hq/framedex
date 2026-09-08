@@ -298,3 +298,21 @@ def test_main_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(_sys, "argv", ["fdx-xmp", str(tmp_path)])
     assert xmp_export.main() == 0
     assert (tmp_path / "DSC_A.xmp").exists()
+
+
+# --- burst groups: picks vs alternates ------------------------------------
+
+
+def test_subject_tags_mark_burst_pick_and_alternate() -> None:
+    """In Lightroom the photographer filters `burst-alternate` to sweep the
+    non-picks after confirming the picks. A RAW+JPEG pair is not a burst and
+    gets neither tag."""
+    pick = xmp_export._subject_tags(_fm(group={"kind": "burst", "primary": True}))
+    alt = xmp_export._subject_tags(
+        _fm(group={"kind": "burst", "primary": False, "primary_file": "DSC_2.RAF"})
+    )
+    pair = xmp_export._subject_tags(_fm(group={"kind": "raw_jpeg", "primary": True}))
+    assert "burst-pick" in pick and "burst-alternate" not in pick
+    assert "burst-alternate" in alt and "burst-pick" not in alt
+    assert "burst-pick" not in pair and "burst-alternate" not in pair
+    assert "lion" in pick  # the copied keywords are still exported

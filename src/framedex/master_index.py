@@ -24,7 +24,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from framedex.parsing import is_usable_path
+from framedex.parsing import is_group_stub, is_usable_path
 from framedex.pipeline import atomic_write_text
 
 try:
@@ -118,6 +118,12 @@ def main() -> int:
 
     n_images = sum(1 for r in records if r.get("media_type") == "image")
     n_videos = len(records) - n_images
+    # Burst / RAW+JPEG members carry a copy of their primary's assessment:
+    # real sidecars, not assessments. Drive-level stats and the cull pile
+    # count group primaries only; the JSON keeps every record.
+    assessed = [r for r in records if not is_group_stub(r)]
+    grouped = [r for r in records if isinstance(r.get("group"), dict)]
+    n_groups = len({str(r["group"].get("id")) for r in grouped})
     kb_label = "Media" if n_images else "Video"
 
     # ---- JSON ----
@@ -131,6 +137,8 @@ def main() -> int:
                 "clip_count": len(records),
                 "video_count": n_videos,
                 "image_count": n_images,
+                "group_count": n_groups,
+                "grouped_file_count": len(grouped),
                 "trip_count": len(trips),
                 "clips": records,
             },
@@ -142,7 +150,7 @@ def main() -> int:
 
     # ---- Markdown ----
     total_dur_min = sum((r.get("duration_seconds") or 0) for r in records) / 60
-    rating_counter = Counter(r.get("rating", "review") for r in records)
+    rating_counter = Counter(r.get("rating", "review") for r in assessed)
     # Language is video-only; don't pollute the stat with photo "none" entries.
     languages = Counter(
         r.get("language_detected") or "none"
@@ -150,18 +158,18 @@ def main() -> int:
         if r.get("media_type") != "image"
     )
     keyword_freq: Counter[str] = Counter()
-    for r in records:
+    for r in assessed:
         for k in r.get("keywords") or []:
             keyword_freq[k] += 1
     place_freq: Counter[str] = Counter()
-    for r in records:
+    for r in assessed:
         place = (r.get("location") or {}).get("place")
         if place:
             place_freq[place] += 1
 
-    face_total = sum(r.get("face_count") or 0 for r in records)
+    face_total = sum(r.get("face_count") or 0 for r in assessed)
     named_people: Counter[str] = Counter()
-    for r in records:
+    for r in assessed:
         for f in r.get("faces") or []:
             cid = f.get("cluster_id", "")
             if cid and not cid.startswith("tmp_"):
@@ -188,6 +196,12 @@ def main() -> int:
         f"{rating_counter.get('review', 0)} review, "
         f"{rating_counter.get('cull', 0)} cull",
     ]
+    if n_groups:
+        lines.append(
+            f"- **Grouped:** {len(grouped)} files in {n_groups} "
+            f"group{'s' if n_groups != 1 else ''} (bursts / RAW+JPEG pairs; "
+            "ratings, keywords, faces, and the cull pile count group primaries only)"
+        )
     if n_videos:
         lines.append(
             "- **Languages:** "
@@ -217,7 +231,7 @@ def main() -> int:
             + ", ".join(f"`{k}` ({n})" for k, n in keyword_freq.most_common(15))
         )
 
-    cull_clips = [r for r in records if r.get("rating") == "cull"]
+    cull_clips = [r for r in assessed if r.get("rating") == "cull"]
     if cull_clips:
         cull_dur = sum((c.get("duration_seconds") or 0) for c in cull_clips) / 60
         lines.append("")
@@ -237,7 +251,9 @@ def main() -> int:
     for trip in sorted(trips.keys()):
         clips = trips[trip]
         total = sum((c.get("duration_seconds") or 0) for c in clips)
-        ratings = Counter(c.get("rating", "review") for c in clips)
+        ratings = Counter(
+            c.get("rating", "review") for c in clips if not is_group_stub(c)
+        )
         langs = sorted(
             {
                 c.get("language_detected", "")

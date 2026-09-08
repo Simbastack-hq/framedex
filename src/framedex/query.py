@@ -27,7 +27,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from framedex.parsing import is_usable_path
+from framedex.parsing import is_group_stub, is_usable_path
 
 try:
     import yaml
@@ -59,6 +59,9 @@ def parse_sidecar(path: Path) -> dict[str, Any] | None:
 
 def matches(rec: dict[str, Any], args: argparse.Namespace) -> bool:
     """Apply all filters. Returns True if record passes all."""
+    # Burst / RAW+JPEG members carry a copied assessment; hide them on request.
+    if args.primary_only and is_group_stub(rec):
+        return False
     # Rating (csv → OR within flag)
     if args.rating:
         wanted = {v.strip() for v in args.rating.split(",")}
@@ -223,6 +226,13 @@ def main() -> int:
         action="store_true",
         dest="has_speech",
         help="Only clips with detected speech (speaker_count ≥ 1).",
+    )
+    parser.add_argument(
+        "--primary-only",
+        action="store_true",
+        dest="primary_only",
+        help="Hide burst / RAW+JPEG members whose assessment is copied from a "
+        "group primary (group.primary: false).",
     )
 
     # Output flags

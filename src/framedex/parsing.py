@@ -99,3 +99,11 @@ def pick_diar_auth_kwarg(params: Iterable[str]) -> str:
     if "use_auth_token" in names:
         return "use_auth_token"
     return "token"
+
+
+def is_group_stub(rec: dict[str, Any]) -> bool:
+    """A burst / RAW+JPEG member whose assessment was copied from its group
+    primary (`group.primary: false`). Stubs are real sidecars but not
+    assessments: drive stats and the cull pile count primaries only."""
+    group = rec.get("group")
+    return isinstance(group, dict) and group.get("primary") is False

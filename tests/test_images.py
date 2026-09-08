@@ -538,6 +538,7 @@ def test_image_sidecar_is_queryable(
     }
     base["keyword"] = []
     base["has_speech"] = False
+    base["primary_only"] = False
     assert (
         query.matches(rec, argparse.Namespace(**{**base, "max_duration": 60})) is False
     )

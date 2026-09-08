@@ -418,8 +418,6 @@ def test_run_warns_once_about_invalid_user_ratings(
     )
     summary = xmp_export.run(tmp_path)
     assert summary.wrote == 1 and summary.invalid_user_ratings == 1
-    assert (
-        "invalid user_rating" in capsys.readouterr().out + capsys.readouterr().err
-        or True
-    )
+    captured = capsys.readouterr()
+    assert captured.err.count("invalid user_rating") == 1
     assert 'xmp:Rating="3"' in (tmp_path / "1.xmp").read_text()  # the indexer's keep

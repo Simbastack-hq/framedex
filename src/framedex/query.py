@@ -110,6 +110,13 @@ def _mapping(rec: dict[str, Any], key: str) -> dict[str, Any]:
     return v if isinstance(v, dict) else {}
 
 
+def _scalar(rec: dict[str, Any], key: str) -> Any:
+    """A frontmatter field compared as a scalar; a list/mapping there (garbled
+    YAML) can never match instead of raising on an unhashable value."""
+    v = rec.get(key)
+    return v if isinstance(v, (str, int, float)) or v is None else None
+
+
 def _strings(rec: dict[str, Any], key: str) -> list[str]:
     """A frontmatter field that must be a list of strings, or [] when not."""
     v = rec.get(key)
@@ -126,24 +133,20 @@ def matches(rec: dict[str, Any], args: Any) -> bool:
     # valid user_rating (the human's decision) wins over the model's.
     if args.rating:
         wanted = {v.strip() for v in args.rating.split(",")}
-        if effective_rating(rec) not in wanted:
+        eff = effective_rating(rec)
+        if not isinstance(eff, str) or eff not in wanted:
             return False
-    if args.lighting:
-        wanted = {v.strip() for v in args.lighting.split(",")}
-        if rec.get("lighting") not in wanted:
-            return False
-    if args.time_of_day:
-        wanted = {v.strip() for v in args.time_of_day.split(",")}
-        if rec.get("time_of_day") not in wanted:
-            return False
-    if args.audio_quality:
-        wanted = {v.strip() for v in args.audio_quality.split(",")}
-        if rec.get("audio_quality") not in wanted:
-            return False
-    if args.language:
-        wanted = {v.strip() for v in args.language.split(",")}
-        if rec.get("language_detected") not in wanted:
-            return False
+    for flag, key in (
+        ("lighting", "lighting"),
+        ("time_of_day", "time_of_day"),
+        ("audio_quality", "audio_quality"),
+        ("language", "language_detected"),
+    ):
+        value = getattr(args, flag)
+        if value:
+            wanted = {v.strip() for v in value.split(",")}
+            if _scalar(rec, key) not in wanted:
+                return False
     technical = _mapping(rec, "technical")
     if args.focus and technical.get("focus") != args.focus:
         return False
@@ -171,13 +174,13 @@ def matches(rec: dict[str, Any], args: Any) -> bool:
                     return False
     # Duration filters are video-only: a record without `duration_seconds`
     # (i.e. a photo) must NOT match rather than be treated as 0 seconds.
-    if args.min_duration is not None:
+    if args.min_duration is not None or args.max_duration is not None:
         dur = rec.get("duration_seconds")
-        if dur is None or dur < args.min_duration:
+        if not isinstance(dur, (int, float)) or isinstance(dur, bool):
             return False
-    if args.max_duration is not None:
-        dur = rec.get("duration_seconds")
-        if dur is None or dur > args.max_duration:
+        if args.min_duration is not None and dur < args.min_duration:
+            return False
+        if args.max_duration is not None and dur > args.max_duration:
             return False
     if args.media:
         # Accept the indexer's plural words too (image/images, video/videos).
@@ -192,7 +195,9 @@ def matches(rec: dict[str, Any], args: Any) -> bool:
             return False
     if args.face_count is not None:
         wanted = args.face_count
-        fc = rec.get("face_count") or 0
+        fc = rec.get("face_count")
+        if not isinstance(fc, int) or isinstance(fc, bool):
+            fc = 0
         if wanted.endswith("+"):
             try:
                 threshold = int(wanted[:-1])
@@ -227,8 +232,8 @@ def matches(rec: dict[str, Any], args: Any) -> bool:
         if args.dominant_color.lower() not in dcs:
             return False
     if args.has_speech:
-        sc = rec.get("speaker_count") or 0
-        if sc < 1:
+        sc = rec.get("speaker_count")
+        if not isinstance(sc, int) or isinstance(sc, bool) or sc < 1:
             return False
     return True
 
@@ -403,7 +408,12 @@ def run_query(
     n_bad_path = 0
     n_invalid_user = 0
     for s in sidecars:
-        real = s.resolve()
+        try:
+            real = s.resolve()
+        except (OSError, ValueError) as e:  # symlink loop, NUL byte
+            print(f"warning: skipping {s}: {e}", file=sys.stderr)
+            n_bad_path += 1
+            continue
         if not (
             _under(real, root) and real.name.endswith(SIDECAR_SUFFIX) and real.is_file()
         ):
@@ -412,9 +422,15 @@ def run_query(
             continue
         rec = parse_sidecar(s)
         if rec is None:
-            print(f"warning: skipping {s}: unparsable sidecar", file=sys.stderr)
+            try:
+                s.read_bytes()
+                reason = "unparsable sidecar"
+            except OSError as e:
+                reason = f"unreadable: {e}"
+            print(f"warning: skipping {s}: {reason}", file=sys.stderr)
             n_bad_path += 1
             continue
+        rec["_sidecar_path"] = str(real)  # the canonical file, never an alias
         # Sidecars store `path` relative to the scan root (portable). Resolve it
         # back to an absolute path so the printed output is usable for piping
         # (xargs, ffplay, etc.). Older sidecars with absolute paths pass through.
@@ -422,15 +438,18 @@ def run_query(
         if is_usable_path(p):
             if not Path(p).is_absolute():
                 rec["path"] = str(root / p)
-            if require_media_under_root and not _under(
-                Path(rec["path"]).resolve(), root
-            ):
-                print(
-                    f"warning: skipping {s}: media path resolves outside {root}",
-                    file=sys.stderr,
-                )
-                n_bad_path += 1
-                continue
+            if require_media_under_root:
+                try:
+                    inside = _under(Path(rec["path"]).resolve(), root)
+                except (OSError, ValueError):  # NUL byte, symlink loop
+                    inside = False
+                if not inside:
+                    print(
+                        f"warning: skipping {s}: media path resolves outside {root}",
+                        file=sys.stderr,
+                    )
+                    n_bad_path += 1
+                    continue
         elif p is None and rec.get("photos_uuid"):
             # Photos-managed asset: `path` is omitted by design (the original
             # lives in the Photos library, not on disk). Keep it — output falls

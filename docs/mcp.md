@@ -39,7 +39,8 @@ claude mcp add framedex -- /path/to/.venv/bin/fdx-mcp /Volumes/SSD-2024
 }
 ```
 
-With LM Studio and a local vision model, nothing leaves the machine.
+With LM Studio and a local vision model, and no cloud fallback configured in
+the host, tool results stay on the machine.
 
 ## Tools
 

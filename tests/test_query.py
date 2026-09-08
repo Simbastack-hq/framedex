@@ -486,3 +486,30 @@ def test_run_query_media_path_containment_is_opt_in(tmp_path: Path) -> None:
     strict = run_query(tmp_path, Filters(), require_media_under_root=True)
     assert [Path(r["path"]).name for r in strict.records] == ["in.NEF"]
     assert strict.skipped_malformed == 1
+
+
+def test_matches_never_raises_on_garbled_scalar_fields() -> None:
+    garbled = {
+        "rating": ["keep"],
+        "lighting": ["golden_hour"],
+        "speaker_count": "two",
+        "duration_seconds": "long",
+        "face_count": "many",
+    }
+    assert matches(garbled, make_args(rating="keep")) is False
+    assert matches(garbled, make_args(lighting="golden_hour")) is False
+    assert matches(garbled, make_args(has_speech=True)) is False
+    assert matches(garbled, make_args(min_duration=1.0)) is False
+    assert matches(garbled, make_args(face_count="1+")) is False
+
+
+def test_run_query_survives_a_nul_byte_in_a_path(tmp_path: Path) -> None:
+    from framedex.query import Filters, run_query
+
+    (tmp_path / "nul.NEF.description.md").write_text(
+        '---\nfile: nul.NEF\npath: "bad\\0name.NEF"\nrating: keep\n---\n'
+    )
+    _sidecar(tmp_path, "ok.NEF", {"rating": "keep"})
+    res = run_query(tmp_path, Filters(), require_media_under_root=True)
+    assert [Path(r["path"]).name for r in res.records] == ["ok.NEF"]
+    assert res.skipped_malformed == 1

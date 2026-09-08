@@ -466,13 +466,25 @@ def test_video_frame_forces_the_demuxer_and_refuses_unknown_containers(
 
 
 def test_set_user_rating_identical_concurrent_requests_serialise(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Two identical requests at once: exactly one writes (changed=True); the
-    other sees the first's result and leaves the timestamp alone. Without the
-    per-sidecar lock both would read the original and both would write."""
+    """Two identical requests at once, with the write slowed so the calls
+    overlap at the read→write boundary: exactly one writes (changed=True);
+    the other sees the first's result and leaves the timestamp alone.
+    Without the per-sidecar lock both read the original and both write."""
+    import time
+
     p = _sidecar(tmp_path, "a.NEF", {"rating": "keep"})
     roots = mt.Roots.from_args([str(tmp_path)])
+    from framedex.pipeline import atomic_write_bytes
+
+    real_write = atomic_write_bytes
+
+    def slow_write(path: Path, data: bytes) -> None:
+        time.sleep(0.2)
+        real_write(path, data)
+
+    monkeypatch.setattr("framedex.mcp_tools.atomic_write_bytes", slow_write)
     barrier = threading.Barrier(2)
     results: list[dict[str, Any]] = []
     errors: list[BaseException] = []
@@ -492,3 +504,72 @@ def test_set_user_rating_identical_concurrent_requests_serialise(
     assert errors == []
     assert sorted(r["changed"] for r in results) == [False, True]
     assert len({r["user_rated_at"] for r in results}) == 1
+
+
+def test_set_user_rating_refuses_symlinked_sidecars_and_media_but_reads_them(
+    tmp_path: Path,
+) -> None:
+    """Blocker coverage: a symlink to a *valid* sidecar (final component), a
+    symlinked parent directory, and a symlinked media file. Reads follow
+    them (inside the roots); writes never do."""
+    real = _sidecar(tmp_path, "real/x.jpg", {"rating": "keep"})
+    (tmp_path / "alias.jpg.description.md").symlink_to(real)
+    (tmp_path / "linkdir").symlink_to(tmp_path / "real", target_is_directory=True)
+    (tmp_path / "alias-media.jpg").symlink_to(tmp_path / "real" / "x.jpg")
+    roots = mt.Roots.from_args([str(tmp_path)])
+
+    assert mt.read_sidecar(roots, str(tmp_path / "alias.jpg.description.md")) == (
+        real.read_text()
+    )
+    assert (
+        mt.read_sidecar(roots, str(tmp_path / "linkdir" / "x.jpg")) == real.read_text()
+    )
+    before = real.read_bytes()
+    for ref in (
+        tmp_path / "alias.jpg.description.md",
+        tmp_path / "linkdir" / "x.jpg",
+        tmp_path / "linkdir" / "x.jpg.description.md",
+        tmp_path / "alias-media.jpg",
+    ):
+        with pytest.raises(ValueError, match="symlink"):
+            mt.set_user_rating(roots, str(ref), "cull")
+    assert real.read_bytes() == before
+    # The real path still works.
+    assert mt.set_user_rating(roots, str(tmp_path / "real" / "x.jpg"), "cull")[
+        "changed"
+    ]
+
+
+def test_query_media_reports_the_canonical_sidecar_path(tmp_path: Path) -> None:
+    real = _sidecar(tmp_path, "real/x.jpg", {"rating": "keep"})
+    (tmp_path / "alias.jpg.description.md").symlink_to(real)
+    roots = mt.Roots.from_args([str(tmp_path)])
+    out = mt.query_media(roots)
+    assert {m["sidecar_path"] for m in out["matches"]} == {str(real.resolve())}
+    for m in out["matches"]:  # …and that path is accepted by the setter
+        assert mt.set_user_rating(roots, m["sidecar_path"], "review")[
+            "user_rating"
+        ] == ("review")
+
+
+def test_contact_sheet_refused_sidecar_is_surfaced_not_hidden(tmp_path: Path) -> None:
+    pil = pytest.importorskip("PIL")
+    from PIL import Image as PILImage
+
+    assert pil
+    root = tmp_path / "root"
+    root.mkdir()
+    media = root / "a.jpg"
+    PILImage.new("RGB", (64, 64), (200, 20, 20)).save(media, "JPEG")
+    secret = tmp_path / "secret.md"
+    secret.write_text("---\nrating: keep\n---\n")
+    (root / "a.jpg.description.md").symlink_to(secret)
+    roots = mt.Roots.from_args([str(root)])
+    with pytest.raises(ValueError, match=r"no preview could be rendered.*outside"):
+        mt.build_contact_sheet(roots, [str(media)])
+
+
+def test_parse_timestamp_rejects_non_strings() -> None:
+    assert mt.parse_timestamp(90) is None
+    assert mt.parse_timestamp(None) is None
+    assert mt.parse_timestamp(["01:30"]) is None

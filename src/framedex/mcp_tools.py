@@ -147,6 +147,11 @@ def sidecar_for(
             given = roots.roots[0] / given
         media_guess: Path | None = None
     else:
+        media_ref = Path(ref).expanduser()
+        if for_write and any(c.is_symlink() for c in (media_ref, *media_ref.parents)):
+            raise ValueError(
+                f"{ref}: refusing to write through a symlink; rate the real file"
+            )
         media_guess = roots.resolve(ref)
         given = sidecar_path(media_guess)
         if not given.exists():
@@ -157,10 +162,12 @@ def sidecar_for(
     sidecar = roots.resolve(given)
     if not sidecar.name.endswith(SIDECAR_SUFFIX) or not sidecar.is_file():
         raise ValueError(f"{ref}: not a sidecar ({sidecar})")
-    if for_write and given.is_symlink():
-        raise ValueError(
-            f"{ref}: refusing to write through a symlink ({given} -> {sidecar})"
-        )
+    if for_write:
+        link = next((c for c in (given, *given.parents) if c.is_symlink()), None)
+        if link is not None:
+            raise ValueError(
+                f"{ref}: refusing to write through a symlink ({link} -> {sidecar})"
+            )
     if media_guess is None:
         media_guess = sidecar.with_name(sidecar.name[: -len(SIDECAR_SUFFIX)])
         if not media_guess.exists():
@@ -313,7 +320,7 @@ def set_user_rating(
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError as e:
-            raise ValueError(f"{sidecar.name} is not UTF-8 text") from e
+            raise ValueError(_cannot_update(sidecar, "not UTF-8 text")) from e
         parts = split_frontmatter(text)
         if parts is None:
             raise ValueError(_cannot_update(sidecar, "no frontmatter fence"))
@@ -395,9 +402,10 @@ def sheet_layout(n: int) -> tuple[tuple[int, int], list[tuple[int, int, int]]]:
     return (width, height), cells
 
 
-def parse_timestamp(text: str | None) -> float | None:
-    """`MM:SS` or `H:MM:SS` (the sidecar's notable_timestamp) → seconds."""
-    if not text:
+def parse_timestamp(text: object) -> float | None:
+    """`MM:SS` or `H:MM:SS` (the sidecar's notable_timestamp) → seconds; None
+    for anything else, including a non-string value in a garbled sidecar."""
+    if not isinstance(text, str) or not text:
         return None
     parts = text.strip().split(":")
     if not 2 <= len(parts) <= 3 or not all(p.isdigit() for p in parts):
@@ -523,12 +531,13 @@ def render_thumb(media: Path, out_dir: Path, notable: str | None) -> Path | None
 
 
 def _sidecar_summary(roots: Roots, media: Path) -> tuple[dict[str, Any] | None, str]:
-    """(frontmatter, scene) for an indexed file; (None, "") when not indexed
-    or when the sidecar resolves outside the roots (never read)."""
-    try:
-        sidecar, _ = sidecar_for(roots, str(media))
-    except ValueError:
+    """(frontmatter, scene) for an indexed file; (None, "") when there is no
+    sidecar. A sidecar that exists but is refused (resolves outside the
+    roots, is not a sidecar file) raises, so the refusal reaches the legend
+    instead of reading as "not indexed"."""
+    if not sidecar_path(media).exists():
         return None, ""
+    sidecar, _ = sidecar_for(roots, str(media))
     parts = split_frontmatter(sidecar.read_bytes().decode("utf-8", errors="replace"))
     if parts is None:
         return None, ""

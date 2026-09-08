@@ -36,11 +36,19 @@ photos = [
     # missing extra and prints an actionable install hint.
     "osxphotos>=0.69.0; sys_platform == 'darwin'",
 ]
+mcp = [
+    # fdx-mcp: the official MCP SDK (pulls pydantic, starlette, uvicorn, httpx,
+    # jsonschema) plus Pillow for contact sheets. exiftool and ffmpeg are
+    # system binaries; add [images] for HEIC thumbnails.
+    "mcp>=2,<3",
+    "Pillow>=10.0.0",
+]
 all = [
     "whisperx>=3.1.0",
     "Pillow>=10.0.0",
     "pillow-heif>=0.16.0",
     "osxphotos>=0.69.0; sys_platform == 'darwin'",
+    "mcp>=2,<3",
 ]
 
 # `requests`/`pyyaml` are runtime deps of the shared pipeline core that the
@@ -57,6 +65,7 @@ fdx-master = "framedex.master_index:main"
 fdx-query = "framedex.query:main"
 fdx-photos = "framedex.photos_indexer:main"
 fdx-xmp = "framedex.xmp_export:main"
+fdx-mcp = "framedex.mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/framedex"]

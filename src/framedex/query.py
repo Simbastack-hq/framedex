@@ -34,6 +34,7 @@ from framedex.parsing import (
     is_group_stub,
     is_usable_path,
     is_user_rated,
+    scene_sentence,
 )
 from framedex.pipeline import split_frontmatter
 
@@ -57,6 +58,7 @@ def parse_sidecar(path: Path) -> dict[str, Any] | None:
         fm = yaml.safe_load(parts[0])
         if isinstance(fm, dict):
             fm["_sidecar_path"] = str(path)
+            fm["_scene"] = scene_sentence(parts[1])
             return fm
     except yaml.YAMLError:
         return None

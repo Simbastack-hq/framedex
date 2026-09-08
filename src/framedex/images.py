@@ -713,7 +713,7 @@ def _mark_primary_incomplete(sidecar: Path, group: grouping.MediaGroup) -> None:
     fm_text = yaml.safe_dump(
         fm, sort_keys=False, allow_unicode=True, default_flow_style=False
     ).rstrip()
-    pipeline.atomic_write_text(sidecar, f"---\n{fm_text}\n---{parts[1]}")
+    pipeline.atomic_write_text(sidecar, f"---\n{fm_text}\n---\n{parts[1]}")
 
 
 def _score_unit(unit: grouping.Unit, tmp_dir: Path) -> float:

@@ -123,7 +123,10 @@ def main() -> int:
     # count group primaries only; the JSON keeps every record.
     assessed = [r for r in records if not is_group_stub(r)]
     grouped = [r for r in records if isinstance(r.get("group"), dict)]
-    n_groups = len({str(r["group"].get("id")) for r in grouped})
+    # Ids hash member names, so two folders can share one: scope by directory.
+    n_groups = len(
+        {(Path(r["sidecar_path"]).parent, str(r["group"].get("id"))) for r in grouped}
+    )
     kb_label = "Media" if n_images else "Video"
 
     # ---- JSON ----

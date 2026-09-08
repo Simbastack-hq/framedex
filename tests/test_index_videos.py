@@ -296,6 +296,8 @@ def test_image_only_run_never_loads_whisper(
     monkeypatch.setattr(index_videos, "setup_whisper", _boom)
     # Backend wiring (incl. the claude-CLI check) now lives in runner.
     monkeypatch.setattr("framedex.runner.check_claude_cli", lambda: True)
+    # The grouping pre-pass would shell out to exiftool: keep the test hermetic.
+    monkeypatch.setattr("framedex.grouping.read_group_metadata", lambda paths: {})
     monkeypatch.setattr(
         images,
         "process_one_image",
@@ -550,24 +552,110 @@ def test_main_no_group_indexes_every_file_individually(
     assert calls == ["one:1.NEF", "one:2.NEF", "one:3.NEF", "one:lone.NEF"]
 
 
+def _write_group_sidecars(files: list[Path], gid: str, primary: Path) -> None:
+    for f in files:
+        block = (
+            f"group: {{kind: burst, id: {gid}, primary: true}}"
+            if f == primary
+            else f"group: {{kind: burst, id: {gid}, primary: false, primary_file: {primary.name}}}"
+        )
+        pipeline.sidecar_path(f).write_text(
+            f"---\nfile: {f.name}\nrating: keep\n{block}\n---\n"
+        )
+
+
 def test_main_skips_complete_group_and_redoes_incomplete_group_whole(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A group is done only when every member has a sidecar. Stubs are written
-    before the primary, so any missing member sidecar means the group was
-    interrupted (or hand-edited) and is redone whole — never partially."""
+    """A group is done only when every member's sidecar belongs to it. Stubs
+    are written before the primary, so any missing member sidecar means the
+    group was interrupted (or hand-edited) and is redone whole — never
+    partially."""
+    from framedex import grouping
+
     files, meta = _burst_folder(tmp_path)
-    for f in [*files, tmp_path / "lone.NEF"]:
-        pipeline.sidecar_path(f).write_text("---\nfile: x\n---\n")
+    _write_group_sidecars(files, grouping.group_id(files), files[1])
+    pipeline.sidecar_path(tmp_path / "lone.NEF").write_text("---\nfile: x\n---\n")
     calls: list[str] = []
     _wire_group_main(monkeypatch, meta, calls)
     monkeypatch.setattr(sys, "argv", _argv(tmp_path))
     assert index_videos.main() == 0
     assert calls == []
 
-    pipeline.sidecar_path(files[1]).unlink()  # one member (the primary, say) lost
+    pipeline.sidecar_path(files[1]).unlink()  # the primary's sidecar lost
     assert index_videos.main() == 0
     assert calls == ["group:1.NEF,2.NEF,3.NEF"]
+
+
+def test_main_legacy_per_file_sidecars_count_as_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An archive indexed before grouping existed is not re-indexed (its
+    per-file assessments are valid); --force regroups it."""
+    files, meta = _burst_folder(tmp_path)
+    for f in [*files, tmp_path / "lone.NEF"]:
+        pipeline.sidecar_path(f).write_text("---\nfile: x\nrating: keep\n---\n")
+    calls: list[str] = []
+    _wire_group_main(monkeypatch, meta, calls)
+    monkeypatch.setattr(sys, "argv", _argv(tmp_path))
+    assert index_videos.main() == 0
+    assert calls == []
+
+
+def test_main_redoes_group_whose_membership_changed_and_stale_singles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sidecars from a different grouping (a stale id) no longer prove the
+    group done; a lone file whose sidecar is a leftover stub is re-assessed."""
+    files, meta = _burst_folder(tmp_path)
+    _write_group_sidecars(files, "b_stale000", files[1])
+    lone = tmp_path / "lone.NEF"
+    pipeline.sidecar_path(lone).write_text(
+        "---\nfile: lone.NEF\ngroup: {kind: burst, id: b_old, primary: false}\n---\n"
+    )
+    calls: list[str] = []
+    _wire_group_main(monkeypatch, meta, calls)
+    monkeypatch.setattr(sys, "argv", _argv(tmp_path))
+    assert index_videos.main() == 0
+    assert calls == ["group:1.NEF,2.NEF,3.NEF", "one:lone.NEF"]
+
+
+def test_main_no_group_leaves_existing_grouped_sidecars_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--no-group is existence-only resume: it never re-indexes a grouped
+    folder by surprise (degrouping is the explicit --force --no-group)."""
+    from framedex import grouping
+
+    files, meta = _burst_folder(tmp_path)
+    _write_group_sidecars(files, grouping.group_id(files), files[1])
+    calls: list[str] = []
+    _wire_group_main(monkeypatch, meta, calls)
+    monkeypatch.setattr(sys, "argv", _argv(tmp_path, "--no-group"))
+    assert index_videos.main() == 0
+    assert calls == ["one:lone.NEF"]
+
+
+def test_main_exits_loudly_when_the_exif_batch_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A broken exiftool must not silently turn a burst folder into N vision
+    calls; the run stops and names --no-group as the explicit fallback."""
+    from framedex import grouping
+
+    _burst_folder(tmp_path)
+    calls: list[str] = []
+    _wire_group_main(monkeypatch, {}, calls)
+
+    def boom(paths: list[Path]) -> Any:
+        raise grouping.GroupMetadataError("grouping: exiftool batch read failed (x)")
+
+    monkeypatch.setattr(grouping, "read_group_metadata", boom)
+    monkeypatch.setattr(sys, "argv", _argv(tmp_path))
+    with pytest.raises(SystemExit) as exc:
+        index_videos.main()
+    assert "--no-group" in str(exc.value)
+    assert calls == []
 
 
 def test_main_force_reprocesses_complete_groups(

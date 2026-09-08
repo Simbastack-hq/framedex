@@ -11,8 +11,9 @@ Pairing: same directory + same stem (case-insensitive), one RAW + one camera
 JPEG → one Unit (RAW primary, JPEG sibling used as the preview source).
 Bursts: within one directory and one camera, frames whose successive
 DateTimeOriginal gaps are <= BURST_GAP_SEC chain; a chain of >= BURST_MIN_SIZE
-is a burst. Files without a usable date never join a group (indexed
-individually — never guess).
+is a burst. Files without a usable date or camera identity, and units that are
+not independent captures (a RAW's second JPEG, an ambiguous same-stem bucket),
+never join a group — they index individually. Never guess.
 """
 
 from __future__ import annotations
@@ -22,13 +23,14 @@ import json
 import re
 import subprocess
 import sys
-import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from framedex.images import RAW_EXTENSIONS
+from framedex.pipeline import sidecar_path
 
 # Successive frames (same folder, same camera) at most this far apart chain
 # into one burst. 2 s covers every burst mode; two deliberate frames rarely
@@ -39,8 +41,8 @@ BURST_MIN_SIZE = 3
 # Only camera-rendered JPEGs pair with a same-stem RAW. PNG/TIFF/HEIC/WebP
 # sharing a stem are exports or derivatives, not the same capture.
 PAIR_JPEG_EXTENSIONS = {".jpg", ".jpeg"}
-# The five tags grouping needs. No `-n`: SubSecTimeOriginal must stay a string
-# ("05" is .05 s; as a number it would become 5 → .5 s).
+# The five tags grouping needs. Values are read back as strings regardless of
+# how exiftool's JSON encoder typed them (see `_as_str`).
 GROUP_EXIF_TAGS = [
     "-DateTimeOriginal",
     "-SubSecDateTimeOriginal",
@@ -51,6 +53,14 @@ GROUP_EXIF_TAGS = [
 
 _TZ_SUFFIX_RE = re.compile(r"(Z|[+-]\d{2}:?\d{2})$")
 _EPOCH = datetime(1970, 1, 1)
+
+
+class GroupMetadataError(RuntimeError):
+    """The batched exiftool read failed outright (binary missing, crashed, or
+    returned no parseable JSON). Raised rather than degraded: silently
+    indexing every file individually would multiply vision spend on exactly
+    the burst-heavy folders grouping exists for. `--no-group` is the explicit
+    way to ask for that."""
 
 
 @dataclass(frozen=True)
@@ -69,6 +79,10 @@ class Unit:
 
     primary: Path
     sibling: Path | None = None
+    # False for pairing leftovers (a RAW's second JPEG) and members of an
+    # ambiguous bucket (two RAWs sharing a stem): not independent captures,
+    # so they never count toward a burst.
+    chainable: bool = True
 
     @property
     def preview_source(self) -> Path:
@@ -84,7 +98,7 @@ class Unit:
 @dataclass
 class MediaGroup:
     kind: str  # "burst" | "raw_jpeg" (a burst of pairs is a burst)
-    id: str  # b_<sha1[:8] of the sorted root-relative member paths>
+    id: str  # b_<sha1[:8] of the sorted member file names>
     units: list[Unit]  # timestamp order for a burst; exactly one for raw_jpeg
     primary: Path | None = None  # set by pick_representative
     sharpness: dict[Path, float] = field(default_factory=dict)  # unit.primary -> score
@@ -104,22 +118,31 @@ def parse_exif_timestamp(
     subsec_datetime_original: str | None,
     subsec_time_original: str | None,
 ) -> float | None:
-    """Resolve a capture instant to seconds. Prefer SubSecDateTimeOriginal
-    ('2024:08:14 07:23:11.25+03:00'); else DateTimeOriginal plus
-    SubSecTimeOriginal as a fractional suffix; else whole seconds. Any
-    timezone suffix is dropped: only gaps between frames of one camera
-    matter, and those share a zone. None when nothing parses."""
-    raw = (subsec_datetime_original or "").strip()
+    """Resolve a capture instant to seconds. Sources are tried in priority
+    order and the first that parses wins: SubSecDateTimeOriginal
+    ('2024:08:14 07:23:11.25+03:00'), then DateTimeOriginal with
+    SubSecTimeOriginal appended as the fraction (unless the value already
+    carries one). Any timezone suffix is dropped: only gaps between frames of
+    one camera matter, and those share a zone. None when nothing parses."""
+    digits = (subsec_time_original or "").strip()
+    candidates = [
+        (subsec_datetime_original, ""),
+        (datetime_original, digits if digits.isdigit() else ""),
+    ]
+    for text, extra_frac in candidates:
+        seconds = _parse_one(text, extra_frac)
+        if seconds is not None:
+            return seconds
+    return None
+
+
+def _parse_one(text: str | None, extra_frac: str) -> float | None:
+    base = _TZ_SUFFIX_RE.sub("", (text or "").strip())
     frac = ""
-    if raw:
-        base = _TZ_SUFFIX_RE.sub("", raw)
-        if "." in base:
-            base, frac = base.split(".", 1)
-    else:
-        base = _TZ_SUFFIX_RE.sub("", (datetime_original or "").strip())
-        digits = (subsec_time_original or "").strip()
-        if digits.isdigit():
-            frac = digits
+    if "." in base:
+        base, frac = base.split(".", 1)
+    if not frac:
+        frac = extra_frac
     try:
         dt = datetime.strptime(base, "%Y:%m:%d %H:%M:%S")
     except ValueError:
@@ -137,9 +160,10 @@ def parse_exif_timestamp(
 
 def pair_raw_jpeg(paths: list[Path]) -> list[Unit]:
     """Collapse RAW+JPEG pairs into Units; everything else becomes a lone Unit.
-    A RAW with two JPEG candidates pairs with the first by sorted path (the
-    other stays alone); two RAWs sharing a stem are ambiguous and both stay
-    alone. Result is sorted by primary path."""
+    A RAW with two JPEG candidates pairs with the first by sorted path; the
+    other stays alone and unchainable (it is not another capture). Two RAWs
+    sharing a stem are ambiguous: every file in that bucket stays alone and
+    unchainable. Result is sorted by primary path."""
     by_key: dict[tuple[Path, str], list[Path]] = {}
     for p in paths:
         by_key.setdefault((p.parent, p.stem.lower()), []).append(p)
@@ -150,7 +174,9 @@ def pair_raw_jpeg(paths: list[Path]) -> list[Unit]:
         others = [m for m in members if m not in raws and m not in jpegs]
         if len(raws) == 1 and jpegs:
             units.append(Unit(raws[0], jpegs[0]))
-            units += [Unit(j) for j in jpegs[1:]]
+            units += [Unit(j, chainable=False) for j in jpegs[1:]]
+        elif len(raws) > 1:
+            units += [Unit(m, chainable=False) for m in raws + jpegs]
         else:
             units += [Unit(m) for m in raws + jpegs]
         units += [Unit(m) for m in others]
@@ -162,24 +188,28 @@ def pair_raw_jpeg(paths: list[Path]) -> list[Unit]:
 # ---------------------------------------------------------------------------
 
 
-def group_id(files: list[Path], root: Path) -> str:
-    """Stable, order-independent id from the sorted root-relative paths."""
-    rel = sorted(str(f.relative_to(root)) for f in files)
-    return "b_" + hashlib.sha1("\n".join(rel).encode("utf-8")).hexdigest()[:8]
+def group_id(files: list[Path]) -> str:
+    """Stable id from the sorted member file names. Members share one
+    directory, so names are unique within a group, and the id is independent
+    of the scan root (re-indexing from a different root never changes ids).
+    Not unique across folders: `fdx-master` scopes ids by directory."""
+    names = sorted(f.name for f in files)
+    return "b_" + hashlib.sha1("\n".join(names).encode("utf-8")).hexdigest()[:8]
 
 
 def detect_bursts(
-    units: list[Unit], meta: dict[Path, GroupMeta], root: Path
+    units: list[Unit], meta: dict[Path, GroupMeta]
 ) -> tuple[list[MediaGroup], list[Unit]]:
     """Chain units within one directory + one camera whose successive
     timestamps are <= BURST_GAP_SEC apart; chains of >= BURST_MIN_SIZE become
-    burst groups (members in timestamp order). Units without a timestamp
-    never chain. Returns (bursts, remaining units)."""
+    burst groups (members in timestamp order). Units without a timestamp,
+    without a camera identity, or flagged unchainable never chain. Returns
+    (bursts, remaining units)."""
     lanes: dict[tuple[Path, str], list[tuple[float, Unit]]] = {}
     rest: list[Unit] = []
     for u in units:
         m = meta.get(u.primary)
-        if m is None or m.timestamp is None:
+        if not u.chainable or m is None or m.timestamp is None or not m.camera:
             rest.append(u)
             continue
         lanes.setdefault((u.primary.parent, m.camera), []).append((m.timestamp, u))
@@ -191,34 +221,30 @@ def detect_bursts(
         prev_ts: float | None = None
         for ts, u in lane:
             if prev_ts is not None and ts - prev_ts > BURST_GAP_SEC:
-                _flush_chain(chain, bursts, rest, root)
+                _flush_chain(chain, bursts, rest)
                 chain = []
             chain.append(u)
             prev_ts = ts
-        _flush_chain(chain, bursts, rest, root)
+        _flush_chain(chain, bursts, rest)
     return bursts, sorted(rest, key=lambda u: u.primary)
 
 
-def _flush_chain(
-    chain: list[Unit], bursts: list[MediaGroup], rest: list[Unit], root: Path
-) -> None:
+def _flush_chain(chain: list[Unit], bursts: list[MediaGroup], rest: list[Unit]) -> None:
     if len(chain) >= BURST_MIN_SIZE:
         files = [f for u in chain for f in u.files]
-        bursts.append(MediaGroup("burst", group_id(files, root), list(chain)))
+        bursts.append(MediaGroup("burst", group_id(files), list(chain)))
     else:
         rest.extend(chain)
 
 
 def build_groups(
-    paths: list[Path], meta: dict[Path, GroupMeta], root: Path
+    paths: list[Path], meta: dict[Path, GroupMeta]
 ) -> tuple[list[MediaGroup], list[Path]]:
     """Pair, then chain bursts over the pair-collapsed units. Returns
     (groups sorted by first file, ungrouped single files). Every input path
     appears exactly once: in one group's `files` or in the singles."""
-    bursts, rest = detect_bursts(pair_raw_jpeg(paths), meta, root)
-    pairs = [
-        MediaGroup("raw_jpeg", group_id(u.files, root), [u]) for u in rest if u.sibling
-    ]
+    bursts, rest = detect_bursts(pair_raw_jpeg(paths), meta)
+    pairs = [MediaGroup("raw_jpeg", group_id(u.files), [u]) for u in rest if u.sibling]
     singles = [u.primary for u in rest if not u.sibling]
     groups = sorted(bursts + pairs, key=lambda grp: grp.files[0])
     return groups, singles
@@ -229,21 +255,51 @@ def build_groups(
 # ---------------------------------------------------------------------------
 
 
-def pick_representative(group: MediaGroup, score: Callable[[Unit], float]) -> None:
-    """Score every unit (the caller renders `unit.preview_source` and returns
-    its Laplacian sharpness); the highest becomes `group.primary`, a tie
-    going to the earliest unit. Every score is recorded in `group.sharpness`
-    so members can carry their own number. Deterministic, local, explainable
-    — deliberately not a model call (that would scale vision cost with
-    shooting style)."""
-    best_i = 0
-    best = float("-inf")
-    for i, u in enumerate(group.units):
-        s = score(u)
-        group.sharpness[u.primary] = s
-        if s > best:
-            best_i, best = i, s
-    group.primary = group.units[best_i].primary
+def pick_representative(group: MediaGroup, scores: dict[Path, float]) -> None:
+    """Record every unit's sharpness (`scores`, keyed by unit.primary) and make
+    the highest `group.primary`; a tie goes to the earliest unit (units are
+    in timestamp order). Deterministic, local, explainable — deliberately
+    not a model call (that would scale vision cost with shooting style)."""
+    group.sharpness = {u.primary: scores[u.primary] for u in group.units}
+    best = group.units[0]
+    for u in group.units[1:]:
+        if scores[u.primary] > scores[best.primary]:
+            best = u
+    group.primary = best.primary
+
+
+# ---------------------------------------------------------------------------
+# Resume: is a group / single already done?
+# ---------------------------------------------------------------------------
+
+
+def group_is_done(
+    group: MediaGroup, read: Callable[[Path], dict[str, Any] | None]
+) -> bool:
+    """True when every member has a sidecar that belongs to this exact group
+    (same id ⇒ same membership), or when every member has a sidecar from
+    before grouping existed (no `group` block anywhere: those per-file
+    assessments stay valid; `--force` regroups). A missing or unparsable
+    sidecar, or a block from a different grouping, means the whole group is
+    reprocessed and its stubs rewritten. `read` returns a sidecar's
+    frontmatter, or None when it is missing/unparsable."""
+    blocks: list[Any] = []
+    for f in group.files:
+        fm = read(sidecar_path(f))
+        if fm is None:
+            return False
+        blocks.append(fm.get("group"))
+    if all(b is None for b in blocks):
+        return True
+    return all(isinstance(b, dict) and b.get("id") == group.id for b in blocks)
+
+
+def single_is_done(path: Path, read: Callable[[Path], dict[str, Any] | None]) -> bool:
+    """A lone file is done when its sidecar exists and is not a leftover of an
+    earlier grouping (a stub, or an ex-primary, carries a `group` block and
+    must be re-assessed on its own)."""
+    fm = read(sidecar_path(path))
+    return fm is not None and "group" not in fm
 
 
 # ---------------------------------------------------------------------------
@@ -252,39 +308,40 @@ def pick_representative(group: MediaGroup, score: Callable[[Unit], float]) -> No
 
 
 def read_group_metadata(paths: list[Path]) -> dict[Path, GroupMeta]:
-    """One batched exiftool call for the whole image list (an argfile dodges
-    ARG_MAX). Partial output is used as-is (exiftool exits 1 when any file
-    fails but still emits JSON for the rest). On a failure to run or parse,
-    print a loud warning and return {} — every file then indexes
-    individually (RAW+JPEG pairing needs no EXIF and still applies)."""
-    if not paths:
+    """One batched exiftool call for the whole image list, fed on stdin via
+    `-@ -` (one argument per line: no ARG_MAX, no temp file). A path with an
+    embedded newline could smuggle an option into that stream (a write flag,
+    say), so such paths are refused up front with a warning and left to the
+    per-file argv reads. Partial output is used as-is (exiftool exits 1 when
+    any file fails but still emits JSON for the rest); files absent from the
+    output are reported and treated as undated. Raises GroupMetadataError
+    when the batch fails outright."""
+    safe = [p for p in paths if "\n" not in str(p) and "\r" not in str(p)]
+    if len(safe) != len(paths):
+        print(
+            f"warning: grouping: {len(paths) - len(safe)} path(s) contain a newline "
+            "in the name; excluded from burst detection",
+            file=sys.stderr,
+        )
+    if not safe:
         return {}
-    with tempfile.NamedTemporaryFile("w", suffix=".args", delete=False) as fh:
-        fh.write("\n".join(str(p) for p in paths) + "\n")
-        argfile = Path(fh.name)
     try:
         result = subprocess.run(
-            ["exiftool", "-json", *GROUP_EXIF_TAGS, "-@", str(argfile)],
+            ["exiftool", "-json", *GROUP_EXIF_TAGS, "-@", "-"],
+            input="\n".join(str(p) for p in safe) + "\n",
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         data = json.loads(result.stdout)
         if not isinstance(data, list):
             raise ValueError("exiftool JSON is not a list")
     except (OSError, ValueError) as e:
-        print(
-            f"warning: grouping: exiftool batch read failed ({e}) — "
-            "no burst detection this run; files index individually",
-            file=sys.stderr,
-        )
-        return {}
-    finally:
-        argfile.unlink(missing_ok=True)
+        raise GroupMetadataError(f"grouping: exiftool batch read failed ({e})") from e
 
     out: dict[Path, GroupMeta] = {}
     for entry in data:
-        src = entry.get("SourceFile")
-        if not src:
+        if not isinstance(entry, dict) or not entry.get("SourceFile"):
             continue
         make = str(entry.get("Make") or "").strip()
         model = str(entry.get("Model") or "").strip()
@@ -294,7 +351,14 @@ def read_group_metadata(paths: list[Path]) -> dict[Path, GroupMeta]:
             _as_str(entry.get("SubSecDateTimeOriginal")),
             _as_str(entry.get("SubSecTimeOriginal")),
         )
-        out[Path(src)] = GroupMeta(timestamp=ts, camera=camera)
+        out[Path(str(entry["SourceFile"]))] = GroupMeta(timestamp=ts, camera=camera)
+    missing = sum(1 for p in safe if p not in out)
+    if missing:
+        print(
+            f"warning: grouping: exiftool returned no EXIF for {missing} of "
+            f"{len(safe)} files (unreadable?); they index individually",
+            file=sys.stderr,
+        )
     return out
 
 

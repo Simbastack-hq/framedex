@@ -97,11 +97,13 @@ def test_master_index_skips_photos_asset_with_malformed_path(
 # ---------------------------------------------------------------------------
 
 
-def _write_fm(root: Path, name: str, fm: dict[str, object]) -> None:
+def _write_fm(root: Path, rel: str, fm: dict[str, object]) -> None:
     import yaml
 
-    full = {"file": name, "path": name, "media_type": "image", **fm}
-    (root / f"{name}.description.md").write_text(
+    full = {"file": Path(rel).name, "path": rel, "media_type": "image", **fm}
+    sidecar = root / f"{rel}.description.md"
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    sidecar.write_text(
         "---\n"
         + yaml.safe_dump(full, sort_keys=False)
         + "---\n\n## Description\n\nx.\n"
@@ -168,3 +170,41 @@ def test_master_index_without_groups_has_no_grouped_line(
     assert "Grouped" not in (tmp_path / "_INDEX.md").read_text()
     idx = json.loads((tmp_path / "_INDEX.json").read_text())
     assert idx["group_count"] == 0 and idx["grouped_file_count"] == 0
+
+
+def test_master_index_scopes_group_ids_by_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ids hash member names, so two shoots with identical filenames share
+    one id; they are still two groups."""
+    for folder in ("a", "b"):
+        _write_fm(
+            tmp_path,
+            f"{folder}/1.NEF",
+            {
+                "rating": "keep",
+                "group": {
+                    "kind": "burst",
+                    "id": "b_same",
+                    "primary": True,
+                    "members": ["1.NEF", "2.NEF"],
+                },
+            },
+        )
+        _write_fm(
+            tmp_path,
+            f"{folder}/2.NEF",
+            {
+                "rating": "keep",
+                "group": {
+                    "kind": "burst",
+                    "id": "b_same",
+                    "primary": False,
+                    "primary_file": "1.NEF",
+                },
+            },
+        )
+    monkeypatch.setattr(sys, "argv", ["fdx-master", str(tmp_path)])
+    assert main() == 0
+    idx = json.loads((tmp_path / "_INDEX.json").read_text())
+    assert idx["group_count"] == 2 and idx["grouped_file_count"] == 4

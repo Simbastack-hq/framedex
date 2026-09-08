@@ -208,12 +208,23 @@ def _fake_cv2(
         def var(self) -> float:
             return self._v
 
+    def cvt(img: object, code: int) -> tuple[str, object]:
+        assert code == 6, "must convert to grayscale (COLOR_BGR2GRAY)"
+        return ("gray", img)
+
+    def lap(gray: object, depth: int) -> _Lap:
+        assert isinstance(gray, tuple) and gray[0] == "gray", (
+            "Laplacian of the gray image"
+        )
+        assert depth == 7, "64-bit float Laplacian (CV_64F)"
+        return _Lap(var)
+
     cv2 = types.SimpleNamespace(
         COLOR_BGR2GRAY=6,
-        CV_64F=6,
+        CV_64F=7,
         imread=lambda p: imread_result,
-        cvtColor=lambda img, code: ("gray", img),
-        Laplacian=lambda gray, depth: _Lap(var),
+        cvtColor=cvt,
+        Laplacian=lap,
     )
     monkeypatch.setitem(sys.modules, "cv2", cv2)
 

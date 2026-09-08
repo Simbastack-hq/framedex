@@ -1216,7 +1216,11 @@ def main() -> int:
         help="List what would be processed; no API/model calls",
     )
     parser.add_argument(
-        "--max-files", type=int, default=None, help="Stop after N files (for testing)"
+        "--max-files",
+        type=int,
+        default=None,
+        help="Stop after N work items; a burst / RAW+JPEG group counts once but "
+        "may write many sidecars (for testing)",
     )
     parser.add_argument(
         "--max-duration",
@@ -1356,26 +1360,44 @@ def main() -> int:
         print(f"  found {len(imgs)} image files")
         groups: list[grouping.MediaGroup] = []
         singles = imgs
-        if not args.no_group:
-            meta = grouping.read_group_metadata(imgs)
-            groups, singles = grouping.build_groups(imgs, meta, root)
+        if args.no_group:
+            # Existence-only resume, like video: an existing grouped sidecar is
+            # left alone. Degrouping an indexed folder is `--force --no-group`.
+            itodo = (
+                singles if args.force else [im for im in singles if not has_sidecar(im)]
+            )
+        else:
+            try:
+                meta = grouping.read_group_metadata(imgs)
+            except grouping.GroupMetadataError as e:
+                sys.exit(
+                    f"{e}\nFix exiftool, or pass --no-group to index every file individually."
+                )
+            groups, singles = grouping.build_groups(imgs, meta)
             if groups:
                 n_grouped = sum(len(grp.files) for grp in groups)
                 print(
                     f"  grouped {n_grouped} files into {len(groups)} groups "
                     "(bursts + RAW/JPEG pairs)"
                 )
-        itodo = singles if args.force else [im for im in singles if not has_sidecar(im)]
+            # Resume is group-aware: a group is done only when every member's
+            # sidecar belongs to this exact group (or all predate grouping); a
+            # single is done only when its sidecar is not a leftover of an
+            # earlier grouping. Stubs are written before the primary, so an
+            # interrupted group is redone whole.
+            read = pipeline.read_sidecar_frontmatter
+            itodo = (
+                singles
+                if args.force
+                else [im for im in singles if not grouping.single_is_done(im, read)]
+            )
+            gtodo = (
+                groups
+                if args.force
+                else [grp for grp in groups if not grouping.group_is_done(grp, read)]
+            )
+            todo += [(grp, "group") for grp in gtodo]
         todo += [(im, "image") for im in itodo]
-        # A group is done only when every member has a sidecar: stubs are
-        # written before the primary, so a crash between them leaves a member
-        # without one and the whole group is redone (stubs rewritten).
-        gtodo = (
-            groups
-            if args.force
-            else [grp for grp in groups if not all(has_sidecar(f) for f in grp.files)]
-        )
-        todo += [(grp, "group") for grp in gtodo]
 
     def _first_path(item: tuple[Any, str]) -> Path:
         obj, kind = item

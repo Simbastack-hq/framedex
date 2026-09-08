@@ -84,6 +84,25 @@ def has_sidecar(media: Path) -> bool:
     return sidecar_path(media).exists()
 
 
+def read_sidecar_frontmatter(sidecar: Path) -> dict[str, Any] | None:
+    """Parse a sidecar's YAML frontmatter. None when the file is missing,
+    unreadable, has no frontmatter fence, or the YAML is not a mapping."""
+    try:
+        text = sidecar.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not text.startswith("---"):
+        return None
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return None
+    try:
+        fm = yaml.safe_load(parts[1])
+    except yaml.YAMLError:
+        return None
+    return fm if isinstance(fm, dict) else None
+
+
 def atomic_write_text(path: Path, text: str) -> None:
     """Write `text` to `path` atomically: a same-directory temp file, then
     `os.replace`. Readers and the resume check (`has_sidecar`) never observe a

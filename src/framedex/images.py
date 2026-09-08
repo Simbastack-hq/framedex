@@ -610,16 +610,19 @@ STUB_COPIED_FIELDS = (
 
 
 def _group_block(group: grouping.MediaGroup, member: Path) -> dict[str, Any]:
-    """The `group:` frontmatter block for one member of a picked group."""
+    """The `group:` frontmatter block for one member of a picked group. The
+    full member list lives on the primary only (repeating it on every stub
+    would grow quadratically with burst length); stubs point at the primary."""
     assert group.primary is not None
     block: dict[str, Any] = {
         "kind": group.kind,
         "id": group.id,
         "primary": member == group.primary,
     }
-    if member != group.primary:
+    if member == group.primary:
+        block["members"] = [f.name for f in group.files]
+    else:
         block["primary_file"] = group.primary.name
-    block["members"] = [f.name for f in group.files]
     # A pair's JPEG sibling was scored as its RAW's preview: report that score.
     unit = next(u for u in group.units if member in u.files)
     block["sharpness"] = round(group.sharpness[unit.primary], 1)
@@ -631,17 +634,14 @@ def build_stub_frontmatter(
     root: Path,
     metadata: dict[str, Any],
     gps: dict[str, Any],
+    place: str,
     primary_fm: dict[str, Any],
     group: grouping.MediaGroup,
 ) -> dict[str, Any]:
-    """Own file/EXIF/GPS fields + the primary's assessment (copied, so a later
-    mutation of one frontmatter can't leak into another) + a group block.
-    `place` mirrors the primary's when this member has GPS: a burst is one
-    place, and a Nominatim call per stub would be waste."""
+    """Own file/EXIF/GPS/place fields + the primary's assessment (copied, so a
+    later mutation of one frontmatter can't leak into another) + a group
+    block. No faces: nothing was detected on this frame."""
     structured = {k: copy.deepcopy(primary_fm.get(k)) for k in STUB_COPIED_FIELDS}
-    place = ""
-    if gps.get("lat") is not None:
-        place = (primary_fm.get("location") or {}).get("place") or ""
     return build_image_frontmatter(
         member,
         root,
@@ -656,11 +656,13 @@ def build_stub_frontmatter(
 
 def _render_and_score(unit: grouping.Unit, tmp_dir: Path) -> tuple[Path | None, float]:
     """Render the unit's preview into its own subdir (render_preview writes a
-    fixed filename) and score it. A RAW with no embedded preview scores -1 so
-    it is never the pick while any member renders."""
+    fixed filename) and score it. The full-size embedded JPEG a RAW yields is
+    dropped as soon as the preview exists. A RAW with no embedded preview
+    scores -1 so it is never the pick while any member renders."""
     sub = tmp_dir / unit.primary.name
     sub.mkdir()
     preview = render_preview(unit.preview_source, sub)
+    (sub / "raw_preview.jpg").unlink(missing_ok=True)
     if preview is None:
         return None, -1.0
     return preview, frame_sampling.laplacian_sharpness(preview)
@@ -673,47 +675,68 @@ def process_group(
     ctx: pipeline.ProcessContext,
 ) -> pipeline.ProcessResult:
     """One vision call for a burst / RAW+JPEG pair. Renders + scores every
-    member locally, runs the full pipeline on the sharpest (its rendered
-    preview reused), and writes each other member a stub sidecar *before*
-    the primary sidecar — the primary is the resume marker for the group."""
+    member locally (keeping only the current best preview on disk), reads the
+    other members' EXIF/GPS before the paid call, runs the full pipeline on
+    the sharpest member with its rendered preview reused, and writes each
+    other member a stub sidecar *before* the primary sidecar — the primary
+    is the resume marker for the group."""
     from framedex import grouping  # runtime import: see the TYPE_CHECKING note
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="fdx-group-"))
-    previews: dict[Path, Path] = {}
     try:
-
-        def score(unit: grouping.Unit) -> float:
+        scores: dict[Path, float] = {}
+        best: tuple[float, Path] | None = None  # (score, preview) of the leader
+        for unit in group.units:
             preview, s = _render_and_score(unit, tmp_dir)
-            if preview is not None:
-                previews[unit.primary] = preview
-            return s
-
-        grouping.pick_representative(group, score)
+            scores[unit.primary] = s
+            if preview is None:
+                continue
+            if best is None or s > best[0]:
+                if best is not None:
+                    shutil.rmtree(best[1].parent, ignore_errors=True)
+                best = (s, preview)
+            else:
+                shutil.rmtree(preview.parent, ignore_errors=True)
+        grouping.pick_representative(group, scores)
         primary = group.primary
         assert primary is not None
-        preview = previews.get(primary)
-        if preview is None:
+        if best is None:
             return pipeline.ProcessResult(sidecar=None, skipped_reason="no_preview")
+        preview = best[1]
+        assert preview.parent.name == primary.name  # the leader is the pick
+
         members = [f for f in group.files if f != primary]
+        # Member EXIF/GPS before the vision call: a read failure here costs
+        # nothing, after it would waste the paid call.
+        member_meta = {m: (get_image_metadata(m), pipeline.get_gps(m)) for m in members}
         print(
-            f"  {group.kind}: {len(group.files)} files → 1 vision call; "
+            f"  {group.kind}: {len(group.files)} files -> 1 vision call; "
             f"pick {primary.name} (sharpness {group.sharpness[primary]:.1f})"
         )
 
         def write_stubs(primary_fm: dict[str, Any]) -> None:
+            # Invalidate the primary's old sidecar first. With --force, or when
+            # regrouping a folder indexed before grouping existed, it still
+            # exists; a crash between the stubs and the new primary sidecar
+            # would otherwise leave every member with a sidecar ("done")
+            # around a primary that never acknowledged the group.
+            pipeline.sidecar_path(primary).unlink(missing_ok=True)
             for m in members:
+                metadata, gps = member_meta[m]
+                place = ""
+                if gps.get("lat") is not None and ctx.geocoder is not None:
+                    place = ctx.geocoder.reverse(gps["lat"], gps["lon"])
                 fm = build_stub_frontmatter(
-                    m,
-                    root,
-                    get_image_metadata(m),
-                    pipeline.get_gps(m),
-                    primary_fm,
-                    group,
+                    m, root, metadata, gps, place, primary_fm, group
                 )
+                stub = pipeline.sidecar_path(m)
+                if ctx.face_conn is not None:
+                    # This frame's assessment now lives on the primary: clear
+                    # any face rows an earlier per-file index left for it, so
+                    # faces.db mirrors the sidecars (named clusters survive).
+                    face_db.write_faces(ctx.face_conn, m, stub, [])
                 body = f"See {primary.name}{pipeline.SIDECAR_SUFFIX} ({group.kind} primary)."
-                pipeline.serialize_sidecar(
-                    pipeline.sidecar_path(m), fm, m.name, [("Description", body)]
-                )
+                pipeline.serialize_sidecar(stub, fm, m.name, [("Description", body)])
 
         result = process_one_image(
             primary,

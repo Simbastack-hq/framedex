@@ -316,3 +316,55 @@ def test_subject_tags_mark_burst_pick_and_alternate() -> None:
     assert "burst-alternate" in alt and "burst-pick" not in alt
     assert "burst-pick" not in pair and "burst-alternate" not in pair
     assert "lion" in pick  # the copied keywords are still exported
+
+
+def _write_group_sidecar(root: Path, name: str, group: dict[str, Any]) -> None:
+    import yaml
+
+    fm = {
+        "file": name,
+        "path": name,
+        "media_type": "image",
+        "rating": "keep",
+        "keywords": ["cheetah"],
+        "group": group,
+    }
+    (root / name).write_bytes(b"x")
+    (root / f"{name}.description.md").write_text(
+        "---\n" + yaml.safe_dump(fm, sort_keys=False) + "---\n\n## Description\n\n"
+        "**Scene:** A cheetah.\n"
+    )
+
+
+def test_run_burst_of_pairs_exports_one_pick_and_alternates_for_raws_only(
+    tmp_path: Path,
+) -> None:
+    """N RAW+JPEG pairs in one burst → N RAW .xmp files (one burst-pick, N-1
+    burst-alternate), nothing for the JPEG stubs, and an idempotent rerun."""
+    gid = "b_12345678"
+    for n in ("1", "2", "3"):
+        primary = n == "2"
+        block: dict[str, Any] = {"kind": "burst", "id": gid, "primary": primary}
+        if primary:
+            block["members"] = ["1.NEF", "1.jpg", "2.NEF", "2.jpg", "3.NEF", "3.jpg"]
+        else:
+            block["primary_file"] = "2.NEF"
+        _write_group_sidecar(tmp_path, f"{n}.NEF", block)
+        _write_group_sidecar(
+            tmp_path,
+            f"{n}.jpg",
+            {"kind": "burst", "id": gid, "primary": False, "primary_file": "2.NEF"},
+        )
+
+    summary = xmp_export.run(tmp_path)
+    assert summary.wrote == 3 and summary.skipped_nonraw == 3 and summary.conflicts == 0
+    xmps = sorted(tmp_path.glob("*.xmp"))
+    assert [x.name for x in xmps] == ["1.xmp", "2.xmp", "3.xmp"]
+    texts = {x.name: x.read_text() for x in xmps}
+    assert "burst-pick" in texts["2.xmp"] and "burst-alternate" not in texts["2.xmp"]
+    for n in ("1.xmp", "3.xmp"):
+        assert "burst-alternate" in texts[n] and "burst-pick" not in texts[n]
+    assert all("cheetah" in t for t in texts.values())
+
+    again = xmp_export.run(tmp_path)
+    assert again.wrote == 0 and again.up_to_date == 3

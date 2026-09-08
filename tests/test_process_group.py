@@ -145,7 +145,7 @@ def test_process_group_writes_stubs_then_primary_with_group_blocks(
         "render:2.NEF",
         "render:3.NEF",
     ]
-    assert geocoder.calls == 1  # stubs copy the place; no per-stub geocode
+    assert geocoder.calls == 3  # each member resolves its own coordinates
 
     primary = _frontmatter(res.sidecar)
     assert primary["group"] == {
@@ -160,8 +160,7 @@ def test_process_group_writes_stubs_then_primary_with_group_blocks(
         "kind": "burst",
         "id": "b_abc",
         "primary": False,
-        "primary_file": "2.NEF",
-        "members": ["1.NEF", "2.NEF", "3.NEF"],
+        "primary_file": "2.NEF",  # the member list lives on the primary only
         "sharpness": 1.0,
     }
     for k in images.STUB_COPIED_FIELDS:
@@ -240,3 +239,136 @@ def test_process_group_vision_error_writes_nothing(
     assert res.skipped_reason == "vision_error"
     assert res.stubs_written == 0
     assert not any(pipeline.has_sidecar(f) for f in files)
+
+
+def test_process_group_one_transport_call_for_a_five_frame_burst(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = _files(tmp_path, *(f"{i}.NEF" for i in range(1, 6)))
+    _group_mocks(tmp_path, monkeypatch, {f.name: float(i) for i, f in enumerate(files)})
+    calls: list[int] = []
+
+    def vision(frames: list[Path], prompt: str, model: str) -> str:
+        calls.append(len(frames))
+        return VISION_OK
+
+    monkeypatch.setattr(pipeline, "describe_frames_cli", vision)
+    grp = grouping.MediaGroup("burst", "b_5", [grouping.Unit(f) for f in files])
+    res = images.process_group(grp, tmp_path, _opts(), pipeline.ProcessContext())
+    assert calls == [1]  # one call, one frame, whatever the burst length
+    assert res.stubs_written == 4
+
+
+def test_process_group_keeps_only_the_leading_preview_on_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A long chain (a timelapse folder) must not pile up every member's
+    rendered preview until the group finishes."""
+    files = _files(tmp_path, "1.NEF", "2.NEF", "3.NEF", "4.NEF")
+    _, made = _group_mocks(
+        tmp_path, monkeypatch, {"1.NEF": 1.0, "2.NEF": 9.0, "3.NEF": 5.0, "4.NEF": 2.0}
+    )
+
+    def vision(frames: list[Path], prompt: str, model: str) -> str:
+        assert [d.name for d in made[0].iterdir()] == [
+            "2.NEF"
+        ]  # only the pick survives
+        return VISION_OK
+
+    monkeypatch.setattr(pipeline, "describe_frames_cli", vision)
+    grp = grouping.MediaGroup("burst", "b_l", [grouping.Unit(f) for f in files])
+    res = images.process_group(grp, tmp_path, _opts(), pipeline.ProcessContext())
+    assert res.sidecar == pipeline.sidecar_path(tmp_path / "2.NEF")
+
+
+def test_process_group_reads_member_metadata_before_the_paid_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = _files(tmp_path, "1.NEF", "2.NEF", "3.NEF")
+    _group_mocks(tmp_path, monkeypatch, {"1.NEF": 1.0, "2.NEF": 9.0, "3.NEF": 5.0})
+
+    def exif(p: Path) -> dict[str, Any]:
+        if p.name == "3.NEF":
+            raise RuntimeError("exiftool died")
+        return {"size_bytes": 1}
+
+    monkeypatch.setattr(images, "get_image_metadata", exif)
+    monkeypatch.setattr(
+        pipeline, "describe_frames_cli", lambda *a, **k: pytest.fail("paid call made")
+    )
+    grp = grouping.MediaGroup("burst", "b_m", [grouping.Unit(f) for f in files])
+    with pytest.raises(RuntimeError, match="exiftool died"):
+        images.process_group(grp, tmp_path, _opts(), pipeline.ProcessContext())
+    assert not any(pipeline.has_sidecar(f) for f in files)
+
+
+def test_process_group_invalidates_old_primary_sidecar_before_stubs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--force / regrouping a legacy folder: the pick's OLD sidecar exists.
+    If the run dies after the stubs and before the new primary sidecar, no
+    stale marker may survive — otherwise every member "has a sidecar" and
+    the half-written group is skipped forever."""
+    files = _files(tmp_path, "1.NEF", "2.NEF", "3.NEF")
+    for f in files:  # legacy per-file sidecars, no group block
+        pipeline.sidecar_path(f).write_text("---\nfile: x\nrating: keep\n---\n")
+    _group_mocks(tmp_path, monkeypatch, {"1.NEF": 1.0, "2.NEF": 9.0, "3.NEF": 5.0})
+    real = pipeline.serialize_sidecar
+
+    def die_on_primary(
+        sidecar: Path, fm: dict[str, Any], title: str, body: Any
+    ) -> Path:
+        if sidecar.name.startswith("2.NEF"):
+            raise RuntimeError("power cut")
+        return real(sidecar, fm, title, body)
+
+    monkeypatch.setattr(pipeline, "serialize_sidecar", die_on_primary)
+    grp = grouping.MediaGroup(
+        "burst", grouping.group_id(files), [grouping.Unit(f) for f in files]
+    )
+    with pytest.raises(RuntimeError, match="power cut"):
+        images.process_group(grp, tmp_path, _opts(), pipeline.ProcessContext())
+    assert not pipeline.has_sidecar(tmp_path / "2.NEF")  # old marker gone
+    assert pipeline.has_sidecar(tmp_path / "1.NEF")  # stubs written
+    # …so the next run sees the group as incomplete.
+    assert not grouping.group_is_done(grp, pipeline.read_sidecar_frontmatter)
+
+
+def test_process_group_clears_stale_face_rows_of_demoted_members(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regrouping a folder indexed per-file earlier: members that become stubs
+    must not keep face rows in faces.db (their assessment lives on the
+    primary now); the primary's own detections are written as usual."""
+    from framedex import face_db
+
+    files = _files(tmp_path, "1.NEF", "2.NEF", "3.NEF")
+    _group_mocks(tmp_path, monkeypatch, {"1.NEF": 1.0, "2.NEF": 9.0, "3.NEF": 5.0})
+    conn = face_db.open_db(tmp_path / "faces.db")
+    face = face_db.DetectedFace(
+        cluster_id="tmp_old",
+        frame_time_seconds=0.0,
+        bbox=[0, 0, 10, 10],
+        detection_score=0.9,
+        embedding=[0.1] * 512,
+    )
+    for f in files:  # rows from an earlier per-file index
+        face_db.write_faces(conn, f, pipeline.sidecar_path(f), [face])
+    assert face_db.db_stats(conn)["faces"] == 3
+    monkeypatch.setattr(face_db, "detect_faces_in_frames", lambda fr, t: [face])
+
+    grp = grouping.MediaGroup("burst", "b_f", [grouping.Unit(f) for f in files])
+    res = images.process_group(
+        grp, tmp_path, _opts(), pipeline.ProcessContext(face_conn=conn)
+    )
+    assert res.sidecar == pipeline.sidecar_path(tmp_path / "2.NEF")
+
+    def rows(p: Path) -> int:
+        return int(
+            conn.execute(
+                "SELECT COUNT(*) FROM faces WHERE video_path = ?", (str(p),)
+            ).fetchone()[0]
+        )
+
+    assert rows(tmp_path / "1.NEF") == 0 and rows(tmp_path / "3.NEF") == 0
+    assert rows(tmp_path / "2.NEF") == 1

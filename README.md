@@ -185,19 +185,25 @@ Before the per-file loop, `fdx` groups a folder's stills so one moment costs one
 - **RAW+JPEG pair:** a RAW and a same-stem camera JPEG (`.jpg`/`.jpeg` only) in the same folder. The RAW is the primary (the edit target); the JPEG is used as the preview, so no embedded-preview extraction is needed.
 - **Burst:** 3 or more frames from the same camera (EXIF Make + Model) in the same folder whose successive `DateTimeOriginal` gaps are 2 s or less. Pairs collapse to their RAW before chaining, so a burst of pairs is one burst.
 
-Each group gets one vision call on its sharpest member. Sharpness is the variance of the Laplacian over the rendered preview, computed locally; no model is asked to pick. Every other member gets a **stub sidecar**: its own file/EXIF/GPS fields, a copy of the primary's assessment (`rating`, `cull_reason`, `technical`, `lighting`, `scene_type`, `keywords`, ...), and a `group:` block that names the primary. Faces are not copied (no detection ran on that frame). Both primary and stubs carry the block:
+Each group gets one vision call on its sharpest member. Sharpness is the variance of the Laplacian over the rendered preview, computed locally; no model is asked to pick. Every other member gets a **stub sidecar**: its own file/EXIF/GPS/place fields, a copy of the primary's assessment (`rating`, `cull_reason`, `technical`, `lighting`, `scene_type`, `keywords`, ...), and a `group:` block that names the primary. Faces are not copied (no detection ran on that frame), and any face rows an earlier per-file index left for that frame are cleared so `faces.db` mirrors the sidecars. The primary's block lists the members; a stub's block points at the primary:
 
 ```yaml
-group:
+group:                     # on the primary
   kind: burst              # burst | raw_jpeg
-  id: b_3f9a1c2e
-  primary: false           # true on the member that was assessed
-  primary_file: DSC_0142.NEF
+  id: b_3f9a1c2e           # hash of the member file names
+  primary: true
   members: [DSC_0141.NEF, DSC_0142.NEF, DSC_0143.NEF]
   sharpness: 214.7         # this file's Laplacian score
+
+group:                     # on a stub
+  kind: burst
+  id: b_3f9a1c2e
+  primary: false
+  primary_file: DSC_0142.NEF
+  sharpness: 88.2
 ```
 
-Vision calls per archive = groups + ungrouped files, never more than the file count. Stubs cost two `exiftool` reads each and no model call. Files without a usable `DateTimeOriginal` never join a burst; they index individually. `fdx-master` counts ratings, keywords, faces, and the cull pile over primaries only. `fdx-query --primary-only` hides stubs (by default a burst alternate still matches, e.g. by keyword). `fdx-xmp` tags burst members `burst-pick` / `burst-alternate` so Lightroom can filter the non-picks. `--no-group` indexes every file individually. Thresholds are constants documented in [docs/tuning.md](docs/tuning.md).
+Vision calls per archive = groups + ungrouped files, never more than the file count. Stubs cost two `exiftool` reads each and no model call. Files without a usable `DateTimeOriginal` or camera make/model never join a burst; they index individually. Grouping reads EXIF for the whole folder in one batched `exiftool` call; if that call fails outright, `fdx` stops and says so rather than silently paying for every file (`--no-group` is the explicit fallback). `fdx-master` counts ratings, keywords, faces, and the cull pile over primaries only. `fdx-query --primary-only` hides stubs (by default a burst alternate still matches, e.g. by keyword). `fdx-xmp` tags burst members `burst-pick` / `burst-alternate` so Lightroom can filter the non-picks. `--no-group` indexes every new file individually and leaves existing sidecars alone; to undo grouping on an indexed folder run `fdx --force --no-group`. Thresholds are constants documented in [docs/tuning.md](docs/tuning.md).
 
 ## Getting ratings into Lightroom (`fdx-xmp`)
 
@@ -275,7 +281,7 @@ Already-indexed clips are skipped on re-runs (a sidecar existing = done). Ctrl-C
 
 Writes are atomic: every sidecar and index goes to a temp file and is renamed into place, so an interrupt mid-write never leaves a truncated, half-indexed file. Faces are committed before the sidecar (the sidecar is the "done" marker), so a crash in between just re-runs that file cleanly. A stale `.<name>.<pid>.tmp` file left by a killed run is inert (hidden from discovery) and safe to delete.
 
-A burst or RAW+JPEG pair is done only when every member has a sidecar. Stubs are written before the primary's sidecar, so an interrupt inside a group leaves a member without one and the whole group is redone next run (stubs are cheap to rewrite; the vision call happens once).
+A burst or RAW+JPEG pair is done only when every member's sidecar belongs to that exact group (same `group.id`), or when every member's sidecar predates grouping. Stubs are written before the primary's sidecar, and the primary's previous sidecar (if any, e.g. under `--force`) is removed first, so an interrupt inside a group always leaves a member without a valid sidecar and the whole group is redone next run (stubs are cheap to rewrite; the vision call happens once). A file whose folder was regrouped, so that its old stub no longer matches, is redone too.
 
 ## Companion tools
 

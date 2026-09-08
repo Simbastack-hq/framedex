@@ -533,7 +533,7 @@ def test_main_routes_groups_and_singles(
     assert calls == ["group:1.NEF,2.NEF,3.NEF", "one:lone.NEF"]
     out = capsys.readouterr().out
     assert "grouped 3 files into 1 groups" in out
-    assert "Grouped: 3 files in 1 group" in out
+    assert "Processed: 2 work items (1 group covering 3 files), Errors: 0" in out
 
 
 def test_main_no_group_indexes_every_file_individually(
@@ -692,6 +692,6 @@ def test_main_dry_run_lists_groups_without_processing(
     monkeypatch.setattr(sys, "argv", _argv(tmp_path, "--dry-run"))
     assert index_videos.main() == 0
     out = capsys.readouterr().out
-    assert "would process [burst x3 -> 1 call]: 1.NEF .. 3.NEF" in out
+    assert "would process [burst: 3 files -> 1 vision call]: 1.NEF .. 3.NEF" in out
     assert "would process [image]: lone.NEF" in out
     assert calls == []

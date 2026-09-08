@@ -84,6 +84,21 @@ def has_sidecar(media: Path) -> bool:
     return sidecar_path(media).exists()
 
 
+def split_frontmatter(text: str) -> tuple[str, str] | None:
+    """Split sidecar text into (frontmatter YAML, body). The opening fence is
+    the first line, exactly `---`; the closing fence is the next line that is
+    exactly `---`. Splitting on any `---` substring would truncate YAML that
+    merely contains one (a file named `a---b.NEF`). None without a complete
+    fence."""
+    lines = text.split("\n")
+    if not lines or lines[0].rstrip("\r") != "---":
+        return None
+    for i in range(1, len(lines)):
+        if lines[i].rstrip("\r") == "---":
+            return "\n".join(lines[1:i]), "\n".join(lines[i + 1 :])
+    return None
+
+
 def read_sidecar_frontmatter(sidecar: Path) -> dict[str, Any] | None:
     """Parse a sidecar's YAML frontmatter. None when the file is missing,
     unreadable, has no frontmatter fence, or the YAML is not a mapping."""
@@ -91,13 +106,11 @@ def read_sidecar_frontmatter(sidecar: Path) -> dict[str, Any] | None:
         text = sidecar.read_text(encoding="utf-8")
     except OSError:
         return None
-    if not text.startswith("---"):
-        return None
-    parts = text.split("---", 2)
-    if len(parts) < 3:
+    parts = split_frontmatter(text)
+    if parts is None:
         return None
     try:
-        fm = yaml.safe_load(parts[1])
+        fm = yaml.safe_load(parts[0])
     except yaml.YAMLError:
         return None
     return fm if isinstance(fm, dict) else None
@@ -128,8 +141,9 @@ def atomic_write_text(path: Path, text: str) -> None:
 
 
 def get_gps(media: Path) -> dict[str, Any]:
-    """exiftool -> lat/lon/alt. Returns {} if nothing usable. Works for any
-    file exiftool understands (video container or still)."""
+    """exiftool -> lat/lon/alt. Returns {} when the file carries no usable GPS;
+    raises RuntimeError when exiftool itself fails (non-zero exit, no JSON).
+    Works for any file exiftool understands (video container or still)."""
     cmd = [
         "exiftool",
         "-json",
@@ -142,12 +156,20 @@ def get_gps(media: Path) -> dict[str, Any]:
         str(media),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
+    # A failed read is an error, not "no GPS": returning {} here would let a
+    # broken exiftool silently produce location-less sidecars (and, for group
+    # stubs, overwrite valid coordinates with nothing).
     if result.returncode != 0:
-        return {}
+        raise RuntimeError(
+            f"exiftool failed on {media.name} (exit {result.returncode}): "
+            f"{result.stderr.strip()[:200]}"
+        )
     try:
         data = json.loads(result.stdout)[0]
-    except (json.JSONDecodeError, IndexError):
-        return {}
+    except (json.JSONDecodeError, IndexError) as e:
+        raise RuntimeError(
+            f"exiftool returned no parseable output for {media.name}"
+        ) from e
     out = {}
     lat = data.get("GPSLatitude")
     lon = data.get("GPSLongitude")

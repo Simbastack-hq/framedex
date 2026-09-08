@@ -342,3 +342,10 @@ def test_query_cli_accepts_primary_only(
     monkeypatch.setattr(sys, "argv", ["fdx-query", str(tmp_path), "--primary-only"])
     assert main() == 0
     assert capsys.readouterr().out.splitlines() == [str(tmp_path / "2.NEF")]
+
+
+def test_parse_sidecar_triple_hyphen_in_value_is_not_a_fence(tmp_path: Path) -> None:
+    p = tmp_path / "a---b.NEF.description.md"
+    p.write_text("---\nfile: a---b.NEF\nrating: keep\n---\n\n## Description\n\nx\n")
+    fm = parse_sidecar(p)
+    assert fm is not None and fm["file"] == "a---b.NEF"

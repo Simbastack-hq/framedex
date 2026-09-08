@@ -51,6 +51,9 @@ GROUP_EXIF_TAGS = [
     "-Model",
 ]
 
+# Human-facing names for `MediaGroup.kind` (the YAML keeps the identifier).
+KIND_LABELS = {"burst": "burst", "raw_jpeg": "RAW+JPEG"}
+
 _TZ_SUFFIX_RE = re.compile(r"(Z|[+-]\d{2}:?\d{2})$")
 _EPOCH = datetime(1970, 1, 1)
 
@@ -127,7 +130,7 @@ def parse_exif_timestamp(
     digits = (subsec_time_original or "").strip()
     candidates = [
         (subsec_datetime_original, ""),
-        (datetime_original, digits if digits.isdigit() else ""),
+        (datetime_original, digits if _is_digits(digits) else ""),
     ]
     for text, extra_frac in candidates:
         seconds = _parse_one(text, extra_frac)
@@ -136,11 +139,20 @@ def parse_exif_timestamp(
     return None
 
 
+def _is_digits(s: str) -> bool:
+    return bool(s) and s.isascii() and s.isdigit()
+
+
 def _parse_one(text: str | None, extra_frac: str) -> float | None:
+    """One timestamp source → seconds, or None so the next source is tried. A
+    present-but-malformed fraction (`.bad`) rejects this source rather than
+    silently rounding it to whole seconds."""
     base = _TZ_SUFFIX_RE.sub("", (text or "").strip())
     frac = ""
     if "." in base:
         base, frac = base.split(".", 1)
+        if not _is_digits(frac):
+            return None
     if not frac:
         frac = extra_frac
     try:
@@ -148,7 +160,7 @@ def _parse_one(text: str | None, extra_frac: str) -> float | None:
     except ValueError:
         return None
     seconds = (dt - _EPOCH).total_seconds()
-    if frac.isdigit():
+    if frac:
         seconds += float("0." + frac)
     return seconds
 
@@ -319,30 +331,49 @@ def read_group_metadata(paths: list[Path]) -> dict[Path, GroupMeta]:
     safe = [p for p in paths if "\n" not in str(p) and "\r" not in str(p)]
     if len(safe) != len(paths):
         print(
-            f"warning: grouping: {len(paths) - len(safe)} path(s) contain a newline "
-            "in the name; excluded from burst detection",
+            f"warning: burst detection skipped {len(paths) - len(safe)} files: "
+            "filenames contain newline characters",
             file=sys.stderr,
         )
     if not safe:
         return {}
     try:
         result = subprocess.run(
-            ["exiftool", "-json", *GROUP_EXIF_TAGS, "-@", "-"],
+            # -charset filename=utf8: the stdin stream is UTF-8 on every OS
+            # (Windows would otherwise read names in the system code page).
+            [
+                "exiftool",
+                "-json",
+                *GROUP_EXIF_TAGS,
+                "-charset",
+                "filename=utf8",
+                "-@",
+                "-",
+            ],
             input="\n".join(str(p) for p in safe) + "\n",
             capture_output=True,
             text=True,
             encoding="utf-8",
         )
+        if result.returncode < 0:
+            raise ValueError(f"exiftool was killed by signal {-result.returncode}")
         data = json.loads(result.stdout)
         if not isinstance(data, list):
             raise ValueError("exiftool JSON is not a list")
+    except FileNotFoundError as e:
+        raise GroupMetadataError(
+            "error: exiftool executable not found. Install exiftool or add it to "
+            "PATH, then retry."
+        ) from e
     except (OSError, ValueError) as e:
-        raise GroupMetadataError(f"grouping: exiftool batch read failed ({e})") from e
+        raise GroupMetadataError(f"error: exiftool batch read failed ({e})") from e
 
     out: dict[Path, GroupMeta] = {}
     for entry in data:
         if not isinstance(entry, dict) or not entry.get("SourceFile"):
             continue
+        if entry.get("Error"):
+            continue  # exiftool could not read this file: counted as missing below
         make = str(entry.get("Make") or "").strip()
         model = str(entry.get("Model") or "").strip()
         camera = f"{make}|{model}" if (make or model) else ""
@@ -352,11 +383,18 @@ def read_group_metadata(paths: list[Path]) -> dict[Path, GroupMeta]:
             _as_str(entry.get("SubSecTimeOriginal")),
         )
         out[Path(str(entry["SourceFile"]))] = GroupMeta(timestamp=ts, camera=camera)
+    if not out:
+        # Nothing succeeded: that is a broken read, not a folder without EXIF
+        # (a file with no tags still comes back as an entry).
+        raise GroupMetadataError(
+            f"error: exiftool read no metadata from any of {len(safe)} files "
+            f"(exit {result.returncode}): {result.stderr.strip()[:200]}"
+        )
     missing = sum(1 for p in safe if p not in out)
     if missing:
         print(
-            f"warning: grouping: exiftool returned no EXIF for {missing} of "
-            f"{len(safe)} files (unreadable?); they index individually",
+            f"warning: exiftool returned no EXIF for {missing} of {len(safe)} files; "
+            "indexing them individually",
             file=sys.stderr,
         )
     return out

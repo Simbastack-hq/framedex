@@ -79,8 +79,8 @@ are documented constants in `src/framedex/frame_sampling.py`.
 vision call (see the README section "Bursts and RAW+JPEG pairs"). The
 thresholds are constants in `src/framedex/grouping.py`, not flags:
 
-- `BURST_GAP_SEC = 2.0`: successive frames from the same camera in the same
-  folder at most this far apart chain into one burst. Timestamps come from
+- `BURST_GAP_SEC = 2.0`: consecutive frames in the same folder with matching
+  camera make/model at most this far apart chain into one burst. Timestamps come from
   `SubSecDateTimeOriginal` when present, else `DateTimeOriginal` plus
   `SubSecTimeOriginal`; whole-second precision still works (a 10 fps burst
   simply has gap 0). Files with no usable date never join a group.
@@ -90,9 +90,9 @@ thresholds are constants in `src/framedex/grouping.py`, not flags:
   same-stem RAW. PNG/TIFF/HEIC/WebP sharing a stem are treated as exports, not
   the same capture. Two RAWs sharing a stem never pair (ambiguous).
 
-The representative is the member with the highest Laplacian variance over its
+The primary is the member with the highest Laplacian variance over its
 rendered preview (the pair's JPEG when there is one); ties go to the earliest
 frame. `--no-group` disables grouping for a run. Grouping runs one batched
-`exiftool` call over the whole image list; if that call fails, the run warns
-and indexes every file individually (RAW+JPEG pairing needs no EXIF and still
-applies).
+`exiftool` call over the whole image list; if that call fails, indexing stops.
+Use `--no-group` to retry with individual indexing. Files that come back
+without EXIF from a successful batch are indexed individually.

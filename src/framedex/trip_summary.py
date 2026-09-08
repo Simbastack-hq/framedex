@@ -26,7 +26,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from framedex.pipeline import atomic_write_text
+from framedex.pipeline import atomic_write_text, split_frontmatter
 
 try:
     import anthropic
@@ -57,16 +57,14 @@ def parse_sidecar(path: Path) -> dict[str, Any] | None:
         text = path.read_text()
     except Exception:
         return None
-    if not text.startswith("---"):
-        return None
-    parts = text.split("---", 2)
-    if len(parts) < 3:
+    parts = split_frontmatter(text)
+    if parts is None:
         return None
     try:
-        fm = yaml.safe_load(parts[1])
+        fm = yaml.safe_load(parts[0])
         if isinstance(fm, dict):
             fm["_sidecar_path"] = str(path)
-            fm["_body"] = parts[2].strip()
+            fm["_body"] = parts[1].strip()
             return fm
     except yaml.YAMLError:
         return None

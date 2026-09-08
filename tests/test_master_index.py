@@ -155,7 +155,10 @@ def test_master_index_counts_primaries_only_and_reports_groups(
     assert "## Cull pile — 1 clips" in md  # stubs are not listed
     assert f"- `{tmp_path / '2.NEF'}` — blur" in md
     assert "1.NEF` —" not in md and "3.NEF` —" not in md
-    assert "- **Grouped:** 3 files in 1 group" in md
+    assert (
+        "- **Grouped:** 3 files in 1 group (bursts / RAW+JPEG pairs). Ratings, "
+        "keywords, faces, and the cull list exclude non-primary group members." in md
+    )
     idx = json.loads((tmp_path / "_INDEX.json").read_text())
     assert idx["clip_count"] == 4  # every sidecar is still a record
     assert idx["group_count"] == 1 and idx["grouped_file_count"] == 3

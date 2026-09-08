@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from framedex.parsing import is_group_stub, is_usable_path
-from framedex.pipeline import atomic_write_text
+from framedex.pipeline import atomic_write_text, split_frontmatter
 
 try:
     import yaml
@@ -39,16 +39,14 @@ def parse_sidecar(path: Path) -> dict[str, Any] | None:
         text = path.read_text()
     except Exception:
         return None
-    if not text.startswith("---"):
-        return None
-    parts = text.split("---", 2)
-    if len(parts) < 3:
+    parts = split_frontmatter(text)
+    if parts is None:
         return None
     try:
-        fm = yaml.safe_load(parts[1])
+        fm = yaml.safe_load(parts[0])
         if isinstance(fm, dict):
             # Try to pull the description prose for completeness
-            body = parts[2].strip()
+            body = parts[1].strip()
             import re
 
             m = re.search(r"##\s*Description\s*\n+(.+?)(?=\n##|\Z)", body, re.S | re.I)
@@ -202,8 +200,9 @@ def main() -> int:
     if n_groups:
         lines.append(
             f"- **Grouped:** {len(grouped)} files in {n_groups} "
-            f"group{'s' if n_groups != 1 else ''} (bursts / RAW+JPEG pairs; "
-            "ratings, keywords, faces, and the cull pile count group primaries only)"
+            f"group{'s' if n_groups != 1 else ''} (bursts / RAW+JPEG pairs). "
+            "Ratings, keywords, faces, and the cull list exclude non-primary "
+            "group members."
         )
     if n_videos:
         lines.append(

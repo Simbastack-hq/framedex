@@ -29,7 +29,7 @@ import yaml
 
 import framedex
 from framedex import images
-from framedex.pipeline import SIDECAR_SUFFIX, atomic_write_text
+from framedex.pipeline import SIDECAR_SUFFIX, atomic_write_text, split_frontmatter
 
 # Lightroom Classic reads `.xmp` *sidecars* only for proprietary RAW; DNG (like
 # JPEG/TIFF/HEIC) embeds XMP in the file and ignores the sidecar, so `.dng` is
@@ -79,18 +79,16 @@ def read_sidecar_for_xmp(path: Path) -> tuple[dict[str, Any], str] | None:
         text = path.read_text()
     except OSError:
         return None
-    if not text.startswith("---"):
-        return None
-    parts = text.split("---", 2)
-    if len(parts) < 3:
+    parts = split_frontmatter(text)
+    if parts is None:
         return None
     try:
-        fm = yaml.safe_load(parts[1])
+        fm = yaml.safe_load(parts[0])
     except yaml.YAMLError:
         return None
     if not isinstance(fm, dict):
         return None
-    m = _SCENE_RE.search(parts[2])
+    m = _SCENE_RE.search(parts[1])
     scene = m.group(1).strip() if m else ""
     return fm, scene
 
@@ -115,11 +113,11 @@ def _subject_tags(frontmatter: dict[str, Any]) -> list[str]:
     ):
         tags.append(scene_type)
     # Burst members: the photographer filters `burst-alternate` in Lightroom to
-    # sweep non-picks after confirming the picks (framedex suggests, the human
-    # culls). A RAW+JPEG pair is not a burst and gets neither tag.
+    # sweep the alternates after confirming the primaries (framedex suggests,
+    # the human culls). A RAW+JPEG pair is not a burst: no tag.
     group = frontmatter.get("group")
     if isinstance(group, dict) and group.get("kind") == "burst":
-        tag = "burst-pick" if group.get("primary") else "burst-alternate"
+        tag = "burst-primary" if group.get("primary") else "burst-alternate"
         if tag not in tags:
             tags.append(tag)
     return tags

@@ -122,7 +122,8 @@ def _normalize_exif_datetime(raw: str) -> str:
 def get_image_metadata(image: Path) -> dict[str, Any]:
     """exiftool → dimensions + camera block (make/model/lens/exposure) +
     creation_time + size_bytes. Readable human values (e.g. shutter '1/1000'),
-    no `-n`, so the sidecar shows what a photographer expects."""
+    no `-n`, so the sidecar shows what a photographer expects. Absent tags give
+    empty fields; a failed exiftool run raises RuntimeError."""
     cmd = [
         "exiftool",
         "-json",
@@ -148,12 +149,20 @@ def get_image_metadata(image: Path) -> dict[str, Any]:
         "camera": {},
     }
     result = subprocess.run(cmd, capture_output=True, text=True)
+    # A failed read is an error, not "no EXIF": returning blanks would let a
+    # broken exiftool silently produce camera-less sidecars (and, for group
+    # stubs, overwrite valid metadata with nothing).
     if result.returncode != 0:
-        return meta
+        raise RuntimeError(
+            f"exiftool failed on {image.name} (exit {result.returncode}): "
+            f"{result.stderr.strip()[:200]}"
+        )
     try:
         data = json.loads(result.stdout)[0]
-    except (ValueError, IndexError):
-        return meta
+    except (ValueError, IndexError) as e:
+        raise RuntimeError(
+            f"exiftool returned no parseable output for {image.name}"
+        ) from e
 
     width = data.get("ImageWidth")
     height = data.get("ImageHeight")
@@ -245,14 +254,14 @@ def render_preview(image: Path, out_dir: Path) -> Path | None:
     # A decode/save failure here is a real error (corrupt or unreadable file),
     # not a clean skip — let it propagate so the run loop reports it loudly and
     # the file is retried, rather than masquerading as "no preview".
-    with Image.open(src) as im:
-        im = ImageOps.exif_transpose(im)  # normalize rotation
+    with Image.open(src) as opened:
+        im: Image.Image = ImageOps.exif_transpose(opened) or opened  # upright
         if im.mode != "RGB":
             im = im.convert("RGB")
         w, h = im.size
         if w > FRAME_MAX_WIDTH:
             new_h = round(h * FRAME_MAX_WIDTH / w)
-            im = im.resize((FRAME_MAX_WIDTH, new_h), Image.LANCZOS)
+            im = im.resize((FRAME_MAX_WIDTH, new_h), Image.Resampling.LANCZOS)
         out = out_dir / "preview.jpg"
         im.save(out, "JPEG", quality=90)
     return out
@@ -609,7 +618,9 @@ STUB_COPIED_FIELDS = (
 )
 
 
-def _group_block(group: grouping.MediaGroup, member: Path) -> dict[str, Any]:
+def _group_block(
+    group: grouping.MediaGroup, member: Path, sharpness: float
+) -> dict[str, Any]:
     """The `group:` frontmatter block for one member of a picked group. The
     full member list lives on the primary only (repeating it on every stub
     would grow quadratically with burst length); stubs point at the primary."""
@@ -623,9 +634,7 @@ def _group_block(group: grouping.MediaGroup, member: Path) -> dict[str, Any]:
         block["members"] = [f.name for f in group.files]
     else:
         block["primary_file"] = group.primary.name
-    # A pair's JPEG sibling was scored as its RAW's preview: report that score.
-    unit = next(u for u in group.units if member in u.files)
-    block["sharpness"] = round(group.sharpness[unit.primary], 1)
+    block["sharpness"] = round(sharpness, 1)
     return block
 
 
@@ -637,6 +646,7 @@ def build_stub_frontmatter(
     place: str,
     primary_fm: dict[str, Any],
     group: grouping.MediaGroup,
+    sharpness: float,
 ) -> dict[str, Any]:
     """Own file/EXIF/GPS/place fields + the primary's assessment (copied, so a
     later mutation of one frontmatter can't leak into another) + a group
@@ -650,22 +660,40 @@ def build_stub_frontmatter(
         place,
         structured,
         [],
-        extra_frontmatter={"group": _group_block(group, member)},
+        extra_frontmatter={"group": _group_block(group, member, sharpness)},
     )
 
 
-def _render_and_score(unit: grouping.Unit, tmp_dir: Path) -> tuple[Path | None, float]:
-    """Render the unit's preview into its own subdir (render_preview writes a
-    fixed filename) and score it. The full-size embedded JPEG a RAW yields is
-    dropped as soon as the preview exists. A RAW with no embedded preview
-    scores -1 so it is never the pick while any member renders."""
-    sub = tmp_dir / unit.primary.name
+def stub_body(primary: Path, kind: str) -> str:
+    """The one-paragraph body of a stub sidecar: says plainly that this frame
+    was not assessed on its own, where the copied fields came from, and that
+    the empty face list means "not checked", not "nobody there"."""
+    role = (
+        "the burst primary"
+        if kind == "burst"
+        else "the RAW primary of this RAW+JPEG pair"
+    )
+    return (
+        "This file was not assessed individually. Assessment fields were copied "
+        f"from {primary.name}{pipeline.SIDECAR_SUFFIX} ({role}). Faces were not "
+        "checked; zero does not mean none are present."
+    )
+
+
+def _score_unit(unit: grouping.Unit, tmp_dir: Path) -> float:
+    """Render the unit's preview into a scratch subdir, score it, and delete
+    the render (a long chain must not pile previews up on disk). A RAW with
+    no embedded preview scores -1 so it is never the primary while any member
+    renders."""
+    sub = tmp_dir / "score"
     sub.mkdir()
-    preview = render_preview(unit.preview_source, sub)
-    (sub / "raw_preview.jpg").unlink(missing_ok=True)
-    if preview is None:
-        return None, -1.0
-    return preview, frame_sampling.laplacian_sharpness(preview)
+    try:
+        preview = render_preview(unit.preview_source, sub)
+        if preview is None:
+            return -1.0
+        return frame_sampling.laplacian_sharpness(preview)
+    finally:
+        shutil.rmtree(sub, ignore_errors=True)
 
 
 def process_group(
@@ -684,35 +712,38 @@ def process_group(
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="fdx-group-"))
     try:
-        scores: dict[Path, float] = {}
-        best: tuple[float, Path] | None = None  # (score, preview) of the leader
-        for unit in group.units:
-            preview, s = _render_and_score(unit, tmp_dir)
-            scores[unit.primary] = s
-            if preview is None:
-                continue
-            if best is None or s > best[0]:
-                if best is not None:
-                    shutil.rmtree(best[1].parent, ignore_errors=True)
-                best = (s, preview)
-            else:
-                shutil.rmtree(preview.parent, ignore_errors=True)
+        # Pass 1: score every member; nothing is kept on disk. Pass 2 renders
+        # the primary alone (one extra render of one file, instead of keeping
+        # N previews around until the group finishes).
+        scores = {u.primary: _score_unit(u, tmp_dir) for u in group.units}
         grouping.pick_representative(group, scores)
         primary = group.primary
         assert primary is not None
-        if best is None:
+        primary_unit = next(u for u in group.units if u.primary == primary)
+        if scores[primary] < 0:
             return pipeline.ProcessResult(sidecar=None, skipped_reason="no_preview")
-        preview = best[1]
-        assert preview.parent.name == primary.name  # the leader is the pick
+        preview_dir = tmp_dir / "primary"
+        preview_dir.mkdir()
+        preview = render_preview(primary_unit.preview_source, preview_dir)
+        if preview is None:
+            return pipeline.ProcessResult(sidecar=None, skipped_reason="no_preview")
+        sharp_of = {f: group.sharpness[u.primary] for u in group.units for f in u.files}
 
         members = [f for f in group.files if f != primary]
         # Member EXIF/GPS before the vision call: a read failure here costs
         # nothing, after it would waste the paid call.
         member_meta = {m: (get_image_metadata(m), pipeline.get_gps(m)) for m in members}
-        print(
-            f"  {group.kind}: {len(group.files)} files -> 1 vision call; "
-            f"pick {primary.name} (sharpness {group.sharpness[primary]:.1f})"
-        )
+        if group.kind == "burst":
+            print(
+                f"  burst: {len(group.files)} files; primary {primary.name} "
+                "(highest sharpness score); 1 vision call"
+            )
+        else:
+            assert primary_unit.sibling is not None
+            print(
+                f"  RAW+JPEG: primary {primary.name}; preview "
+                f"{primary_unit.sibling.name}; 1 vision call"
+            )
 
         def write_stubs(primary_fm: dict[str, Any]) -> None:
             # Invalidate the primary's old sidecar first. With --force, or when
@@ -727,7 +758,7 @@ def process_group(
                 if gps.get("lat") is not None and ctx.geocoder is not None:
                     place = ctx.geocoder.reverse(gps["lat"], gps["lon"])
                 fm = build_stub_frontmatter(
-                    m, root, metadata, gps, place, primary_fm, group
+                    m, root, metadata, gps, place, primary_fm, group, sharp_of[m]
                 )
                 stub = pipeline.sidecar_path(m)
                 if ctx.face_conn is not None:
@@ -735,15 +766,18 @@ def process_group(
                     # any face rows an earlier per-file index left for it, so
                     # faces.db mirrors the sidecars (named clusters survive).
                     face_db.write_faces(ctx.face_conn, m, stub, [])
-                body = f"See {primary.name}{pipeline.SIDECAR_SUFFIX} ({group.kind} primary)."
-                pipeline.serialize_sidecar(stub, fm, m.name, [("Description", body)])
+                pipeline.serialize_sidecar(
+                    stub, fm, m.name, [("Description", stub_body(primary, group.kind))]
+                )
 
         result = process_one_image(
             primary,
             root,
             opts,
             ctx,
-            extra_frontmatter={"group": _group_block(group, primary)},
+            extra_frontmatter={
+                "group": _group_block(group, primary, sharp_of[primary])
+            },
             preview_override=preview,
             before_sidecar=write_stubs,
         )

@@ -15,6 +15,8 @@ import yaml
 
 from framedex import grouping, images, pipeline
 
+_REAL_GET_IMAGE_METADATA = images.get_image_metadata
+
 VISION_OK = (
     "```yaml\n"
     "rating: cull\n"
@@ -61,9 +63,9 @@ def _group_mocks(
     scores: dict[str, float],
     vision: str = VISION_OK,
 ) -> tuple[list[str], list[Path]]:
-    """render_preview creates a preview per unit subdir (None for files named
-    nopreview*); sharpness is looked up by the unit's primary name; exiftool,
-    GPS, and vision are canned. Returns (spy log, temp dirs handed out)."""
+    """render_preview creates a preview per subdir (None for files named
+    nopreview*); sharpness is looked up by the rendered source's name;
+    exiftool, GPS, and vision are canned. Returns (spy log, temp dirs)."""
     log: list[str] = []
     made: list[Path] = []
 
@@ -73,6 +75,7 @@ def _group_mocks(
         p = out_dir / "preview.jpg"
         p.write_bytes(b"p")
         log.append(f"render:{src.name}")
+        rendered[p] = src.name
         return p
 
     def fake_mkdtemp(prefix: str = "") -> str:
@@ -83,10 +86,12 @@ def _group_mocks(
 
     monkeypatch.setattr(images, "render_preview", render)
     monkeypatch.setattr("framedex.images.tempfile.mkdtemp", fake_mkdtemp)
-    monkeypatch.setattr(
-        "framedex.frame_sampling.laplacian_sharpness",
-        lambda p: scores[p.parent.name],
-    )
+    rendered: dict[Path, str] = {}  # preview path -> source file name
+
+    def sharpness(p: Path) -> float:
+        return scores[rendered[p]]
+
+    monkeypatch.setattr("framedex.frame_sampling.laplacian_sharpness", sharpness)
     monkeypatch.setattr(
         images,
         "get_image_metadata",
@@ -139,9 +144,11 @@ def test_process_group_writes_stubs_then_primary_with_group_blocks(
         "sidecar:3.NEF.description.md",
         "sidecar:2.NEF.description.md",
     ]
-    # Every member rendered exactly once; the pick's preview is reused.
+    # Every member rendered once for scoring (nothing kept), then the primary
+    # alone is rendered again for the vision call.
     assert sorted(e for e in log if e.startswith("render:")) == [
         "render:1.NEF",
+        "render:2.NEF",
         "render:2.NEF",
         "render:3.NEF",
     ]
@@ -170,10 +177,10 @@ def test_process_group_writes_stubs_then_primary_with_group_blocks(
     assert stub["file"] == "1.NEF" and stub["path"] == "1.NEF"
     assert stub["media_type"] == "image" and stub["camera"] == {"model": "Z8"}
     assert stub["location"] == {"lat": -1.4, "lon": 35.0, "place": "Mara, Kenya"}
-    assert (
-        "See 2.NEF.description.md (burst primary)."
-        in pipeline.sidecar_path(tmp_path / "1.NEF").read_text()
-    )
+    body = pipeline.sidecar_path(tmp_path / "1.NEF").read_text()
+    assert "This file was not assessed individually." in body
+    assert "copied from 2.NEF.description.md (the burst primary)" in body
+    assert "zero does not mean none are present" in body
     assert not made[0].exists()  # the group's scoring temp dir is cleaned up
 
 
@@ -181,7 +188,7 @@ def test_process_group_pair_uses_jpeg_preview_and_raw_primary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     raw, jpg = _files(tmp_path, "1.NEF", "1.jpg")
-    log, _ = _group_mocks(tmp_path, monkeypatch, {"1.NEF": 3.0})
+    log, _ = _group_mocks(tmp_path, monkeypatch, {"1.jpg": 3.0})  # the JPEG is scored
     grp = grouping.MediaGroup("raw_jpeg", "b_p", [grouping.Unit(raw, jpg)])
 
     res = images.process_group(grp, tmp_path, _opts(), pipeline.ProcessContext())
@@ -193,7 +200,10 @@ def test_process_group_pair_uses_jpeg_preview_and_raw_primary(
     assert stub["group"]["kind"] == "raw_jpeg"
     assert stub["group"]["primary_file"] == "1.NEF"
     assert stub["group"]["sharpness"] == 3.0  # the JPEG was scored as the RAW's preview
-    assert "(raw_jpeg primary)" in pipeline.sidecar_path(jpg).read_text()
+    assert (
+        "the RAW primary of this RAW+JPEG pair"
+        in pipeline.sidecar_path(jpg).read_text()
+    )
 
 
 def test_process_group_no_renderable_member_skips_without_stubs(
@@ -259,20 +269,20 @@ def test_process_group_one_transport_call_for_a_five_frame_burst(
     assert res.stubs_written == 4
 
 
-def test_process_group_keeps_only_the_leading_preview_on_disk(
+def test_process_group_keeps_no_member_previews_on_disk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A long chain (a timelapse folder) must not pile up every member's
-    rendered preview until the group finishes."""
+    rendered preview: scoring renders are deleted at once, and only the
+    primary's second render exists during the vision call."""
     files = _files(tmp_path, "1.NEF", "2.NEF", "3.NEF", "4.NEF")
     _, made = _group_mocks(
         tmp_path, monkeypatch, {"1.NEF": 1.0, "2.NEF": 9.0, "3.NEF": 5.0, "4.NEF": 2.0}
     )
 
     def vision(frames: list[Path], prompt: str, model: str) -> str:
-        assert [d.name for d in made[0].iterdir()] == [
-            "2.NEF"
-        ]  # only the pick survives
+        assert [d.name for d in made[0].iterdir()] == ["primary"]
+        assert frames == [made[0] / "primary" / "preview.jpg"]
         return VISION_OK
 
     monkeypatch.setattr(pipeline, "describe_frames_cli", vision)
@@ -281,23 +291,33 @@ def test_process_group_keeps_only_the_leading_preview_on_disk(
     assert res.sidecar == pipeline.sidecar_path(tmp_path / "2.NEF")
 
 
-def test_process_group_reads_member_metadata_before_the_paid_call(
+def test_process_group_member_exif_failure_fails_before_the_paid_call(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The real exiftool reader, with the subprocess failing on one member:
+    the group fails loudly before any vision call and writes nothing (blank
+    EXIF stubs would otherwise overwrite valid metadata on a regroup)."""
+    import types
+
     files = _files(tmp_path, "1.NEF", "2.NEF", "3.NEF")
     _group_mocks(tmp_path, monkeypatch, {"1.NEF": 1.0, "2.NEF": 9.0, "3.NEF": 5.0})
+    monkeypatch.setattr(images, "get_image_metadata", _REAL_GET_IMAGE_METADATA)
 
-    def exif(p: Path) -> dict[str, Any]:
-        if p.name == "3.NEF":
-            raise RuntimeError("exiftool died")
-        return {"size_bytes": 1}
+    def run(cmd: list[str], **kw: Any) -> Any:
+        if cmd[-1].endswith("3.NEF"):
+            return types.SimpleNamespace(
+                returncode=1, stdout="", stderr="Error: bad file"
+            )
+        return types.SimpleNamespace(
+            returncode=0, stdout='[{"Model": "Z8"}]', stderr=""
+        )
 
-    monkeypatch.setattr(images, "get_image_metadata", exif)
+    monkeypatch.setattr("framedex.images.subprocess.run", run)
     monkeypatch.setattr(
         pipeline, "describe_frames_cli", lambda *a, **k: pytest.fail("paid call made")
     )
     grp = grouping.MediaGroup("burst", "b_m", [grouping.Unit(f) for f in files])
-    with pytest.raises(RuntimeError, match="exiftool died"):
+    with pytest.raises(RuntimeError, match=r"exiftool failed on 3\.NEF"):
         images.process_group(grp, tmp_path, _opts(), pipeline.ProcessContext())
     assert not any(pipeline.has_sidecar(f) for f in files)
 

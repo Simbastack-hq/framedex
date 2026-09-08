@@ -1219,8 +1219,8 @@ def main() -> int:
         "--max-files",
         type=int,
         default=None,
-        help="Stop after N work items; a burst / RAW+JPEG group counts once but "
-        "may write many sidecars (for testing)",
+        help="Stop after N work items; each single file or group counts once "
+        "(a group may write many sidecars). For testing.",
     )
     parser.add_argument(
         "--max-duration",
@@ -1328,9 +1328,12 @@ def main() -> int:
     parser.add_argument(
         "--no-group",
         action="store_true",
-        help="Index every still individually. By default bursts (same camera, "
-        "same folder, ≤2s apart, ≥3 frames) and RAW+JPEG pairs are grouped: "
-        "one vision call on the sharpest member, stub sidecars for the rest.",
+        help="Disable grouping for this run: index each still individually. By "
+        "default 3+ frames in one folder with matching camera make/model and "
+        "gaps of at most 2s, and RAW+JPEG pairs, share one assessment (one "
+        "vision call on the primary, stub sidecars for the rest). Existing "
+        "sidecars are skipped either way; use --force --no-group to re-index "
+        "a grouped folder individually.",
     )
     args = parser.parse_args()
 
@@ -1370,9 +1373,7 @@ def main() -> int:
             try:
                 meta = grouping.read_group_metadata(imgs)
             except grouping.GroupMetadataError as e:
-                sys.exit(
-                    f"{e}\nFix exiftool, or pass --no-group to index every file individually."
-                )
+                sys.exit(f"{e} Use --no-group to index files individually.")
             groups, singles = grouping.build_groups(imgs, meta)
             if groups:
                 n_grouped = sum(len(grp.files) for grp in groups)
@@ -1408,7 +1409,7 @@ def main() -> int:
     n_files_todo = sum(len(t[0].files) if t[1] == "group" else 1 for t in todo)
     skipped = n_found - n_files_todo
     if skipped:
-        print(f"  skipping {skipped} already-indexed")
+        print(f"  skipping {skipped} already-indexed files")
     if args.max_files and len(todo) > args.max_files:
         todo = todo[: args.max_files]
         print(f"  limiting to {len(todo)} for this run")
@@ -1428,8 +1429,9 @@ def main() -> int:
         for item, kind in todo:
             if kind == "group":
                 first = item.files[0].relative_to(root)
+                label = grouping.KIND_LABELS[item.kind]
                 print(
-                    f"  would process [{item.kind} x{len(item.files)} -> 1 call]: "
+                    f"  would process [{label}: {len(item.files)} files -> 1 vision call]: "
                     f"{first} .. {item.files[-1].name}"
                 )
             else:
@@ -1488,7 +1490,7 @@ def main() -> int:
             first = item.files[0].relative_to(root)
             print(
                 f"[{i}/{len(todo)}] {first} .. {item.files[-1].name} "
-                f"({item.kind}: {len(item.files)} files)"
+                f"({grouping.KIND_LABELS[item.kind]}: {len(item.files)} files)"
             )
         else:
             print(f"[{i}/{len(todo)}] {item.relative_to(root)}")
@@ -1513,16 +1515,19 @@ def main() -> int:
             traceback.print_exc()
             continue
 
-    summary = f"\nDone. Processed: {tally.processed}, Errors: {tally.errors}"
+    if tally.groups:
+        n_files = tally.groups + tally.stubs
+        summary = (
+            f"\nDone. Processed: {tally.processed} work items ({tally.groups} "
+            f"group{'s' if tally.groups != 1 else ''} covering {n_files} files), "
+            f"Errors: {tally.errors}"
+        )
+    else:
+        summary = f"\nDone. Processed: {tally.processed}, Errors: {tally.errors}"
     if tally.skipped_too_long:
         summary += f", Skipped (too long): {tally.skipped_too_long}"
     if tally.skipped_no_preview:
         summary += f", Skipped (no preview): {tally.skipped_no_preview}"
-    if tally.groups:
-        summary += (
-            f", Grouped: {tally.groups + tally.stubs} files in {tally.groups} "
-            f"group{'s' if tally.groups != 1 else ''}"
-        )
     if args.backend == "api":
         summary += f", Approx cost: ${tally.actual_cost:.2f}"
     print(summary)

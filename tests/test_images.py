@@ -66,7 +66,9 @@ def test_normalize_exif_datetime() -> None:
 def _fake_exiftool(payload: dict[str, Any], returncode: int = 0) -> Any:
     def run(cmd: list[str], **kw: Any) -> Any:
         return types.SimpleNamespace(
-            returncode=returncode, stdout=json.dumps([payload]) if payload else "[]"
+            returncode=returncode,
+            stdout=json.dumps([payload]) if payload else "[]",
+            stderr="",
         )
 
     return run
@@ -116,10 +118,16 @@ def test_get_image_metadata_exiftool_failure(
     monkeypatch.setattr(
         "framedex.images.subprocess.run", _fake_exiftool({}, returncode=1)
     )
+    # A failed read must not become a blank camera block: it would be written
+    # into a sidecar (and, for group stubs, could overwrite valid metadata).
+    with pytest.raises(RuntimeError, match=r"exiftool failed on x\.jpg"):
+        images.get_image_metadata(img)
+    # Absent tags on a successful read are still just empty fields.
+    monkeypatch.setattr(
+        "framedex.images.subprocess.run", _fake_exiftool({"Model": "Z8"})
+    )
     meta = images.get_image_metadata(img)
-    assert meta["camera"] == {}
-    assert meta["dimensions"] == ""
-    assert meta["size_bytes"] == 1
+    assert meta["camera"] == {"model": "Z8"} and meta["dimensions"] == ""
 
 
 # --- frontmatter -----------------------------------------------------------

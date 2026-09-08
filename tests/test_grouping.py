@@ -63,6 +63,18 @@ def test_parse_exif_timestamp_accepts_fractional_datetime_original() -> None:
     assert t - _base() == pytest.approx(0.5, abs=1e-6)
 
 
+def test_parse_exif_timestamp_malformed_fraction_rejects_that_source() -> None:
+    # `.bad` must not silently round to whole seconds: the next source is tried.
+    t = g.parse_exif_timestamp(BASE, f"{BASE}.bad", "25")
+    assert t is not None
+    assert t - _base() == pytest.approx(0.25, abs=1e-6)
+    assert g.parse_exif_timestamp(f"{BASE}.bad", None, "25") is None
+    # Non-ASCII digits are not a fraction; the whole-second value stands.
+    t2 = g.parse_exif_timestamp(BASE, None, "\uff12\uff15")
+    assert t2 is not None
+    assert t2 - _base() == pytest.approx(0.0, abs=1e-6)
+
+
 def test_parse_exif_timestamp_none_when_unusable() -> None:
     assert g.parse_exif_timestamp(None, None, None) is None
     assert g.parse_exif_timestamp("0000:00:00 00:00:00", None, None) is None
@@ -372,7 +384,8 @@ def test_read_group_metadata_batches_one_exiftool_call_on_stdin(
     monkeypatch.setattr("framedex.grouping.subprocess.run", run)
     meta = g.read_group_metadata([a, b])
     ((cmd, kw),) = run.calls
-    assert cmd[0] == "exiftool" and "-json" in cmd and cmd[-2:] == ["-@", "-"]
+    assert cmd[0] == "exiftool" and "-json" in cmd
+    assert cmd[-4:] == ["-charset", "filename=utf8", "-@", "-"]
     assert kw["input"] == f"{a}\n{b}\n" and kw["encoding"] == "utf-8"
     assert meta[a].camera == "NIKON CORPORATION|NIKON Z 8"
     ts = meta[a].timestamp
@@ -408,7 +421,10 @@ def test_read_group_metadata_warns_about_files_missing_from_output(
     )
     meta = g.read_group_metadata([a, b])
     assert set(meta) == {a}
-    assert "no EXIF for 1 of 2" in capsys.readouterr().err
+    assert (
+        "no EXIF for 1 of 2 files; indexing them individually"
+        in capsys.readouterr().err
+    )
 
 
 def test_read_group_metadata_raises_on_batch_failure(
@@ -428,7 +444,7 @@ def test_read_group_metadata_raises_on_batch_failure(
         raise FileNotFoundError("exiftool")
 
     monkeypatch.setattr("framedex.grouping.subprocess.run", boom)
-    with pytest.raises(g.GroupMetadataError):
+    with pytest.raises(g.GroupMetadataError, match="exiftool executable not found"):
         g.read_group_metadata([tmp_path / "a.NEF"])
 
 
@@ -439,3 +455,39 @@ def test_read_group_metadata_empty_input_skips_exiftool(
         "framedex.grouping.subprocess.run", lambda *a, **k: pytest.fail("must not run")
     )
     assert g.read_group_metadata([]) == {}
+
+
+def test_read_group_metadata_raises_when_nothing_succeeded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Valid JSON that carries no usable entry is a broken read, not a folder
+    without EXIF: `[]`, all-`Error` entries, or a signal death must raise."""
+    a = tmp_path / "a.NEF"
+    for payload in ([], [{"SourceFile": str(a), "Error": "File format error"}]):
+        monkeypatch.setattr("framedex.grouping.subprocess.run", _run_ok(payload, rc=1))
+        with pytest.raises(g.GroupMetadataError, match="no metadata from any"):
+            g.read_group_metadata([a])
+    monkeypatch.setattr(
+        "framedex.grouping.subprocess.run", _run_ok([{"SourceFile": str(a)}], rc=-9)
+    )
+    with pytest.raises(g.GroupMetadataError, match="signal 9"):
+        g.read_group_metadata([a])
+
+
+def test_read_group_metadata_error_entries_count_as_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    a, b = tmp_path / "a.NEF", tmp_path / "b.NEF"
+    monkeypatch.setattr(
+        "framedex.grouping.subprocess.run",
+        _run_ok(
+            [
+                {"SourceFile": str(a)},
+                {"SourceFile": str(b), "Error": "Unknown file type"},
+            ],
+            rc=1,
+        ),
+    )
+    meta = g.read_group_metadata([a, b])
+    assert set(meta) == {a}
+    assert "no EXIF for 1 of 2 files" in capsys.readouterr().err

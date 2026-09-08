@@ -312,9 +312,9 @@ def test_subject_tags_mark_burst_pick_and_alternate() -> None:
         _fm(group={"kind": "burst", "primary": False, "primary_file": "DSC_2.RAF"})
     )
     pair = xmp_export._subject_tags(_fm(group={"kind": "raw_jpeg", "primary": True}))
-    assert "burst-pick" in pick and "burst-alternate" not in pick
-    assert "burst-alternate" in alt and "burst-pick" not in alt
-    assert "burst-pick" not in pair and "burst-alternate" not in pair
+    assert "burst-primary" in pick and "burst-alternate" not in pick
+    assert "burst-alternate" in alt and "burst-primary" not in alt
+    assert "burst-primary" not in pair and "burst-alternate" not in pair
     assert "lion" in pick  # the copied keywords are still exported
 
 
@@ -339,7 +339,7 @@ def _write_group_sidecar(root: Path, name: str, group: dict[str, Any]) -> None:
 def test_run_burst_of_pairs_exports_one_pick_and_alternates_for_raws_only(
     tmp_path: Path,
 ) -> None:
-    """N RAW+JPEG pairs in one burst → N RAW .xmp files (one burst-pick, N-1
+    """N RAW+JPEG pairs in one burst → N RAW .xmp files (one burst-primary, N-1
     burst-alternate), nothing for the JPEG stubs, and an idempotent rerun."""
     gid = "b_12345678"
     for n in ("1", "2", "3"):
@@ -361,9 +361,9 @@ def test_run_burst_of_pairs_exports_one_pick_and_alternates_for_raws_only(
     xmps = sorted(tmp_path.glob("*.xmp"))
     assert [x.name for x in xmps] == ["1.xmp", "2.xmp", "3.xmp"]
     texts = {x.name: x.read_text() for x in xmps}
-    assert "burst-pick" in texts["2.xmp"] and "burst-alternate" not in texts["2.xmp"]
+    assert "burst-primary" in texts["2.xmp"] and "burst-alternate" not in texts["2.xmp"]
     for n in ("1.xmp", "3.xmp"):
-        assert "burst-alternate" in texts[n] and "burst-pick" not in texts[n]
+        assert "burst-alternate" in texts[n] and "burst-primary" not in texts[n]
     assert all("cheetah" in t for t in texts.values())
 
     again = xmp_export.run(tmp_path)

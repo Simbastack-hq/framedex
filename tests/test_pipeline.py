@@ -177,3 +177,60 @@ def test_describe_frames_cli_denies_untrusted_tools(
     assert allowed == "Read"
     for banned in ("Bash", "Write", "Edit"):
         assert banned not in allowed
+
+
+# --- split_frontmatter / read_sidecar_frontmatter ------------------------
+
+
+def test_split_frontmatter_ignores_triple_hyphens_inside_yaml() -> None:
+    """`---` inside a value (a filename like a---b.NEF) is not a fence. A
+    substring split would truncate the YAML, and a burst containing such a
+    file would never count as done (a vision call on every run)."""
+    text = "---\nfile: a---b.NEF\nrating: keep\n---\n\n# a---b.NEF\n\nbody\n"
+    parts = pipeline.split_frontmatter(text)
+    assert parts is not None
+    fm_text, body = parts
+    assert fm_text == "file: a---b.NEF\nrating: keep"
+    assert body.strip() == "# a---b.NEF\n\nbody"
+    assert pipeline.split_frontmatter("---\nfile: x\n") is None  # no closing fence
+    assert pipeline.split_frontmatter("no fence") is None
+
+
+def test_read_sidecar_frontmatter_round_trips_triple_hyphen_filename(
+    tmp_path: Path,
+) -> None:
+    sidecar = tmp_path / "a---b.NEF.description.md"
+    pipeline.serialize_sidecar(
+        sidecar,
+        {"file": "a---b.NEF", "rating": "keep"},
+        "a---b.NEF",
+        [("Description", "x")],
+    )
+    fm = pipeline.read_sidecar_frontmatter(sidecar)
+    assert fm is not None and fm["file"] == "a---b.NEF" and fm["rating"] == "keep"
+    assert pipeline.read_sidecar_frontmatter(tmp_path / "missing.md") is None
+
+
+# --- get_gps: a failed exiftool run is an error, not "no GPS" -------------
+
+
+def test_get_gps_raises_on_exiftool_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import types
+
+    media = tmp_path / "clip.mov"
+    media.write_bytes(b"x")
+    monkeypatch.setattr(
+        "framedex.pipeline.subprocess.run",
+        lambda *a, **k: types.SimpleNamespace(
+            returncode=1, stdout="", stderr="Error: boom"
+        ),
+    )
+    with pytest.raises(RuntimeError, match=r"exiftool failed on clip\.mov"):
+        pipeline.get_gps(media)
+    monkeypatch.setattr(
+        "framedex.pipeline.subprocess.run",
+        lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="[{}]", stderr=""),
+    )
+    assert pipeline.get_gps(media) == {}  # a successful read without GPS is just empty

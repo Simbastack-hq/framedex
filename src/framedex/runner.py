@@ -208,7 +208,10 @@ def record_result(
         f", {len(result.detected_faces)} faces" if result.detected_faces else ""
     )
     rating_note = f", rated {result.rating}"
-    stubs_note = f", +{result.stubs_written} alternates" if result.stubs_written else ""
+    n_stubs = result.stubs_written
+    stubs_note = (
+        f", {n_stubs} alternate sidecar{'s' if n_stubs != 1 else ''}" if n_stubs else ""
+    )
     if backend == "api":
         print(
             f"  -> {result.sidecar.name}  "

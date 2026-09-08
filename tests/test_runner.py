@@ -350,7 +350,7 @@ def test_record_result_counts_groups_and_stubs(
     )
     assert tally.processed == 1
     assert tally.groups == 1 and tally.stubs == 2
-    assert "+2 alternates" in capsys.readouterr().out
+    assert "2 alternate sidecars" in capsys.readouterr().out
 
 
 def test_record_result_ungrouped_file_touches_no_group_counters(
@@ -364,4 +364,4 @@ def test_record_result_ungrouped_file_touches_no_group_counters(
         max_duration_min=30,
     )
     assert tally.groups == 0 and tally.stubs == 0
-    assert "alternates" not in capsys.readouterr().out
+    assert "alternate" not in capsys.readouterr().out

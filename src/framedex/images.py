@@ -761,8 +761,13 @@ def process_group(
         preview_dir = tmp_dir / "primary"
         preview_dir.mkdir()
         preview = render_preview(primary_unit.preview_source, preview_dir)
+        (preview_dir / "raw_preview.jpg").unlink(missing_ok=True)  # full-size extract
         if preview is None:
-            return pipeline.ProcessResult(sidecar=None, skipped_reason="no_preview")
+            # Scoring just proved this file renders; a failure now is a real
+            # error (disk, signal), not a RAW without a preview.
+            raise RuntimeError(
+                f"{primary.name}: preview rendered for scoring but not for the vision call"
+            )
         sharp_of = {f: group.sharpness[u.primary] for u in group.units for f in u.files}
 
         members = [f for f in group.files if f != primary]

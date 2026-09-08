@@ -214,8 +214,10 @@ primary (highest local Laplacian sharpness score, no model choice); every
 alternate gets a stub sidecar that copies the primary's assessment fields (not
 faces; an empty face list means "not checked") and carries a `group:` block
 (`kind`, `id`, `primary`, `primary_file` or `members`, `sharpness`). A group is
-done only when every member's sidecar belongs to it; incomplete or changed
-groups are reprocessed together (repeating that group's call). Vision calls per
+done only when every member's sidecar belongs to it (or every member's sidecar
+predates grouping: legacy per-file assessments stay valid until `--force`);
+incomplete or changed groups are reprocessed together (repeating that group's
+call). Vision calls per
 run = groups + ungrouped files.
 
 ```bash

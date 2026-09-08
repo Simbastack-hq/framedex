@@ -72,6 +72,10 @@ def _group_mocks(
     def render(src: Path, out_dir: Path) -> Path | None:
         if src.name.startswith("nopreview"):
             return None
+        if src.name.startswith("flaky") and any(e == f"render:{src.name}" for e in log):
+            return None  # renders once (scoring), fails the second time
+        if src.suffix.upper() == ".NEF":  # a RAW leaves its full-size extract behind
+            (out_dir / "raw_preview.jpg").write_bytes(b"full")
         p = out_dir / "preview.jpg"
         p.write_bytes(b"p")
         log.append(f"render:{src.name}")
@@ -283,6 +287,10 @@ def test_process_group_keeps_no_member_previews_on_disk(
     def vision(frames: list[Path], prompt: str, model: str) -> str:
         assert [d.name for d in made[0].iterdir()] == ["primary"]
         assert frames == [made[0] / "primary" / "preview.jpg"]
+        # The full-size embedded JPEG the RAW yielded is gone by now.
+        assert sorted(p.name for p in (made[0] / "primary").iterdir()) == [
+            "preview.jpg"
+        ]
         return VISION_OK
 
     monkeypatch.setattr(pipeline, "describe_frames_cli", vision)
@@ -421,3 +429,33 @@ def test_process_group_removes_unparsable_old_primary_sidecar(
     assert res.sidecar is not None
     fm = pipeline.read_sidecar_frontmatter(res.sidecar)
     assert fm is not None and fm["group"]["primary"] is True
+
+
+def test_process_group_second_render_failure_is_an_error_not_a_skip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Scoring proved the primary renders; if the vision-call render then
+    fails, that is a real error to retry, never a silent "no preview" skip."""
+    files = _files(tmp_path, "flaky1.NEF", "flaky2.NEF", "flaky3.NEF")
+    _group_mocks(
+        tmp_path, monkeypatch, {"flaky1.NEF": 1.0, "flaky2.NEF": 9.0, "flaky3.NEF": 5.0}
+    )
+    grp = grouping.MediaGroup("burst", "b_f2", [grouping.Unit(f) for f in files])
+    with pytest.raises(RuntimeError, match="rendered for scoring but not"):
+        images.process_group(grp, tmp_path, _opts(), pipeline.ProcessContext())
+    assert not any(pipeline.has_sidecar(f) for f in files)
+
+
+def test_group_with_triple_hyphen_member_resumes_as_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end through the real serializer and reader: a member named
+    a---b.NEF must not break the resume check after a completed run."""
+    files = _files(tmp_path, "a---b.NEF", "c.NEF", "d.NEF")
+    _group_mocks(tmp_path, monkeypatch, {"a---b.NEF": 9.0, "c.NEF": 1.0, "d.NEF": 2.0})
+    grp = grouping.MediaGroup(
+        "burst", grouping.group_id(files), [grouping.Unit(f) for f in files]
+    )
+    res = images.process_group(grp, tmp_path, _opts(), pipeline.ProcessContext())
+    assert res.sidecar == pipeline.sidecar_path(tmp_path / "a---b.NEF")
+    assert grouping.group_is_done(grp, pipeline.read_sidecar_frontmatter)

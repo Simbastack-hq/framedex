@@ -1379,7 +1379,7 @@ def main() -> int:
                 n_grouped = sum(len(grp.files) for grp in groups)
                 print(
                     f"  grouped {n_grouped} files into {len(groups)} groups "
-                    "(bursts + RAW/JPEG pairs)"
+                    "(bursts + RAW+JPEG pairs)"
                 )
             # Resume is group-aware: a group is done only when every member's
             # sidecar belongs to this exact group (or all predate grouping); a

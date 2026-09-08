@@ -398,7 +398,7 @@ def read_group_metadata(paths: list[Path]) -> dict[Path, GroupMeta]:
     if missing:
         print(
             f"warning: exiftool returned no EXIF for {missing} of {len(safe)} files; "
-            "indexing them individually",
+            "excluded from burst detection (RAW+JPEG pairing still applies)",
             file=sys.stderr,
         )
     return out

@@ -95,4 +95,5 @@ rendered preview (the pair's JPEG when there is one); ties go to the earliest
 frame. `--no-group` disables grouping for a run. Grouping runs one batched
 `exiftool` call over the whole image list; if that call fails, indexing stops.
 Use `--no-group` to retry with individual indexing. Files that come back
-without EXIF from a successful batch are indexed individually.
+without EXIF from a successful batch never join a burst (RAW+JPEG pairing,
+which needs no EXIF, still applies).

@@ -29,13 +29,19 @@ from framedex.mcp_tools import (
 )
 
 INSTRUCTIONS = (
-    "framedex indexes a photo/video archive into plain-text sidecars. "
-    "Start with list_roots, then archive_overview or query_media (filter by "
-    "rating, folder, keywords, place). Every match has a path; read_sidecar "
-    "returns its full description, and contact_sheet renders up to "
-    f"{SHEET_MAX_IMAGES} paths as one numbered image so you can compare them. "
-    "set_user_rating records the person's decision (keep/review/cull) next to "
-    "the model's; it never edits the media file."
+    "framedex indexes a photo/video archive into plain-text sidecars, one per "
+    "file, with the indexer's rating (keep/review/cull), keywords, place, EXIF, "
+    "and a description. Workflow: start with list_roots. Use archive_overview "
+    "to see trip folders, counts, and top keywords (if it is missing, go "
+    "straight to query_media). Search a trip with query_media(folder=..., "
+    "rating='keep,review'): this filters stored metadata, not semantic "
+    "similarity. Compare candidates by passing 1-"
+    f"{SHEET_MAX_IMAGES} media paths to contact_sheet (batch larger sets). "
+    "Read a sidecar for the full description or transcript. When the person "
+    "decides, record it with set_user_rating (absent in read-only mode). In "
+    "results, `path` is the media file (may be null when the original is not "
+    "on disk) and `sidecar_path` is the description file; both read_sidecar "
+    "and set_user_rating accept either."
 )
 
 
@@ -81,13 +87,23 @@ def build_server(roots: Roots, *, read_only: bool) -> Any:
         offset: int = 0,
         limit: int = QUERY_DEFAULT_LIMIT,
     ) -> dict[str, Any]:
-        """Find indexed media. `rating` is a comma list of keep/review/cull and
-        matches the effective rating (a person's rating overrides the
-        model's). `folder` restricts to a subfolder of the root (a trip or a
-        shoot). `keywords` must all match. Page with `offset`/`limit` (limit
-        at most 500); `total` and `truncated` say whether more exist. Each
-        match carries `path`, `sidecar`, ratings, `place`, `keywords`, and the
-        one-line `scene`."""
+        """Find indexed media by stored metadata (a subset of fdx-query's
+        filters; not semantic search). Filters AND together. `root`: an exact
+        value from list_roots, required when several roots are configured.
+        `folder`: a subfolder of the root (a trip or a shoot). `rating`: a
+        comma list of keep/review/cull, matched against the effective rating
+        (a person's user_rating overrides the indexer's rating). `keywords`:
+        every one must match, case-insensitively. `person`: a face
+        cluster_id as stored in sidecars. `lighting` / `time_of_day`: comma
+        lists of the exact stored values (see a sidecar for the vocabulary).
+        `has_speech=false` applies no speech filter. `primary_only=true`
+        hides burst/pair alternates. Results are ordered by sidecar path, not
+        by quality. Page with `offset`/`limit` (limit at most 500); `total` is
+        the match count and `has_more` says whether another page exists. Each
+        match carries `path` (absolute media path, or null when the original
+        is not on disk), `sidecar_path` (always usable with read_sidecar and
+        set_user_rating), `rating` (the indexer's), `user_rating`,
+        `effective_rating`, `place`, `keywords`, and the one-line `scene`."""
         try:
             return query_media(
                 roots,
@@ -111,7 +127,8 @@ def build_server(roots: Roots, *, read_only: bool) -> Any:
     def read_sidecar_tool(path: str) -> str:
         """The full plain-text sidecar (`.description.md`) of one media file:
         frontmatter (EXIF, GPS, ratings, keywords, faces) and the description
-        or transcript. `path` is the media file or its sidecar."""
+        or transcript. `path` is the media file or its `sidecar_path` (use the
+        latter when `path` is null)."""
         try:
             return read_sidecar(roots, path)
         except ValueError as e:
@@ -128,9 +145,12 @@ def build_server(roots: Roots, *, read_only: bool) -> Any:
 
     def contact_sheet_tool(paths: list[str]) -> list[Any]:
         """Render 1-20 media files (stills, or one frame of a clip) into one
-        numbered grid image plus a legend (`n. path — rating — scene`), so
-        candidates can be compared in a single look. Narrow the query and
-        call again for more."""
+        numbered grid image plus a legend (`n. <absolute path> —
+        effective_rating=... — scene=...`), so candidates can be compared in a
+        single look. Numbers follow input order; use the full path from the
+        legend when recording a pick. Needs media files on disk (not a null
+        `path`); split larger selections into batches. A file that cannot be
+        rendered keeps a numbered grey cell and says why in the legend."""
         try:
             jpeg, legend = build_contact_sheet(roots, paths)
         except (ValueError, RuntimeError) as e:
@@ -140,10 +160,12 @@ def build_server(roots: Roots, *, read_only: bool) -> Any:
     def set_user_rating_tool(
         path: str, rating: Literal["keep", "review", "cull", ""], note: str = ""
     ) -> dict[str, Any]:
-        """Record the person's decision for one file in its sidecar:
-        `user_rating` keep/review/cull (an empty string clears it) and an
-        optional `note`. The model's own rating stays; the person's wins in
-        fdx-query, fdx-master and fdx-xmp (Lightroom). Never edits the media
+        """Set the person's rating for one media or sidecar path:
+        `user_rating` keep/review/cull, plus an optional `note`. The indexer's
+        stored `rating` stays unchanged; the person's rating wins in
+        fdx-query, fdx-master and fdx-xmp (Lightroom). `note` replaces the
+        existing user note; omitting it removes that note. `rating=""`
+        removes the user rating, note, and timestamp. Never edits the media
         file."""
         try:
             return set_user_rating(roots, path, rating, note)

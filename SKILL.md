@@ -241,14 +241,16 @@ fdx-mcp /Volumes/SSD-2024                        # roots fdx has indexed; --read
 claude mcp add framedex -- $(which fdx-mcp) /Volumes/SSD-2024
 ```
 
-Tools: `list_roots`, `query_media` (fdx-query filters + `folder` + `offset`/
-`limit`), `read_sidecar`, `archive_overview` (`_INDEX.md` snapshot),
-`contact_sheet` (1-20 files → one numbered grid image + legend),
+Tools: `list_roots`, `query_media` (a subset of fdx-query's metadata filters
++ `folder` + `offset`/`limit`; not semantic search), `read_sidecar`,
+`archive_overview` (`_INDEX.md` snapshot), `contact_sheet` (1-20 files on
+disk → one numbered grid image + legend; needs a vision-capable model),
 `set_user_rating` (writes `user_rating`/`user_note`/`user_rated_at` into the
-sidecar; the model's `rating` stays; wins in fdx-query/fdx-master/fdx-xmp).
-Zero model calls inside framedex; one bounded image per contact-sheet call.
-Same tools from Claude Desktop / LM Studio via their `mcpServers` config;
-see `docs/mcp.md`.
+sidecar; the indexer's `rating` stays; wins in fdx-query/fdx-master/fdx-xmp).
+fdx-mcp makes no model calls; host inference may cost tokens/images, and
+results (thumbnails, paths, GPS, names, notes, transcripts) go wherever the
+host sends them. Same tools from Claude Desktop / LM Studio via their
+`mcpServers` config; see `docs/mcp.md`.
 
 ### Apple Photos library
 

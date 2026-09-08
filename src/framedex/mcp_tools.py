@@ -218,9 +218,9 @@ def query_media(
         matches.append(
             {
                 "path": str(media_path) if media_path else None,
-                "sidecar": str(sidecar),
+                "sidecar_path": str(sidecar),
                 "media_type": rec.get("media_type") or "video",
-                "rating": rec.get("rating"),
+                "rating": rec.get("rating"),  # the indexer's; see effective_rating
                 "user_rating": rec.get("user_rating") if is_user_rated(rec) else None,
                 "effective_rating": effective_rating(rec),
                 "place": (rec.get("location") or {}).get("place"),
@@ -235,7 +235,7 @@ def query_media(
         "total": result.total,
         "offset": offset,
         "limit": limit,
-        "truncated": offset + len(result.records) < result.total,
+        "has_more": offset + len(result.records) < result.total,
         "skipped_malformed": result.skipped_malformed + dropped,
         "invalid_user_ratings": result.invalid_user_ratings,
     }
@@ -280,6 +280,13 @@ def _lock_for(path: Path) -> threading.Lock:
         return _LOCKS.setdefault(path, threading.Lock())
 
 
+def _cannot_update(sidecar: Path, reason: str) -> str:
+    return (
+        f"Cannot update {sidecar}: {reason}. No rating was written; this sidecar "
+        "needs repair outside these tools."
+    )
+
+
 def set_user_rating(
     roots: Roots, ref: str, rating: str, note: str = ""
 ) -> dict[str, Any]:
@@ -301,17 +308,15 @@ def set_user_rating(
             raise ValueError(f"{sidecar.name} is not UTF-8 text") from e
         parts = split_frontmatter(text)
         if parts is None:
-            raise ValueError(
-                f"{sidecar.name}: no frontmatter fence; not a framedex sidecar"
-            )
+            raise ValueError(_cannot_update(sidecar, "no frontmatter fence"))
         try:
             fm = yaml.safe_load(parts[0])
         except yaml.YAMLError as e:
             raise ValueError(
-                f"{sidecar.name}: frontmatter is not valid YAML ({e})"
+                _cannot_update(sidecar, f"frontmatter is not valid YAML ({e})")
             ) from e
         if not isinstance(fm, dict):
-            raise ValueError(f"{sidecar.name}: frontmatter is not a mapping")
+            raise ValueError(_cannot_update(sidecar, "frontmatter is not a mapping"))
 
         current_rating = fm.get("user_rating") if is_user_rated(fm) else None
         current_note = fm.get("user_note") or ""
@@ -363,8 +368,8 @@ def sheet_layout(n: int) -> tuple[tuple[int, int], list[tuple[int, int, int]]]:
     grid. Pure geometry, so the bounds are testable without Pillow."""
     if not 1 <= n <= SHEET_MAX_IMAGES:
         raise ValueError(
-            f"a contact sheet holds between 1 and {SHEET_MAX_IMAGES} images, got {n}; "
-            "narrow the query"
+            f"a contact sheet holds between 1 and {SHEET_MAX_IMAGES} images, got {n}. "
+            f"Pass 1-{SHEET_MAX_IMAGES} media paths; split larger selections into batches"
         )
     cols = min(SHEET_COLUMNS, n)
     rows = math.ceil(n / SHEET_COLUMNS)
@@ -516,11 +521,14 @@ def build_contact_sheet(roots: Roots, paths: list[str]) -> tuple[bytes, list[str
     try:
         for (idx, x, y), media in zip(cells, medias, strict=True):
             fm, scene = _sidecar_summary(media)
-            label = str(effective_rating(fm) or "unrated") if fm else "not indexed"
-            if fm and is_user_rated(fm):
-                label += " (user)"
+            if fm:
+                label = f"effective_rating={effective_rating(fm) or 'unrated'}"
+                if is_user_rated(fm):
+                    label += " (user)"
+            else:
+                label = "not indexed"
             if scene:
-                label += f" — {scene}"
+                label += f" — scene={scene}"
             sub = tmp / str(idx)
             sub.mkdir()
             reason: str | None = None
@@ -554,15 +562,19 @@ def build_contact_sheet(roots: Roots, paths: list[str]) -> tuple[bytes, list[str
                 )
             draw.rectangle([x, y, x + 30, y + 20], fill=(0, 0, 0))
             draw.text((x + 6, y + 4), str(idx), fill=(255, 255, 255))
-            rel = media.relative_to(roots.root_of(media))
-            line = f"{idx}. {rel} — {label}"
+            line = f"{idx}. {media} — {label}"
             if reason:
-                line += f" — no preview: {reason}"
+                line += (
+                    f" — preview unavailable: {reason}. Use read_sidecar for its "
+                    "metadata; omit this file to compare the remaining candidates"
+                )
             legend.append(line)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     if rendered == 0:
-        raise ValueError("none of the files could be rendered: " + "; ".join(legend))
+        raise ValueError(
+            "no preview could be rendered for any of the files: " + "; ".join(legend)
+        )
     buf = io.BytesIO()
     canvas.save(buf, "JPEG", quality=SHEET_JPEG_QUALITY)
     return buf.getvalue(), legend

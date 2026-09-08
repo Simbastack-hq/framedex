@@ -11,15 +11,16 @@ public surface (CLI flags, sidecar schema) can still shift between minor version
 - **`fdx-mcp`: the archive as MCP tools.** A new optional command (`[mcp]`
   extra: the official MCP SDK + Pillow) serves indexed roots to any MCP host
   over stdio (Claude Code, Claude Desktop, LM Studio with a local model).
-  Tools: `list_roots`, `query_media` (the `fdx-query` filters plus `folder`
+  Tools: `list_roots`, `query_media` (a subset of `fdx-query`'s metadata filters plus `folder`
   and `offset`/`limit` paging, effective ratings, the scene sentence),
   `read_sidecar`, `archive_overview` (`_INDEX.md`, labelled as a snapshot),
   `contact_sheet` (1-20 files rendered into one numbered 4-column grid with a
   legend; a clip contributes one frame at its `notable_timestamp` or
   midpoint), and `set_user_rating`. Every path, including paths derived from
   sidecars, is resolved and must lie under a configured root; `--read-only`
-  removes the setter. framedex makes no model call; one bounded image per
-  contact-sheet call. See `docs/mcp.md`.
+  removes the setter. fdx-mcp makes no model call; each successful
+  contact-sheet call is one bounded image, and host inference is where cost
+  and data flow live. See `docs/mcp.md`.
 - **`user_rating`: the person's decision next to the model's.**
   `set_user_rating` writes `user_rating` (keep/review/cull), `user_note`, and
   `user_rated_at` into the sidecar frontmatter atomically, body preserved

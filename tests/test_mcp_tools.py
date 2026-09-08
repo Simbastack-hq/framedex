@@ -95,19 +95,19 @@ def test_query_media_returns_compact_matches_with_effective_rating(
     roots = mt.Roots.from_args([str(tmp_path)])
 
     out = mt.query_media(roots, rating="keep", keywords=["lion"])
-    assert out["total"] == 2 and out["truncated"] is False
+    assert out["total"] == 2 and out["has_more"] is False
     first = out["matches"][0]
     assert first["path"] == str(tmp_path / "mara/1.NEF")
-    assert first["sidecar"].endswith("1.NEF.description.md")
+    assert first["sidecar_path"].endswith("1.NEF.description.md")
     assert first["effective_rating"] == "keep" and first["rating"] == "cull"
     assert first["user_rating"] == "keep" and first["scene"] == "A lion."
 
     page = mt.query_media(roots, folder="mara", offset=0, limit=1)
     assert [Path(m["path"]).name for m in page["matches"]] == ["1.NEF"]
-    assert page["total"] == 2 and page["truncated"] is True  # more beyond this page
+    assert page["total"] == 2 and page["has_more"] is True  # more beyond this page
     last = mt.query_media(roots, folder="mara", offset=1, limit=1)
     assert [Path(m["path"]).name for m in last["matches"]] == ["2.NEF"]
-    assert last["truncated"] is False
+    assert last["has_more"] is False
 
 
 def test_query_media_validates_arguments(tmp_path: Path) -> None:

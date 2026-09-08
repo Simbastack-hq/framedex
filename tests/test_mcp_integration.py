@@ -123,8 +123,8 @@ def test_contact_sheet_returns_one_image_and_a_legend(tmp_path: Path) -> None:
     assert p1[0] > 150 and p1[2] < 80  # red-ish
     assert p2[2] > 150 and p2[0] < 80  # blue-ish
     legend = res.content[1].text.splitlines()
-    assert legend[0].startswith("1. a.jpg — cull (user)")
-    assert legend[1].startswith("2. b.jpg — review")
+    assert legend[0].startswith(f"1. {a} — effective_rating=cull (user) — scene=")
+    assert legend[1].startswith(f"2. {b} — effective_rating=review — scene=")
 
     too_many = _call(
         server, "contact_sheet", {"paths": [str(a)] * (mcp_tools.SHEET_MAX_IMAGES + 1)}

@@ -230,9 +230,9 @@ uv pip install -e '.[mcp]'        # MCP SDK + Pillow (add [images] for HEIC thum
 fdx-mcp /Volumes/SSD-2024         # one or more indexed roots; --read-only drops the one write tool
 ```
 
-Six tools: `list_roots`; `query_media` (the `fdx-query` filters, plus `folder` and paging); `read_sidecar`; `archive_overview` (`_INDEX.md` as the snapshot it is); `contact_sheet` (1-20 files rendered into one numbered JPEG grid with a legend, so the model can compare candidates in a single look); and `set_user_rating`, which records the person's `user_rating` (keep/review/cull) and a note in the sidecar next to the model's `rating`, never over it. A user rating wins in `fdx-query`, `fdx-master`, and `fdx-xmp` (keyword `user-rated`; a user `keep` is still 3★), and survives re-indexing.
+Six tools: `list_roots`; `query_media` (a subset of `fdx-query`'s metadata filters, plus `folder` and paging; not semantic search); `read_sidecar`; `archive_overview` (`_INDEX.md` as the snapshot it is); `contact_sheet` (1-20 files rendered into one numbered JPEG grid with a legend, so a vision-capable model can compare candidates in a single look); and `set_user_rating`, which records the person's `user_rating` (keep/review/cull) and a note in the sidecar next to the indexer's `rating`, never over it. A user rating wins in `fdx-query`, `fdx-master`, and `fdx-xmp` (keyword `user-rated`; a user `keep` is still 3★), and survives re-indexing.
 
-One bounded image per successful `contact_sheet` call (at most 20 thumbnails, about 1600 px wide), zero model calls inside framedex. What leaves your machine is the host's decision: it may send its model the thumbnails, paths, GPS, names, notes, and transcripts the tools return; with LM Studio and a local model, nothing does. Host setup and the full tool contract: [docs/mcp.md](docs/mcp.md).
+fdx-mcp makes no model calls; host inference may incur token or image charges, and each `contact_sheet` call is one bounded image (at most 20 thumbnails, about 1600 px wide). Tool results can include thumbnails, paths, GPS, names, notes, and transcripts, and the host may forward them to its model provider; keeping them local requires a host configured for local inference that does not forward results (LM Studio with a local vision model). Host setup and the full tool contract: [docs/mcp.md](docs/mcp.md).
 
 ## Apple Photos library (macOS)
 

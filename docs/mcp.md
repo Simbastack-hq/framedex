@@ -46,14 +46,15 @@ With LM Studio and a local vision model, nothing leaves the machine.
 | Tool | Arguments | Returns |
 |---|---|---|
 | `list_roots` | – | the roots this server can see |
-| `query_media` | `root?`, `folder?` (subpath of the root), `rating?` (comma list of keep/review/cull, matched against the effective rating), `media?` (image/video), `keywords?` (all must match), `place_contains?`, `person?`, `time_of_day?`, `lighting?`, `has_speech?`, `primary_only?`, `offset=0`, `limit=50` (max 500) | `{matches: [{path, sidecar, media_type, rating, user_rating, effective_rating, place, keywords, scene, creation_time, group_alternate}], total, offset, limit, truncated, skipped_malformed, invalid_user_ratings}` |
+| `query_media` | `root?` (an exact value from `list_roots`; required with several roots), `folder?` (subpath of the root), `rating?` (comma list of keep/review/cull, matched against the effective rating), `media?` (image/video), `keywords?` (all must match, case-insensitive), `place_contains?`, `person?` (a stored face `cluster_id`), `time_of_day?` / `lighting?` (comma lists of the stored values), `has_speech?`, `primary_only?`, `offset=0`, `limit=50` (max 500). Filters AND together; results are ordered by sidecar path | `{matches: [{path (absolute media path, or null when the original is not on disk), sidecar_path (always usable with read_sidecar / set_user_rating), media_type, rating (the indexer's), user_rating, effective_rating, place, keywords, scene, creation_time, group_alternate}], total, offset, limit, has_more, skipped_malformed, invalid_user_ratings}` |
 | `read_sidecar` | `path` (a media file or its sidecar) | the full `.description.md` text |
 | `archive_overview` | `root?` | `_INDEX.md`, prefixed as the snapshot it is (regenerate with `fdx-master`), cut at 64 KB |
-| `contact_sheet` | `paths` (1-20) | one JPEG: a numbered 4-column grid of 384 px cells (about 1600 px wide), plus a legend `n. path — rating — scene`. A file that cannot be rendered keeps a numbered grey cell with the reason; if nothing renders the call fails |
-| `set_user_rating` | `path`, `rating` (keep/review/cull, or "" to clear), `note=""` | the sidecar's `rating`, `user_rating`, `user_note`, `user_rated_at`, and whether anything changed. Absent with `--read-only` |
+| `contact_sheet` | `paths` (1-20 media files on disk) | one JPEG: a numbered 4-column grid of 384 px cells (about 1600 px wide), plus a legend `n. <absolute path> — effective_rating=keep (user) — scene=...` in input order. A file that cannot be rendered keeps a numbered grey cell and the legend says why; if nothing renders the call fails. Comparing the sheet needs a vision-capable model on the host |
+| `set_user_rating` | `path` (media or sidecar path), `rating` (keep/review/cull, or "" to clear), `note=""` | the sidecar's `rating` (the indexer's, unchanged), `user_rating`, `user_note`, `user_rated_at`, and whether anything changed. `note` replaces the existing note; omitting it removes the note; `rating=""` removes all three keys. Absent with `--read-only` |
 
-`query_media` and `fdx-query` share one implementation (`query.Filters`,
-`query.run_query`), so a filter means the same thing in both. `folder` is a
+`query_media` exposes a subset of `fdx-query`'s metadata filters through the
+same implementation (`query.Filters`, `query.run_query`), so a filter means
+the same thing in both; it is not semantic search. `folder` is a
 subpath of the scan root; `root` is always the directory the sidecars were
 written from (their `path` fields are relative to it).
 
@@ -100,13 +101,15 @@ HEIC embed their metadata in the file, which framedex never modifies); a
 
 ## Cost and privacy
 
-Zero model calls inside framedex. A contact sheet is one bounded image per
-successful call (at most 20 thumbnails, about 1600 px wide); the host decides
-how often to call and what its model receives. What the tools return, and the
-host may therefore send to its model provider: thumbnails, file paths, GPS
-coordinates and place names, face cluster ids, keywords, notes, and (via
-`read_sidecar`) transcripts. Local processing is not local inference: use a
-local model (LM Studio) if the archive must not leave the machine.
+fdx-mcp makes no model calls. Host inference is where cost lives: each tool
+result is tokens, and each contact sheet is one image per successful call (at
+most 20 thumbnails, about 1600 px wide) that a vision-capable model must
+process. Tool results can include thumbnails, file paths, GPS coordinates and
+place names, face cluster ids, keywords, notes, and (via `read_sidecar`)
+transcripts; the host may forward all of that to its model provider. Keeping
+it local requires a host configured for local inference that does not forward
+results externally (LM Studio with a local vision model, for example). Local
+processing is not local inference.
 
 ## Limits
 

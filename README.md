@@ -38,6 +38,7 @@ The README covers the core workflow. Deeper or edge-case topics live in `docs/`:
 - **[Apple Photos library](docs/apple-photos.md)**: index a `.photoslibrary` directly with `fdx-photos`, including the iCloud "Optimize Storage" edge case.
 - **[Tuning and advanced config](docs/tuning.md)**: folder-context priors, proper-noun biasing, languages, speaker-diarization setup.
 - **[Troubleshooting](docs/troubleshooting.md)**: common errors and their fixes.
+- **[fdx-mcp](docs/mcp.md)**: serve an indexed archive to Claude Desktop, LM Studio, or any MCP host; the tool contract, host setup, what leaves the machine.
 
 ## Install
 
@@ -220,6 +221,19 @@ It's a **regenerable view**: delete every `.xmp` and re-run to rebuild them. It 
 
 Scope in v1: **proprietary RAW → Lightroom Classic**. Lightroom reads `.xmp` *sidecars* only for proprietary RAW; for JPEG/HEIC/TIFF/DNG it reads metadata embedded in the file, which framedex never modifies, so those shooters get no Lightroom integration here. (`.dng` is excluded for the same reason.)
 
+## Talk to your archive from an MCP host (`fdx-mcp`)
+
+`fdx-mcp` serves an indexed archive to any MCP client over stdio: Claude Code, Claude Desktop, LM Studio with a local model, or your own agent. framedex makes no model call itself; the host's model does the reasoning and framedex hands it facts from the sidecars and, on request, one picture.
+
+```bash
+uv pip install -e '.[mcp]'        # MCP SDK + Pillow (add [images] for HEIC thumbnails)
+fdx-mcp /Volumes/SSD-2024         # one or more indexed roots; --read-only drops the one write tool
+```
+
+Six tools: `list_roots`; `query_media` (the `fdx-query` filters, plus `folder` and paging); `read_sidecar`; `archive_overview` (`_INDEX.md` as the snapshot it is); `contact_sheet` (1-20 files rendered into one numbered JPEG grid with a legend, so the model can compare candidates in a single look); and `set_user_rating`, which records the person's `user_rating` (keep/review/cull) and a note in the sidecar next to the model's `rating`, never over it. A user rating wins in `fdx-query`, `fdx-master`, and `fdx-xmp` (keyword `user-rated`; a user `keep` is still 3★), and survives re-indexing.
+
+One bounded image per successful `contact_sheet` call (at most 20 thumbnails, about 1600 px wide), zero model calls inside framedex. What leaves your machine is the host's decision: it may send its model the thumbnails, paths, GPS, names, notes, and transcripts the tools return; with LM Studio and a local model, nothing does. Host setup and the full tool contract: [docs/mcp.md](docs/mcp.md).
+
 ## Apple Photos library (macOS)
 
 `fdx-photos` indexes videos **and** stills straight from an Apple Photos library: no export, no metadata loss. The common case is one command:
@@ -291,8 +305,9 @@ A burst or RAW+JPEG pair is done only when every member's sidecar belongs to tha
 | `fdx-photos` | `photos_indexer.py` | Index media (videos + stills) directly from an Apple Photos library (no export); `--media images\|videos\|all`. See [docs/apple-photos.md](docs/apple-photos.md) |
 | `fdx-summary` | `trip_summary.py` | Recursive per-folder summaries |
 | `fdx-master` | `master_index.py` | Drive-level `_INDEX.md` + `_INDEX.json` |
-| `fdx-query` | `query.py` | Filter sidecars by rating, lighting, person, keyword, location, language |
+| `fdx-query` | `query.py` | Filter sidecars by rating, lighting, person, keyword, location, language; `--folder`, `--offset`/`--limit` |
 | `fdx-xmp` | `xmp_export.py` | Export ratings/keywords/caption to `.xmp` sidecars for Lightroom (RAW) |
+| `fdx-mcp` | `mcp_server.py` | Serve the archive as MCP tools over stdio (query, read, overview, contact sheet, user rating); `[mcp]` extra |
 
 ```bash
 fdx-query /Volumes/SSD-2024 --rating keep --time-of-day golden_hour

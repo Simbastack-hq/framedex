@@ -102,6 +102,7 @@ Skip with `--no-faces` if you don't want face data.
 | `fdx-master` | `framedex.master_index` | Drive-level `_INDEX.md` + `_INDEX.json` |
 | `fdx-query` | `framedex.query` | Filter sidecars by metadata (rating, lighting, person, keyword, etc.) |
 | `fdx-xmp` | `framedex.xmp_export` | Export ratings/keywords to Lightroom via `.xmp` sidecars (proprietary RAW; regenerable, non-destructive) |
+| `fdx-mcp` | `framedex.mcp_server` | Serve indexed roots as MCP tools over stdio (`[mcp]` extra): query_media, read_sidecar, archive_overview, contact_sheet, set_user_rating |
 
 ## Set up once
 
@@ -231,6 +232,23 @@ fdx-query /Volumes/SSD-photos --rating keep --primary-only   # hide alternates
 `fdx-xmp` tags members `burst-primary` / `burst-alternate`. `fdx-photos`
 accepts `--no-group` for parity but does not group yet. Thresholds:
 `docs/tuning.md`.
+
+### Talk to the archive from an MCP host (`fdx-mcp`)
+
+```bash
+uv pip install -e '.[mcp]'                       # MCP SDK + Pillow
+fdx-mcp /Volumes/SSD-2024                        # roots fdx has indexed; --read-only drops the setter
+claude mcp add framedex -- $(which fdx-mcp) /Volumes/SSD-2024
+```
+
+Tools: `list_roots`, `query_media` (fdx-query filters + `folder` + `offset`/
+`limit`), `read_sidecar`, `archive_overview` (`_INDEX.md` snapshot),
+`contact_sheet` (1-20 files → one numbered grid image + legend),
+`set_user_rating` (writes `user_rating`/`user_note`/`user_rated_at` into the
+sidecar; the model's `rating` stays; wins in fdx-query/fdx-master/fdx-xmp).
+Zero model calls inside framedex; one bounded image per contact-sheet call.
+Same tools from Claude Desktop / LM Studio via their `mcpServers` config;
+see `docs/mcp.md`.
 
 ### Apple Photos library
 

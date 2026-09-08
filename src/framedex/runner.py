@@ -164,6 +164,8 @@ class RunTally:
     skipped_too_long: int = 0
     skipped_no_preview: int = 0
     actual_cost: float = 0.0
+    groups: int = 0  # burst / RAW+JPEG groups that got their one vision call
+    stubs: int = 0  # members of those groups that got a stub sidecar instead
 
 
 def record_result(
@@ -199,14 +201,18 @@ def record_result(
     assert result.sidecar is not None
     tally.actual_cost += result.cost
     tally.processed += 1
+    if result.stubs_written:
+        tally.groups += 1
+        tally.stubs += result.stubs_written
     faces_note = (
         f", {len(result.detected_faces)} faces" if result.detected_faces else ""
     )
     rating_note = f", rated {result.rating}"
+    stubs_note = f", +{result.stubs_written} alternates" if result.stubs_written else ""
     if backend == "api":
         print(
             f"  -> {result.sidecar.name}  "
-            f"(cost ~${tally.actual_cost:.2f}{rating_note}{faces_note})"
+            f"(cost ~${tally.actual_cost:.2f}{rating_note}{faces_note}{stubs_note})"
         )
     else:
-        print(f"  -> {result.sidecar.name}  ({rating_note}{faces_note})")
+        print(f"  -> {result.sidecar.name}  ({rating_note}{faces_note}{stubs_note})")

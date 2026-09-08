@@ -329,3 +329,39 @@ def test_runner_imports_no_heavy_modules() -> None:
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "CLEAN", proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# record_result — group tally (burst / RAW+JPEG primaries carry stubs_written)
+# ---------------------------------------------------------------------------
+
+
+def test_record_result_counts_groups_and_stubs(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    tally = runner.RunTally()
+    runner.record_result(
+        pipeline.ProcessResult(
+            sidecar=Path("2.NEF.description.md"), rating="keep", stubs_written=2
+        ),
+        tally,
+        backend="cli",
+        max_duration_min=30,
+    )
+    assert tally.processed == 1
+    assert tally.groups == 1 and tally.stubs == 2
+    assert "+2 alternates" in capsys.readouterr().out
+
+
+def test_record_result_ungrouped_file_touches_no_group_counters(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    tally = runner.RunTally()
+    runner.record_result(
+        pipeline.ProcessResult(sidecar=Path("a.jpg.description.md"), rating="keep"),
+        tally,
+        backend="cli",
+        max_duration_min=30,
+    )
+    assert tally.groups == 0 and tally.stubs == 0
+    assert "alternates" not in capsys.readouterr().out

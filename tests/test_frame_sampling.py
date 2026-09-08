@@ -187,3 +187,51 @@ def test_choose_returns_none_on_signature_failure(
 
     monkeypatch.setattr(fs, "_signatures", boom)
     assert fs.choose_frame_timestamps([Path("a.jpg")], [1.0], 5) is None
+
+
+# ---------------------------------------------------------------------------
+# laplacian_variance / laplacian_sharpness — shared sharpness helper
+# ---------------------------------------------------------------------------
+
+
+def _fake_cv2(
+    monkeypatch: pytest.MonkeyPatch, imread_result: object = "IMG", var: float = 42.5
+) -> None:
+    """CI has no cv2: inject a stand-in whose Laplacian reports `var`."""
+    import sys
+    import types
+
+    class _Lap:
+        def __init__(self, v: float) -> None:
+            self._v = v
+
+        def var(self) -> float:
+            return self._v
+
+    cv2 = types.SimpleNamespace(
+        COLOR_BGR2GRAY=6,
+        CV_64F=6,
+        imread=lambda p: imread_result,
+        cvtColor=lambda img, code: ("gray", img),
+        Laplacian=lambda gray, depth: _Lap(var),
+    )
+    monkeypatch.setitem(sys.modules, "cv2", cv2)
+
+
+def test_laplacian_variance_is_variance_of_laplacian_over_grayscale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_cv2(monkeypatch, var=42.5)
+    assert fs.laplacian_variance("IMG") == 42.5
+
+
+def test_laplacian_sharpness_reads_path_and_fails_loud_on_unreadable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _fake_cv2(monkeypatch, var=7.0)
+    assert fs.laplacian_sharpness(tmp_path / "a.jpg") == 7.0
+    # An unreadable file must raise, not score 0: a silent 0 would quietly
+    # lose that burst member the representative pick.
+    _fake_cv2(monkeypatch, imread_result=None)
+    with pytest.raises(ValueError, match="unreadable"):
+        fs.laplacian_sharpness(tmp_path / "missing.jpg")

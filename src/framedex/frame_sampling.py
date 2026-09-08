@@ -127,6 +127,28 @@ _H_BINS = 16
 _S_BINS = 16
 
 
+def laplacian_variance(img: Any) -> float:
+    """Sharpness proxy: variance of the Laplacian over the grayscale image.
+    `img` is a decoded BGR array (cv2.imread output). Shared by the video
+    frame sampler and the still-photo burst representative pick."""
+    import cv2
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
+def laplacian_sharpness(path: Path) -> float:
+    """`laplacian_variance` of the image file at `path`. Raises ValueError on
+    an unreadable file rather than scoring it 0: a silent 0 would quietly
+    lose that burst member the representative pick."""
+    import cv2
+
+    img = cv2.imread(str(path))
+    if img is None:
+        raise ValueError(f"unreadable image: {path}")
+    return laplacian_variance(img)
+
+
 def _signatures(
     thumb_paths: list[Path],
 ) -> tuple[list[Any], list[float], list[float]]:
@@ -145,8 +167,7 @@ def _signatures(
         hist = cv2.calcHist([hsv], [0, 1], None, [_H_BINS, _S_BINS], [0, 180, 0, 256])
         cv2.normalize(hist, hist)
         hists.append(hist)
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        sharpness.append(float(cv2.Laplacian(gray, cv2.CV_64F).var()))
+        sharpness.append(laplacian_variance(img))
         mean_v.append(float(hsv[:, :, 2].mean()))
     return hists, sharpness, mean_v
 

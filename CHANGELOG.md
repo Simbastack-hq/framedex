@@ -69,6 +69,11 @@ public surface (CLI flags, sidecar schema) can still shift between minor version
   of silently producing a sidecar with an empty camera block / no location. A
   per-file run reports the file as an error and retries it next time; a
   burst/pair group fails before its vision call.
+- **Atomic writes use exclusive, unique temp files.** `atomic_write_text`
+  (every sidecar, index, and XMP write) now creates its same-directory temp via
+  `mkstemp`: two writers can't collide on one temp name, and a symlink planted
+  at a predictable temp name can no longer redirect a write into another file.
+  Stale temps are `.<name>.<random>.tmp` (still hidden, still safe to delete).
 - **Sidecar parsers are fence-aware.** `fdx-query`, `fdx-master`, `fdx-xmp`,
   `fdx-summary`, and the resume check now end the frontmatter at a line that
   is exactly `---`, so a filename or value containing `---` no longer

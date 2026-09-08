@@ -207,3 +207,70 @@ originals                   <-- read only, for thumbnails
    the clip). `notable_timestamp`, when present, is preferred over the midpoint.
 4. No read-only flag: the only write is a sidecar frontmatter key, and hosts
    that want read-only can leave `set_user_rating` unapproved.
+
+## Revisions after Codex plan review (2026-09-09, ledger REVIEW.md Round 4)
+
+The architecture stands (MCP over stdio, six tools, one write). These
+decisions replace the corresponding text above:
+
+- **Discovery.** `query_media` gains `folder` (a subpath under the scan root;
+  only sidecars below it) and `offset` (with `limit`, max 500) for
+  deterministic paging. `root` stays the *scan* root, never a subfolder (the
+  sidecar `path` field is relative to it). `fdx-query` gains the same
+  `--folder` and `--offset` so the CLI and the tool share one implementation.
+- **No argv bridge.** `query.py` exposes a `Filters` dataclass (one field per
+  CLI filter, with defaults) and `run_query(root, filters) -> QueryResult`
+  (`records`, `total`, `skipped_malformed`). The CLI parser fills a `Filters`;
+  `query_media` builds one directly from validated arguments (`rating` values
+  must be keep/review/cull). One scan; count, then slice.
+- **Containment on the resolved target, every time.** `_guard(path, roots)`
+  resolves symlinks and checks containment before every read or write: the
+  sidecar, the media file, `_INDEX.md`, each contact-sheet member. A
+  frontmatter `path` that resolves outside its root is dropped from results
+  (counted in `skipped_malformed`). Relative paths are rejected when more than
+  one root is configured. Tests cover derived escapes, not just the helper.
+- **Stable reference.** Results carry `sidecar` (always) and `path` (null for
+  Photos-managed assets). `read_sidecar` and `set_user_rating` accept either a
+  media path or a sidecar path.
+- **`set_user_rating` semantics.** Reads and writes bytes (`atomic_write_bytes`)
+  so the body is preserved byte-for-byte (CRLF included); malformed existing
+  YAML is an error, nothing is written; unchanged rating+note is a no-op
+  (timestamp untouched); `note=""` removes `user_note`; `rating=""` removes all
+  three keys. A process-local lock per sidecar serialises concurrent tool
+  calls (the SDK runs sync tools on worker threads). Running `fdx --force` on
+  a folder while rating it in chat is documented as unsupported.
+- **Surviving Phase 3.** `process_group` no longer deletes the primary's old
+  sidecar; it rewrites it with `group.incomplete: true` (content kept), and the
+  resume check treats that as not done. `serialize_sidecar` carries
+  `user_rating` / `user_note` / `user_rated_at` over from the existing file.
+  `atomic_write_*` create their temp file exclusively via `mkstemp` (unique
+  name; a planted symlink is never followed).
+- **Effective rating everywhere it is shown.** `fdx-query --with-description`
+  prints `keep (user)` when overridden; JSON records gain `effective_rating`;
+  `fdx-master` marks `(user)` in the cull list and adds "User ratings: N
+  files"; `fdx-xmp` adds the keyword `user-rated` (stars unchanged: a human
+  `keep` is still 3★). An invalid `user_rating` value warns on stderr and is
+  ignored.
+- **Contact sheet.** No `columns` argument: fixed 4-column geometry, 384 px
+  cells, at most 20 images (≈1600 px wide). Zero paths is an error; a member
+  that fails to render becomes a labelled grey cell with the reason; if
+  nothing renders the call fails. `ffprobe`/`ffmpeg` run with `-nostdin`, a
+  60 s timeout, a per-call temp directory, and validated finite durations;
+  `notable_timestamp` (when finite and inside the clip) beats the midpoint.
+- **Read-only mode.** `fdx-mcp --read-only` omits `set_user_rating`; read
+  tools declare `readOnlyHint`.
+- **Overview.** The text is prefixed with "Snapshot generated <generated_at>;
+  run `fdx-master <root>` to refresh", and the docs say what `fdx-xmp`
+  exports (proprietary RAW only, a separate command, conflicts skipped).
+- **Errors.** Expected failures (missing `[mcp]`/`[images]` extra, ffmpeg or
+  exiftool absent, permission denied, undecodable image) map to `ToolError`
+  with the fix in the message; the server keeps running.
+- **Cost / privacy wording.** "One bounded image per successful call; zero
+  model calls inside framedex. The host decides what its model receives:
+  thumbnails, paths, GPS, names, notes, transcripts."
+- **Packaging / CI.** `mcp>=2,<3`; docs say `[mcp,images]` plus exiftool and
+  ffmpeg. A second CI job installs the `mcp` extra and runs the integration
+  tests for real (in-memory transport, generated pixels, mocked subprocesses);
+  the missing-extra tests stay unconditional.
+- **`scene`** comes from `parsing.scene_sentence(body)` (the `**Scene:**` line,
+  moved out of `xmp_export`).

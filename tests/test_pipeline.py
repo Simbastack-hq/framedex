@@ -47,24 +47,27 @@ def test_atomic_write_text_never_leaves_partial_target(
     assert target.read_text() == "OLD\n"
 
 
-def test_atomic_write_text_temp_is_hidden_and_pid_scoped(
+def test_atomic_write_text_temp_is_hidden_and_unique(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The temp name is dot-prefixed (skipped by discovery) and pid-suffixed
-    (two concurrent runs can't collide on one temp path)."""
+    """The temp name is dot-prefixed (skipped by discovery), same-directory,
+    and unique per write (mkstemp), so concurrent writers — other runs or
+    fdx-mcp worker threads — can't collide on one temp path."""
     target = tmp_path / "clip.MOV.description.md"
-    captured: dict[str, str] = {}
+    captured: list[str] = []
     real_replace = os.replace
 
     def capture(src: Any, dst: Any) -> None:
-        captured["tmp"] = Path(src).name
+        captured.append(Path(src).name)
+        assert Path(src).parent == target.parent
         real_replace(src, dst)
 
     monkeypatch.setattr(os, "replace", capture)
     pipeline.atomic_write_text(target, "x\n")
-    assert captured["tmp"].startswith(".clip.MOV.description.md.")
-    assert captured["tmp"].endswith(".tmp")
-    assert str(os.getpid()) in captured["tmp"]
+    pipeline.atomic_write_text(target, "y\n")
+    assert all(n.startswith(".clip.MOV.description.md.") for n in captured)
+    assert all(n.endswith(".tmp") for n in captured)
+    assert len(set(captured)) == 2
 
 
 # --- sidecar paths ---------------------------------------------------------
@@ -234,3 +237,62 @@ def test_get_gps_raises_on_exiftool_failure(
         lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="[{}]", stderr=""),
     )
     assert pipeline.get_gps(media) == {}  # a successful read without GPS is just empty
+
+
+# --- atomic writes: exclusive, unique temp files ---------------------------
+
+
+def test_atomic_write_never_follows_a_planted_temp_symlink(tmp_path: Path) -> None:
+    """A symlink pre-planted at a predictable temp name must not redirect the
+    write into another file (an original, say). mkstemp creates the temp
+    exclusively under a random name, so the planted link is never opened."""
+    import os
+
+    original = tmp_path / "DSC_1.RAF"
+    original.write_bytes(b"RAW BYTES")
+    target = tmp_path / "DSC_1.RAF.description.md"
+    planted = tmp_path / f".{target.name}.{os.getpid()}.tmp"  # the old naming scheme
+    planted.symlink_to(original)
+    pipeline.atomic_write_text(target, "---\nfile: DSC_1.RAF\n---\n")
+    assert original.read_bytes() == b"RAW BYTES"
+    assert target.read_text() == "---\nfile: DSC_1.RAF\n---\n"
+    assert planted.is_symlink()  # untouched
+    assert [p.name for p in tmp_path.glob(".*.tmp") if not p.is_symlink()] == []
+
+
+def test_atomic_write_concurrent_writers_do_not_collide(tmp_path: Path) -> None:
+    import threading
+
+    target = tmp_path / "x.description.md"
+    errors: list[BaseException] = []
+
+    def writer(tag: str) -> None:
+        try:
+            for i in range(50):
+                pipeline.atomic_write_text(target, f"{tag}-{i}\n")
+        except BaseException as e:  # pragma: no cover - reported below
+            errors.append(e)
+
+    threads = [threading.Thread(target=writer, args=(t,)) for t in ("a", "b", "c")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    assert target.read_text().split("-")[0] in {"a", "b", "c"}  # one complete write won
+    assert list(tmp_path.glob(".*.tmp")) == []  # no temps left behind
+
+
+def test_atomic_write_cleans_up_temp_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "x.md"
+
+    def boom(src: object, dst: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr("framedex.pipeline.os.replace", boom)
+    with pytest.raises(OSError, match="disk full"):
+        pipeline.atomic_write_text(target, "x")
+    assert not target.exists()
+    assert list(tmp_path.glob(".*.tmp")) == []

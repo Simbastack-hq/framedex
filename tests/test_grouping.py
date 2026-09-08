@@ -491,3 +491,23 @@ def test_read_group_metadata_error_entries_count_as_missing(
     meta = g.read_group_metadata([a, b])
     assert set(meta) == {a}
     assert "no EXIF for 1 of 2 files" in capsys.readouterr().err
+
+
+def test_group_is_done_false_while_a_member_is_marked_incomplete(
+    tmp_path: Path,
+) -> None:
+    d = tmp_path
+    files = [d / "1.NEF", d / "2.NEF", d / "3.NEF"]
+    grp = g.MediaGroup("burst", g.group_id(files), [g.Unit(f) for f in files])
+    stub = {"id": grp.id, "primary": False}
+    marked = {"id": grp.id, "primary": True, "incomplete": True}
+    assert not g.group_is_done(
+        grp,
+        _reader(
+            {
+                "1.NEF": {"group": stub},
+                "2.NEF": {"group": marked},
+                "3.NEF": {"group": stub},
+            }
+        ),
+    )

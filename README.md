@@ -279,9 +279,9 @@ The `cli` backend runs `claude -p` locked down: `--permission-mode dontAsk` plus
 
 Already-indexed clips are skipped on re-runs (a sidecar existing = done). Ctrl-C any time; a restart picks up where it stopped. `--force` regenerates everything.
 
-Writes are atomic: every sidecar and index goes to a temp file and is renamed into place, so an interrupt mid-write never leaves a truncated, half-indexed file. Faces are committed before the sidecar (the sidecar is the "done" marker), so a crash in between just re-runs that file cleanly. A stale `.<name>.<pid>.tmp` file left by a killed run is inert (hidden from discovery) and safe to delete.
+Writes are atomic: every sidecar and index goes to a temp file and is renamed into place, so an interrupt mid-write never leaves a truncated, half-indexed file. Faces are committed before the sidecar (the sidecar is the "done" marker), so a crash in between just re-runs that file cleanly. A stale `.<name>.<random>.tmp` file left by a killed run is inert (hidden from discovery) and safe to delete.
 
-A burst or RAW+JPEG pair is done only when every member's sidecar belongs to that exact group (same `group.id`), or when every member's sidecar predates grouping. Stubs are written before the primary's sidecar, and the primary's previous sidecar (if any, e.g. under `--force`) is removed first, so an interrupt inside a group always leaves a member without a valid sidecar. Incomplete or changed groups are reprocessed together next run; this repeats that group's vision call. A file whose folder was regrouped, so that its old stub no longer matches, is redone too.
+A burst or RAW+JPEG pair is done only when every member's sidecar belongs to that exact group (same `group.id`), or when every member's sidecar predates grouping. Stubs are written before the primary's sidecar, and the primary's previous sidecar (if any, e.g. under `--force`) is first marked `group.incomplete: true` (its content is kept), so an interrupt inside a group always leaves the group visibly unfinished. Incomplete or changed groups are reprocessed together next run; this repeats that group's vision call. A file whose folder was regrouped, so that its old stub no longer matches, is redone too.
 
 ## Companion tools
 

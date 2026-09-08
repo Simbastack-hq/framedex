@@ -289,12 +289,13 @@ def group_is_done(
     group: MediaGroup, read: Callable[[Path], dict[str, Any] | None]
 ) -> bool:
     """True when every member has a sidecar that belongs to this exact group
-    (same id ⇒ same membership), or when every member has a sidecar from
-    before grouping existed (no `group` block anywhere: those per-file
-    assessments stay valid; `--force` regroups). A missing or unparsable
-    sidecar, or a block from a different grouping, means the whole group is
-    reprocessed and its stubs rewritten. `read` returns a sidecar's
-    frontmatter, or None when it is missing/unparsable."""
+    (same id ⇒ same membership) and none is marked `incomplete` (the primary's
+    previous sidecar carries that marker while a re-run is in flight), or when
+    every member has a sidecar from before grouping existed (no `group` block
+    anywhere: those per-file assessments stay valid; `--force` regroups). A
+    missing or unparsable sidecar, or a block from a different grouping, means
+    the whole group is reprocessed and its stubs rewritten. `read` returns a
+    sidecar's frontmatter, or None when it is missing/unparsable."""
     blocks: list[Any] = []
     for f in group.files:
         fm = read(sidecar_path(f))
@@ -303,7 +304,10 @@ def group_is_done(
         blocks.append(fm.get("group"))
     if all(b is None for b in blocks):
         return True
-    return all(isinstance(b, dict) and b.get("id") == group.id for b in blocks)
+    return all(
+        isinstance(b, dict) and b.get("id") == group.id and not b.get("incomplete")
+        for b in blocks
+    )
 
 
 def single_is_done(path: Path, read: Callable[[Path], dict[str, Any] | None]) -> bool:

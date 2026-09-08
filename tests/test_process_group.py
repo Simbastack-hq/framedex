@@ -322,16 +322,19 @@ def test_process_group_member_exif_failure_fails_before_the_paid_call(
     assert not any(pipeline.has_sidecar(f) for f in files)
 
 
-def test_process_group_invalidates_old_primary_sidecar_before_stubs(
+def test_process_group_marks_old_primary_sidecar_incomplete_before_stubs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """--force / regrouping a legacy folder: the pick's OLD sidecar exists.
-    If the run dies after the stubs and before the new primary sidecar, no
-    stale marker may survive — otherwise every member "has a sidecar" and
-    the half-written group is skipped forever."""
+    """--force / regrouping a legacy folder: the primary's OLD sidecar exists.
+    If the run dies after the stubs and before the new primary sidecar, the
+    group must not read as done (every member "has a sidecar") — but the old
+    sidecar's content, including keys a human wrote, must survive: it is
+    marked incomplete, not deleted."""
     files = _files(tmp_path, "1.NEF", "2.NEF", "3.NEF")
     for f in files:  # legacy per-file sidecars, no group block
-        pipeline.sidecar_path(f).write_text("---\nfile: x\nrating: keep\n---\n")
+        pipeline.sidecar_path(f).write_text(
+            "---\nfile: x\nrating: keep\nuser_rating: cull\n---\n\n# x\n\nold body\n"
+        )
     _group_mocks(tmp_path, monkeypatch, {"1.NEF": 1.0, "2.NEF": 9.0, "3.NEF": 5.0})
     real = pipeline.serialize_sidecar
 
@@ -348,10 +351,23 @@ def test_process_group_invalidates_old_primary_sidecar_before_stubs(
     )
     with pytest.raises(RuntimeError, match="power cut"):
         images.process_group(grp, tmp_path, _opts(), pipeline.ProcessContext())
-    assert not pipeline.has_sidecar(tmp_path / "2.NEF")  # old marker gone
+    old = pipeline.sidecar_path(tmp_path / "2.NEF")
+    kept = pipeline.read_sidecar_frontmatter(old)
+    assert kept is not None
+    assert kept["user_rating"] == "cull" and kept["rating"] == "keep"  # nothing lost
+    assert kept["group"]["incomplete"] is True and kept["group"]["id"] == grp.id
+    assert "old body" in old.read_text()
     assert pipeline.has_sidecar(tmp_path / "1.NEF")  # stubs written
-    # …so the next run sees the group as incomplete.
+    # …and the next run sees the group as incomplete.
     assert not grouping.group_is_done(grp, pipeline.read_sidecar_frontmatter)
+
+    # A clean re-run replaces the marked sidecar; the marker is gone.
+    monkeypatch.setattr(pipeline, "serialize_sidecar", real)
+    res = images.process_group(grp, tmp_path, _opts(), pipeline.ProcessContext())
+    assert res.sidecar == old
+    fresh = pipeline.read_sidecar_frontmatter(old)
+    assert fresh is not None and "incomplete" not in fresh["group"]
+    assert grouping.group_is_done(grp, pipeline.read_sidecar_frontmatter)
 
 
 def test_process_group_clears_stale_face_rows_of_demoted_members(
@@ -392,3 +408,16 @@ def test_process_group_clears_stale_face_rows_of_demoted_members(
 
     assert rows(tmp_path / "1.NEF") == 0 and rows(tmp_path / "3.NEF") == 0
     assert rows(tmp_path / "2.NEF") == 1
+
+
+def test_process_group_removes_unparsable_old_primary_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = _files(tmp_path, "1.NEF", "2.NEF", "3.NEF")
+    pipeline.sidecar_path(tmp_path / "2.NEF").write_text("garbage, no fence")
+    _group_mocks(tmp_path, monkeypatch, {"1.NEF": 1.0, "2.NEF": 9.0, "3.NEF": 5.0})
+    grp = grouping.MediaGroup("burst", "b_g", [grouping.Unit(f) for f in files])
+    res = images.process_group(grp, tmp_path, _opts(), pipeline.ProcessContext())
+    assert res.sidecar is not None
+    fm = pipeline.read_sidecar_frontmatter(res.sidecar)
+    assert fm is not None and fm["group"]["primary"] is True

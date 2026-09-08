@@ -32,6 +32,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import yaml
+
 from framedex import face_db, frame_sampling, pipeline
 from framedex.parsing import coerce_people_count
 
@@ -680,6 +682,40 @@ def stub_body(primary: Path, kind: str) -> str:
     )
 
 
+def _mark_primary_incomplete(sidecar: Path, group: grouping.MediaGroup) -> None:
+    """Rewrite an existing primary sidecar with `group.incomplete: true` (all
+    other frontmatter and the body kept) so the resume check sees the group as
+    in flight until the new primary sidecar lands. A sidecar that cannot be
+    parsed is removed instead: nothing in it can be preserved."""
+    if not sidecar.exists():
+        return
+    try:
+        text = sidecar.read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    parts = pipeline.split_frontmatter(text)
+    fm = None
+    if parts is not None:
+        try:
+            fm = yaml.safe_load(parts[0])
+        except yaml.YAMLError:
+            fm = None
+    if parts is None or not isinstance(fm, dict):
+        sidecar.unlink()
+        return
+    fm["group"] = {
+        "kind": group.kind,
+        "id": group.id,
+        "primary": True,
+        "incomplete": True,
+        "members": [f.name for f in group.files],
+    }
+    fm_text = yaml.safe_dump(
+        fm, sort_keys=False, allow_unicode=True, default_flow_style=False
+    ).rstrip()
+    pipeline.atomic_write_text(sidecar, f"---\n{fm_text}\n---{parts[1]}")
+
+
 def _score_unit(unit: grouping.Unit, tmp_dir: Path) -> float:
     """Render the unit's preview into a scratch subdir, score it, and delete
     the render (a long chain must not pile previews up on disk). A RAW with
@@ -750,8 +786,10 @@ def process_group(
             # regrouping a folder indexed before grouping existed, it still
             # exists; a crash between the stubs and the new primary sidecar
             # would otherwise leave every member with a sidecar ("done")
-            # around a primary that never acknowledged the group.
-            pipeline.sidecar_path(primary).unlink(missing_ok=True)
+            # around a primary that never acknowledged the group. Mark, don't
+            # delete: the old assessment (and any user-written keys) survives
+            # the interruption, and the final primary write replaces it.
+            _mark_primary_incomplete(pipeline.sidecar_path(primary), group)
             for m in members:
                 metadata, gps = member_meta[m]
                 place = ""

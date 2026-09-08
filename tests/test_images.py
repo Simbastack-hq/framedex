@@ -542,3 +542,79 @@ def test_image_sidecar_is_queryable(
         query.matches(rec, argparse.Namespace(**{**base, "max_duration": 60})) is False
     )
     assert query.matches(rec, argparse.Namespace(**base)) is True
+
+
+# --- process_one_image hooks (used by burst grouping) ----------------------
+
+
+def test_process_one_image_preview_override_skips_render(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Burst grouping renders each member once for scoring and hands the
+    chosen primary's preview in; the pipeline must not render it again."""
+    img = _std_image_mocks(tmp_path, monkeypatch)
+    pre = tmp_path / "pre.jpg"
+    pre.write_bytes(b"p")
+    monkeypatch.setattr(
+        images, "render_preview", lambda *a, **k: pytest.fail("must not render")
+    )
+    seen: list[Path] = []
+
+    def vision(frames: list[Path], prompt: str, model: str) -> str:
+        seen.extend(frames)
+        return "```yaml\nrating: keep\n```\n\n## Description\n\nx\n"
+
+    monkeypatch.setattr(pipeline, "describe_frames_cli", vision)
+    result = images.process_one_image(
+        img, tmp_path, _opts(), pipeline.ProcessContext(), preview_override=pre
+    )
+    assert result.sidecar is not None
+    assert seen == [pre]
+    assert pre.exists()  # the caller owns the override; never deleted here
+
+
+def test_process_one_image_before_sidecar_runs_between_faces_and_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Group stubs are written in this hook: after the primary's faces are
+    committed, before its sidecar (the resume marker) is written."""
+    from framedex import face_db
+
+    img = _std_image_mocks(tmp_path, monkeypatch)
+    conn = face_db.open_db(tmp_path / "faces.db")
+    monkeypatch.setattr(face_db, "detect_faces_in_frames", lambda f, t: [_face()])
+    order: list[str] = []
+    monkeypatch.setattr(face_db, "write_faces", lambda *a, **k: order.append("faces"))
+    monkeypatch.setattr(
+        pipeline, "serialize_sidecar", lambda *a, **k: order.append("sidecar")
+    )
+
+    def hook(fm: dict[str, Any]) -> None:
+        assert fm["rating"] == "keep"  # receives the assembled frontmatter
+        order.append("hook")
+
+    images.process_one_image(
+        img,
+        tmp_path,
+        _opts(),
+        pipeline.ProcessContext(face_conn=conn),
+        before_sidecar=hook,
+    )
+    assert order == ["faces", "hook", "sidecar"]
+
+
+def test_process_one_image_before_sidecar_failure_writes_no_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If stub writing fails, the primary sidecar must not appear — otherwise
+    the group would count as done with members missing."""
+    img = _std_image_mocks(tmp_path, monkeypatch)
+
+    def hook(fm: dict[str, Any]) -> None:
+        raise RuntimeError("stub write failed")
+
+    with pytest.raises(RuntimeError, match="stub write failed"):
+        images.process_one_image(
+            img, tmp_path, _opts(), pipeline.ProcessContext(), before_sidecar=hook
+        )
+    assert not pipeline.has_sidecar(img)

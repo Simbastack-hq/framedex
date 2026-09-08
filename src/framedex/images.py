@@ -26,6 +26,7 @@ import subprocess
 import tempfile
 import textwrap
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -451,13 +452,23 @@ def process_one_image(
     place_override: str | None = None,
     extra_frontmatter: dict[str, Any] | None = None,
     omit_path: bool = False,
+    preview_override: Path | None = None,
+    before_sidecar: Callable[[dict[str, Any]], None] | None = None,
 ) -> pipeline.ProcessResult:
     """Run the full per-photo pipeline for one still and emit a sidecar.
 
     Mirrors process_one_video's override surface so fdx-photos can reuse it for
     Apple Photos stills. `metadata_override` shallow-merges over exiftool's
     output (e.g. Photos' canonical creation_time). Returns
-    skipped_reason='no_preview' for a RAW with no embedded preview to read."""
+    skipped_reason='no_preview' for a RAW with no embedded preview to read.
+
+    Two hooks serve burst grouping (`process_group`): `preview_override` is an
+    already-rendered upright JPEG used as the vision/face input instead of
+    rendering `image` again (the caller owns and cleans it up); `before_sidecar`
+    is called with the assembled frontmatter after faces are committed and
+    before the sidecar is written — group stubs are written there, so the
+    primary sidecar (the resume marker) stays the last write. If the hook
+    raises, no sidecar is written and the file is redone next run."""
     metadata = get_image_metadata(image)
     if metadata_override:
         # Caller (e.g. fdx-photos) has authoritative fields from a richer source.
@@ -481,7 +492,7 @@ def process_one_image(
     structured: dict[str, Any] = {}
     description: str = ""
     try:
-        preview = render_preview(image, tmp_dir)
+        preview = preview_override or render_preview(image, tmp_dir)
         if preview is None:
             return pipeline.ProcessResult(sidecar=None, skipped_reason="no_preview")
 
@@ -556,6 +567,8 @@ def process_one_image(
     # a transient error would wipe previously-committed faces for this file.
     if ctx.face_conn is not None and face_detection_ran:
         face_db.write_faces(ctx.face_conn, image, sidecar, detected_faces)
+    if before_sidecar is not None:
+        before_sidecar(fm)
     pipeline.serialize_sidecar(sidecar, fm, image.name, [("Description", description)])
 
     return pipeline.ProcessResult(

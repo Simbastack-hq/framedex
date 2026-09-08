@@ -21,17 +21,24 @@ run never needs the video stack installed.
 
 from __future__ import annotations
 
+import copy
 import json
+import shutil
 import subprocess
 import tempfile
 import textwrap
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from framedex import face_db, pipeline
+from framedex import face_db, frame_sampling, pipeline
 from framedex.parsing import coerce_people_count
+
+if TYPE_CHECKING:
+    # grouping imports RAW_EXTENSIONS from this module; import it lazily at
+    # runtime (inside process_group) to avoid the cycle.
+    from framedex import grouping
 from framedex.pipeline import (
     CLI_INTER_CALL_DELAY,
     FRAME_MAX_WIDTH,
@@ -579,3 +586,146 @@ def process_one_image(
         rating=str(structured.get("rating", "?")),
         structured=structured,
     )
+
+
+# ---------------------------------------------------------------------------
+# Groups: bursts + RAW/JPEG pairs (one vision call, stub sidecars for the rest)
+# ---------------------------------------------------------------------------
+
+# Assessment fields a stub copies from its group primary: everything the
+# model produced. Faces are NOT copied — no detection ran on that frame, and
+# phantom cluster ids would haunt fdx-faces.
+STUB_COPIED_FIELDS = (
+    "rating",
+    "cull_reason",
+    "technical",
+    "lighting",
+    "time_of_day",
+    "dominant_color_palette",
+    "dominant_colors",
+    "scene_type",
+    "people_count",
+    "keywords",
+)
+
+
+def _group_block(group: grouping.MediaGroup, member: Path) -> dict[str, Any]:
+    """The `group:` frontmatter block for one member of a picked group."""
+    assert group.primary is not None
+    block: dict[str, Any] = {
+        "kind": group.kind,
+        "id": group.id,
+        "primary": member == group.primary,
+    }
+    if member != group.primary:
+        block["primary_file"] = group.primary.name
+    block["members"] = [f.name for f in group.files]
+    # A pair's JPEG sibling was scored as its RAW's preview: report that score.
+    unit = next(u for u in group.units if member in u.files)
+    block["sharpness"] = round(group.sharpness[unit.primary], 1)
+    return block
+
+
+def build_stub_frontmatter(
+    member: Path,
+    root: Path,
+    metadata: dict[str, Any],
+    gps: dict[str, Any],
+    primary_fm: dict[str, Any],
+    group: grouping.MediaGroup,
+) -> dict[str, Any]:
+    """Own file/EXIF/GPS fields + the primary's assessment (copied, so a later
+    mutation of one frontmatter can't leak into another) + a group block.
+    `place` mirrors the primary's when this member has GPS: a burst is one
+    place, and a Nominatim call per stub would be waste."""
+    structured = {k: copy.deepcopy(primary_fm.get(k)) for k in STUB_COPIED_FIELDS}
+    place = ""
+    if gps.get("lat") is not None:
+        place = (primary_fm.get("location") or {}).get("place") or ""
+    return build_image_frontmatter(
+        member,
+        root,
+        metadata,
+        gps,
+        place,
+        structured,
+        [],
+        extra_frontmatter={"group": _group_block(group, member)},
+    )
+
+
+def _render_and_score(unit: grouping.Unit, tmp_dir: Path) -> tuple[Path | None, float]:
+    """Render the unit's preview into its own subdir (render_preview writes a
+    fixed filename) and score it. A RAW with no embedded preview scores -1 so
+    it is never the pick while any member renders."""
+    sub = tmp_dir / unit.primary.name
+    sub.mkdir()
+    preview = render_preview(unit.preview_source, sub)
+    if preview is None:
+        return None, -1.0
+    return preview, frame_sampling.laplacian_sharpness(preview)
+
+
+def process_group(
+    group: grouping.MediaGroup,
+    root: Path,
+    opts: pipeline.ProcessOptions,
+    ctx: pipeline.ProcessContext,
+) -> pipeline.ProcessResult:
+    """One vision call for a burst / RAW+JPEG pair. Renders + scores every
+    member locally, runs the full pipeline on the sharpest (its rendered
+    preview reused), and writes each other member a stub sidecar *before*
+    the primary sidecar — the primary is the resume marker for the group."""
+    from framedex import grouping  # runtime import: see the TYPE_CHECKING note
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="fdx-group-"))
+    previews: dict[Path, Path] = {}
+    try:
+
+        def score(unit: grouping.Unit) -> float:
+            preview, s = _render_and_score(unit, tmp_dir)
+            if preview is not None:
+                previews[unit.primary] = preview
+            return s
+
+        grouping.pick_representative(group, score)
+        primary = group.primary
+        assert primary is not None
+        preview = previews.get(primary)
+        if preview is None:
+            return pipeline.ProcessResult(sidecar=None, skipped_reason="no_preview")
+        members = [f for f in group.files if f != primary]
+        print(
+            f"  {group.kind}: {len(group.files)} files → 1 vision call; "
+            f"pick {primary.name} (sharpness {group.sharpness[primary]:.1f})"
+        )
+
+        def write_stubs(primary_fm: dict[str, Any]) -> None:
+            for m in members:
+                fm = build_stub_frontmatter(
+                    m,
+                    root,
+                    get_image_metadata(m),
+                    pipeline.get_gps(m),
+                    primary_fm,
+                    group,
+                )
+                body = f"See {primary.name}{pipeline.SIDECAR_SUFFIX} ({group.kind} primary)."
+                pipeline.serialize_sidecar(
+                    pipeline.sidecar_path(m), fm, m.name, [("Description", body)]
+                )
+
+        result = process_one_image(
+            primary,
+            root,
+            opts,
+            ctx,
+            extra_frontmatter={"group": _group_block(group, primary)},
+            preview_override=preview,
+            before_sidecar=write_stubs,
+        )
+        if result.sidecar is not None:
+            result.stubs_written = len(members)
+        return result
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)

@@ -560,6 +560,9 @@ class ProcessResult:
     skipped_reason: str | None = None
     rating: str = "?"
     structured: dict[str, Any] = field(default_factory=dict)
+    # Burst / RAW+JPEG members that got a stub sidecar off this file's
+    # assessment (no vision call of their own).
+    stubs_written: int = 0
 
 
 # ---------------------------------------------------------------------------

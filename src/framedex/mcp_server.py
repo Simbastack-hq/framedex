@@ -61,13 +61,11 @@ def build_server(roots: Roots, *, read_only: bool) -> Any:
     def tool_error(e: Exception) -> ToolError:
         return ToolError(str(e))
 
-    @mcp.tool(name="list_roots", annotations=read)
     def list_roots_tool() -> list[str]:
         """Archive roots this server can see. Paths passed to the other tools
         must lie under one of them."""
         return [str(r) for r in roots.roots]
 
-    @mcp.tool(name="query_media", annotations=read)
     def query_media_tool(
         root: str | None = None,
         folder: str | None = None,
@@ -110,7 +108,6 @@ def build_server(roots: Roots, *, read_only: bool) -> Any:
         except ValueError as e:
             raise tool_error(e) from e
 
-    @mcp.tool(name="read_sidecar", annotations=read)
     def read_sidecar_tool(path: str) -> str:
         """The full plain-text sidecar (`.description.md`) of one media file:
         frontmatter (EXIF, GPS, ratings, keywords, faces) and the description
@@ -120,7 +117,6 @@ def build_server(roots: Roots, *, read_only: bool) -> Any:
         except ValueError as e:
             raise tool_error(e) from e
 
-    @mcp.tool(name="archive_overview", annotations=read)
     def archive_overview_tool(root: str | None = None) -> str:
         """The drive-level `_INDEX.md` (counts, top keywords and places, the
         cull list, per-folder summary), as a snapshot from the last
@@ -130,7 +126,6 @@ def build_server(roots: Roots, *, read_only: bool) -> Any:
         except ValueError as e:
             raise tool_error(e) from e
 
-    @mcp.tool(name="contact_sheet", annotations=read, structured_output=False)
     def contact_sheet_tool(paths: list[str]) -> list[Any]:
         """Render 1-20 media files (stills, or one frame of a clip) into one
         numbered grid image plus a legend (`n. path — rating — scene`), so
@@ -142,22 +137,33 @@ def build_server(roots: Roots, *, read_only: bool) -> Any:
             raise tool_error(e) from e
         return [Image(data=jpeg, format="jpeg"), "\n".join(legend)]
 
+    def set_user_rating_tool(
+        path: str, rating: Literal["keep", "review", "cull", ""], note: str = ""
+    ) -> dict[str, Any]:
+        """Record the person's decision for one file in its sidecar:
+        `user_rating` keep/review/cull (an empty string clears it) and an
+        optional `note`. The model's own rating stays; the person's wins in
+        fdx-query, fdx-master and fdx-xmp (Lightroom). Never edits the media
+        file."""
+        try:
+            return set_user_rating(roots, path, rating, note)
+        except ValueError as e:
+            raise tool_error(e) from e
+
+    # add_tool, not @mcp.tool: the SDK is an optional extra, so under the base
+    # (extras-free) mypy run `mcp` is Any and a decorator would be "untyped".
+    mcp.add_tool(list_roots_tool, name="list_roots", annotations=read)
+    mcp.add_tool(query_media_tool, name="query_media", annotations=read)
+    mcp.add_tool(read_sidecar_tool, name="read_sidecar", annotations=read)
+    mcp.add_tool(archive_overview_tool, name="archive_overview", annotations=read)
+    mcp.add_tool(
+        contact_sheet_tool,
+        name="contact_sheet",
+        annotations=read,
+        structured_output=False,
+    )
     if not read_only:
-
-        @mcp.tool(name="set_user_rating", annotations=write)
-        def set_user_rating_tool(
-            path: str, rating: Literal["keep", "review", "cull", ""], note: str = ""
-        ) -> dict[str, Any]:
-            """Record the person's decision for one file in its sidecar:
-            `user_rating` keep/review/cull (an empty string clears it) and an
-            optional `note`. The model's own rating stays; the person's wins
-            in fdx-query, fdx-master and fdx-xmp (Lightroom). Never edits the
-            media file."""
-            try:
-                return set_user_rating(roots, path, rating, note)
-            except ValueError as e:
-                raise tool_error(e) from e
-
+        mcp.add_tool(set_user_rating_tool, name="set_user_rating", annotations=write)
     return mcp
 
 

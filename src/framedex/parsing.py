@@ -7,6 +7,7 @@ runtime stack.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from typing import Any, TypeGuard
 
@@ -107,3 +108,35 @@ def is_group_stub(rec: dict[str, Any]) -> bool:
     assessments: drive stats and the cull pile count primaries only."""
     group = rec.get("group")
     return isinstance(group, dict) and group.get("primary") is False
+
+
+# ---------------------------------------------------------------------------
+# Ratings: the model's verdict vs the human's decision
+# ---------------------------------------------------------------------------
+
+RATING_VALUES = ("keep", "review", "cull")
+
+_SCENE_RE = re.compile(r"\*\*Scene:\*\*\s*(.+)")
+
+
+def is_user_rated(rec: dict[str, Any]) -> bool:
+    """True when the sidecar carries a valid `user_rating` (written by
+    fdx-mcp's set_user_rating: the photographer's own decision)."""
+    return rec.get("user_rating") in RATING_VALUES
+
+
+def effective_rating(rec: dict[str, Any]) -> Any:
+    """The rating that counts everywhere ratings are read: a valid
+    `user_rating` (the human's decision) wins over the model's `rating`. An
+    invalid override is ignored (callers report it); the model value passes
+    through unchanged, whatever it is."""
+    if is_user_rated(rec):
+        return rec["user_rating"]
+    return rec.get("rating")
+
+
+def scene_sentence(body: str) -> str:
+    """The `**Scene:**` sentence of a sidecar body ("" when absent): the one-line
+    summary fdx-xmp exports as the caption and fdx-mcp returns per match."""
+    m = _SCENE_RE.search(body)
+    return m.group(1).strip() if m else ""

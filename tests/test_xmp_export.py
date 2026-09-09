@@ -368,3 +368,56 @@ def test_run_burst_of_pairs_exports_one_pick_and_alternates_for_raws_only(
 
     again = xmp_export.run(tmp_path)
     assert again.wrote == 0 and again.up_to_date == 3
+
+
+# --- the human's rating wins, and Lightroom can tell ------------------------
+
+
+def test_build_xmp_uses_effective_rating_and_marks_user_rated() -> None:
+    xml = xmp_export.build_xmp(_fm(rating="cull", user_rating="keep"), "")
+    assert 'xmp:Rating="3"' in xml and "xmp:Label" not in xml
+    assert "<rdf:li>user-rated</rdf:li>" in xml
+    plain = xmp_export.build_xmp(_fm(rating="keep"), "")
+    assert "user-rated" not in plain
+
+
+def test_run_exports_effective_rating(tmp_path: Path) -> None:
+    import yaml
+
+    (tmp_path / "1.RAF").write_bytes(b"x")
+    fm = {
+        "file": "1.RAF",
+        "path": "1.RAF",
+        "media_type": "image",
+        "rating": "cull",
+        "user_rating": "keep",
+    }
+    (tmp_path / "1.RAF.description.md").write_text(
+        "---\n" + yaml.safe_dump(fm) + "---\n\n**Scene:** x.\n"
+    )
+    summary = xmp_export.run(tmp_path)
+    assert summary.wrote == 1
+    assert 'xmp:Rating="3"' in (tmp_path / "1.xmp").read_text()
+
+
+def test_run_warns_once_about_invalid_user_ratings(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import yaml
+
+    (tmp_path / "1.RAF").write_bytes(b"x")
+    fm = {
+        "file": "1.RAF",
+        "path": "1.RAF",
+        "media_type": "image",
+        "rating": "keep",
+        "user_rating": "banana",
+    }
+    (tmp_path / "1.RAF.description.md").write_text(
+        "---\n" + yaml.safe_dump(fm) + "---\n\n**Scene:** x.\n"
+    )
+    summary = xmp_export.run(tmp_path)
+    assert summary.wrote == 1 and summary.invalid_user_ratings == 1
+    captured = capsys.readouterr()
+    assert captured.err.count("invalid user_rating") == 1
+    assert 'xmp:Rating="3"' in (tmp_path / "1.xmp").read_text()  # the indexer's keep

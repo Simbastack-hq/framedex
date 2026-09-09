@@ -8,6 +8,31 @@ public surface (CLI flags, sidecar schema) can still shift between minor version
 
 ### Added
 
+- **`fdx-mcp`: the archive as MCP tools.** A new optional command (`[mcp]`
+  extra: the official MCP SDK + Pillow) serves indexed roots to any MCP host
+  over stdio (Claude Code, Claude Desktop, LM Studio with a local model).
+  Tools: `list_roots`, `query_media` (a subset of `fdx-query`'s metadata filters plus `folder`
+  and `offset`/`limit` paging, effective ratings, the scene sentence),
+  `read_sidecar`, `archive_overview` (`_INDEX.md`, labelled as a snapshot),
+  `contact_sheet` (1-20 files rendered into one numbered 4-column grid with a
+  legend; a clip contributes one frame at its `notable_timestamp` or
+  midpoint), and `set_user_rating`. Every path, including paths derived from
+  sidecars, is resolved and must lie under a configured root; `--read-only`
+  removes the setter. fdx-mcp makes no model call; each successful
+  contact-sheet call is one bounded image, and host inference is where cost
+  and data flow live. See `docs/mcp.md`.
+- **`user_rating`: the person's decision next to the model's.**
+  `set_user_rating` writes `user_rating` (keep/review/cull), `user_note`, and
+  `user_rated_at` into the sidecar frontmatter atomically, body preserved
+  byte-for-byte; the model's `rating` is never modified. A valid user rating
+  wins everywhere ratings are read: `fdx-query --rating` and
+  `--with-description` (`keep (user)`), JSON records gain `effective_rating`,
+  `fdx-master` (counts, a "User ratings" line, `(user)` in the cull list),
+  `fdx-xmp` (stars, plus the keyword `user-rated`). Re-indexing carries the
+  keys over. An invalid value is reported once and ignored.
+- **`fdx-query --folder SUB` and `--offset N`** (paging with `--limit`;
+  `--count` now reports matches before paging). The CLI and the MCP tool
+  share one `Filters`/`run_query` implementation.
 - **Burst grouping + RAW/JPEG pairing: one assessment per group.** Before
   the per-file loop, `fdx` groups a folder's stills: a RAW and its same-stem
   camera JPEG become one pair (RAW primary, JPEG as preview source), and at

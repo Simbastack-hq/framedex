@@ -24,7 +24,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from framedex.parsing import is_group_stub, is_usable_path
+from framedex.parsing import (
+    effective_rating,
+    is_group_stub,
+    is_usable_path,
+    is_user_rated,
+)
 from framedex.pipeline import atomic_write_text, split_frontmatter
 
 try:
@@ -151,7 +156,19 @@ def main() -> int:
 
     # ---- Markdown ----
     total_dur_min = sum((r.get("duration_seconds") or 0) for r in records) / 60
-    rating_counter = Counter(r.get("rating", "review") for r in assessed)
+    # A valid user_rating (the photographer's decision, via fdx-mcp) counts
+    # instead of the model's; an invalid one is reported and ignored.
+    rating_counter = Counter(effective_rating(r) or "review" for r in assessed)
+    n_user_rated = sum(1 for r in records if is_user_rated(r))
+    n_invalid_user = sum(
+        1 for r in records if r.get("user_rating") is not None and not is_user_rated(r)
+    )
+    if n_invalid_user:
+        print(
+            f"warning: {n_invalid_user} sidecar(s) carry an invalid user_rating "
+            "(not keep/review/cull); ignored",
+            file=sys.stderr,
+        )
     # Language is video-only; don't pollute the stat with photo "none" entries.
     languages = Counter(
         r.get("language_detected") or "none"
@@ -197,6 +214,10 @@ def main() -> int:
         f"{rating_counter.get('review', 0)} review, "
         f"{rating_counter.get('cull', 0)} cull",
     ]
+    if n_user_rated:
+        lines.append(
+            f"- **User ratings:** {n_user_rated} files (a user rating overrides the model's)"
+        )
     if n_groups:
         lines.append(
             f"- **Grouped:** {len(grouped)} files in {n_groups} "
@@ -233,7 +254,7 @@ def main() -> int:
             + ", ".join(f"`{k}` ({n})" for k, n in keyword_freq.most_common(15))
         )
 
-    cull_clips = [r for r in assessed if r.get("rating") == "cull"]
+    cull_clips = [r for r in assessed if effective_rating(r) == "cull"]
     if cull_clips:
         cull_dur = sum((c.get("duration_seconds") or 0) for c in cull_clips) / 60
         lines.append("")
@@ -241,10 +262,17 @@ def main() -> int:
             f"## Cull pile — {len(cull_clips)} clips, {cull_dur:.1f} min total"
         )
         lines.append("")
-        lines.append("Safe to delete (AI-flagged + spot-check first):")
+        lines.append(
+            "Safe to delete (AI-flagged unless marked (user); spot-check first):"
+        )
         lines.append("")
         for c in cull_clips[:30]:
-            reason = c.get("cull_reason") or "(no reason given)"
+            if is_user_rated(c):
+                reason = (
+                    c.get("user_note") or c.get("cull_reason") or "(no reason given)"
+                ) + " (user)"
+            else:
+                reason = c.get("cull_reason") or "(no reason given)"
             lines.append(f"- `{c.get('path', '?')}` — {reason}")
         if len(cull_clips) > 30:
             lines.append(f"- … and {len(cull_clips) - 30} more (see `_INDEX.json`)")
@@ -254,7 +282,7 @@ def main() -> int:
         clips = trips[trip]
         total = sum((c.get("duration_seconds") or 0) for c in clips)
         ratings = Counter(
-            c.get("rating", "review") for c in clips if not is_group_stub(c)
+            effective_rating(c) or "review" for c in clips if not is_group_stub(c)
         )
         langs = sorted(
             {

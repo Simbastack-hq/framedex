@@ -39,6 +39,9 @@ if TYPE_CHECKING:
     import anthropic
 
 SIDECAR_SUFFIX = ".description.md"
+# Frontmatter keys written by a human (fdx-mcp set_user_rating), never by the
+# indexer; preserved across every sidecar rewrite.
+USER_KEYS = ("user_rating", "user_note", "user_rated_at")
 
 # Default vision models — overridable via --vision-model. Maps shorthand to the
 # full IDs the API expects and the shorthand the CLI accepts.
@@ -66,6 +69,9 @@ USER_AGENT = "framedex/1.0 (personal archive indexer)"
 CLI_INTER_CALL_DELAY = 0.4  # seconds, to be polite to Max TPM caps
 
 DEFAULT_LOCAL_BASE_URL = "http://localhost:1234/v1"
+# Every exiftool call is bounded: a hung read must not hang the indexer or an
+# fdx-mcp worker thread.
+EXIFTOOL_TIMEOUT_SEC = 120
 LOCAL_TIMEOUT_SEC = 180
 
 
@@ -173,7 +179,16 @@ def get_gps(media: Path) -> dict[str, Any]:
         "-LocationInformation",
         str(media),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=EXIFTOOL_TIMEOUT_SEC,
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"exiftool timed out reading GPS of {media.name}") from e
     # A failed read is an error, not "no GPS": returning {} here would let a
     # broken exiftool silently produce location-less sidecars (and, for group
     # stubs, overwrite valid coordinates with nothing).
@@ -638,7 +653,17 @@ def serialize_sidecar(
     """Write a `.description.md` sidecar: YAML frontmatter fence, an H1 title,
     then each (heading, content) as a `## heading` section. `indexed_at` is
     stamped as the final frontmatter key. Each pipeline assembles its own
-    frontmatter dict and body sections; this only serializes."""
+    frontmatter dict and body sections; this only serializes.
+
+    Keys the photographer wrote (`USER_KEYS`, via fdx-mcp) are carried over
+    from an existing sidecar unless the new frontmatter sets them: a re-index
+    (--force, regrouping) must not erase a human decision."""
+    if sidecar.exists():
+        existing = read_sidecar_frontmatter(sidecar)
+        if existing:
+            for key in USER_KEYS:
+                if key in existing and key not in frontmatter:
+                    frontmatter[key] = existing[key]
     frontmatter["indexed_at"] = datetime.now().isoformat(timespec="seconds")
     fm_text = yaml.safe_dump(
         frontmatter, sort_keys=False, allow_unicode=True, default_flow_style=False

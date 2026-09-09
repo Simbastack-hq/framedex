@@ -30,3 +30,24 @@ jobs:
 
       - name: pytest
         run: uv run --no-sync pytest
+
+  # The fdx-mcp integration tests need the [mcp] extra (MCP SDK + Pillow); the
+  # base job stays extras-free so the hermetic suite is proven on a bare install.
+  mcp-extra:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          version: "0.11.16"
+          python-version: "3.12"
+
+      - name: Install dev + test deps + the mcp extra
+        run: uv sync --locked --group dev --group test --extra mcp
+
+      - name: mypy (with the SDK and Pillow installed)
+        run: uv run --no-sync mypy src/framedex tests --ignore-missing-imports
+
+      - name: pytest (mcp integration)
+        run: uv run --no-sync pytest tests/test_mcp_integration.py tests/test_mcp_tools.py

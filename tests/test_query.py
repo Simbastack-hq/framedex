@@ -349,3 +349,188 @@ def test_parse_sidecar_triple_hyphen_in_value_is_not_a_fence(tmp_path: Path) -> 
     p.write_text("---\nfile: a---b.NEF\nrating: keep\n---\n\n## Description\n\nx\n")
     fm = parse_sidecar(p)
     assert fm is not None and fm["file"] == "a---b.NEF"
+
+
+# --- Filters / run_query (shared by the CLI and fdx-mcp) -------------------
+
+
+def _sidecar(root: Path, rel: str, fm: dict[str, object], body: str = "") -> None:
+    import yaml
+
+    full = {"file": Path(rel).name, "path": rel, "media_type": "image", **fm}
+    p = root / f"{rel}.description.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        "---\n"
+        + yaml.safe_dump(full, sort_keys=False)
+        + "---\n\n## Description\n\n"
+        + body
+    )
+
+
+def test_run_query_returns_effective_ratings_total_and_paging(tmp_path: Path) -> None:
+    from framedex.query import Filters, run_query
+
+    _sidecar(
+        tmp_path,
+        "a/1.NEF",
+        {"rating": "cull", "user_rating": "keep"},
+        "**Scene:** A lion.\n",
+    )
+    _sidecar(tmp_path, "a/2.NEF", {"rating": "keep"})
+    _sidecar(tmp_path, "b/3.NEF", {"rating": "keep", "user_rating": "banana"})
+    _sidecar(tmp_path, "b/4.NEF", {"rating": "review"})
+
+    res = run_query(tmp_path, Filters(rating="keep"))
+    assert [r["path"] for r in res.records] == [
+        str(tmp_path / p) for p in ("a/1.NEF", "a/2.NEF", "b/3.NEF")
+    ]
+    assert res.total == 3 and res.skipped_malformed == 0
+    assert res.records[0]["effective_rating"] == "keep"  # the human override wins
+    assert res.invalid_user_ratings == 1  # "banana" is reported, not silently used
+
+    page = run_query(tmp_path, Filters(rating="keep", offset=1, limit=1))
+    assert [r["path"] for r in page.records] == [str(tmp_path / "a/2.NEF")]
+    assert page.total == 3
+
+    sub = run_query(tmp_path, Filters(folder="b"))
+    assert sorted(Path(r["path"]).name for r in sub.records) == ["3.NEF", "4.NEF"]
+
+
+def test_run_query_folder_must_be_inside_root(tmp_path: Path) -> None:
+    from framedex.query import Filters, run_query
+
+    with pytest.raises(ValueError, match="folder"):
+        run_query(tmp_path, Filters(folder="../elsewhere"))
+
+
+def test_query_cli_shows_effective_rating_and_user_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _sidecar(
+        tmp_path,
+        "1.NEF",
+        {"rating": "cull", "user_rating": "keep", "keywords": ["lion"]},
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["fdx-query", str(tmp_path), "--rating", "keep", "--with-description"],
+    )
+    assert main() == 0
+    out = capsys.readouterr().out
+    assert "\tkeep (user)\t" in out
+    monkeypatch.setattr(sys, "argv", ["fdx-query", str(tmp_path), "--rating", "cull"])
+    assert main() == 0
+    assert capsys.readouterr().out.strip() == ""  # the model's cull no longer matches
+
+
+def test_query_cli_folder_and_offset_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _sidecar(tmp_path, "a/1.NEF", {"rating": "keep"})
+    _sidecar(tmp_path, "a/2.NEF", {"rating": "keep"})
+    _sidecar(tmp_path, "b/3.NEF", {"rating": "keep"})
+    monkeypatch.setattr(
+        sys, "argv", ["fdx-query", str(tmp_path), "--folder", "a", "--offset", "1"]
+    )
+    assert main() == 0
+    assert capsys.readouterr().out.splitlines() == [str(tmp_path / "a/2.NEF")]
+
+
+def test_run_query_counts_unparsable_and_escaping_sidecars_and_tolerates_bad_shapes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from framedex.query import Filters, run_query
+
+    (tmp_path / "bad.NEF.description.md").write_text("---\nrating: [unclosed\n---\n")
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.description.md"
+    outside.write_text("---\nfile: o.jpg\npath: o.jpg\nrating: keep\n---\n")
+    (tmp_path / "o.jpg.description.md").symlink_to(outside)
+    _sidecar(
+        tmp_path,
+        "shape.NEF",
+        {
+            "rating": "keep",
+            "location": "Mara",
+            "technical": "sharp",
+            "keywords": "lion",
+        },
+    )
+    _sidecar(tmp_path, "ok.NEF", {"rating": "keep", "location": {"place": "Mara"}})
+    try:
+        res = run_query(tmp_path, Filters(place_contains="mara", focus="sharp"))
+        assert [
+            Path(r["path"]).name for r in res.records
+        ] == []  # bad shapes never match…
+        res = run_query(tmp_path, Filters(place_contains="mara"))
+        assert [Path(r["path"]).name for r in res.records] == ["ok.NEF"]
+        assert (
+            res.skipped_malformed == 2
+        )  # …and the unparsable + escaping ones are counted
+        assert "unparsable" in capsys.readouterr().err
+    finally:
+        outside.unlink()
+
+
+def test_run_query_media_path_containment_is_opt_in(tmp_path: Path) -> None:
+    """The CLI keeps printing legacy absolute paths; fdx-mcp asks for
+    containment, which drops a record whose media path resolves outside."""
+    from framedex.query import Filters, run_query
+
+    _sidecar(tmp_path, "in.NEF", {"rating": "keep"})
+    (tmp_path / "esc.NEF.description.md").write_text(
+        "---\nfile: esc.NEF\npath: ../esc.NEF\nrating: keep\n---\n"
+    )
+    assert len(run_query(tmp_path, Filters()).records) == 2
+    strict = run_query(tmp_path, Filters(), require_media_under_root=True)
+    assert [Path(r["path"]).name for r in strict.records] == ["in.NEF"]
+    assert strict.skipped_malformed == 1
+
+
+def test_matches_never_raises_on_garbled_scalar_fields() -> None:
+    garbled = {
+        "rating": ["keep"],
+        "lighting": ["golden_hour"],
+        "speaker_count": "two",
+        "duration_seconds": "long",
+        "face_count": "many",
+    }
+    assert matches(garbled, make_args(rating="keep")) is False
+    assert matches(garbled, make_args(lighting="golden_hour")) is False
+    assert matches(garbled, make_args(has_speech=True)) is False
+    assert matches(garbled, make_args(min_duration=1.0)) is False
+    assert matches(garbled, make_args(face_count="1+")) is False
+
+
+def test_run_query_survives_a_nul_byte_in_a_path(tmp_path: Path) -> None:
+    from framedex.query import Filters, run_query
+
+    (tmp_path / "nul.NEF.description.md").write_text(
+        '---\nfile: nul.NEF\npath: "bad\\0name.NEF"\nrating: keep\n---\n'
+    )
+    _sidecar(tmp_path, "ok.NEF", {"rating": "keep"})
+    res = run_query(tmp_path, Filters(), require_media_under_root=True)
+    assert [Path(r["path"]).name for r in res.records] == ["ok.NEF"]
+    assert res.skipped_malformed == 1
+
+
+def test_run_query_prefers_the_original_next_to_the_sidecar(tmp_path: Path) -> None:
+    """Sidecars store `path` relative to the root they were indexed from. A
+    query rooted at a parent (or a subfolder) must still find the file: the
+    original next to the sidecar is ground truth in folder mode."""
+    from framedex.query import Filters, run_query
+
+    trip = tmp_path / "trip"
+    trip.mkdir()
+    (trip / "a.NEF").write_bytes(b"x")
+    # Indexed with `fdx trip`: path is relative to trip/, not to tmp_path.
+    (trip / "a.NEF.description.md").write_text(
+        "---\nfile: a.NEF\npath: a.NEF\nrating: keep\n---\n"
+    )
+    res = run_query(tmp_path, Filters(), require_media_under_root=True)
+    assert [r["path"] for r in res.records] == [str(trip / "a.NEF")]
+    # A moved-away original falls back to the stored path (still relative to root).
+    (trip / "a.NEF").unlink()
+    res = run_query(tmp_path, Filters())
+    assert [r["path"] for r in res.records] == [str(tmp_path / "a.NEF")]

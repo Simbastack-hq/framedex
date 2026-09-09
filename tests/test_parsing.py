@@ -98,3 +98,28 @@ def test_pick_diar_auth_kwarg_both_prefers_token() -> None:
 def test_pick_diar_auth_kwarg_neither_defaults_token() -> None:
     assert pick_diar_auth_kwarg([]) == "token"
     assert pick_diar_auth_kwarg(["self", "device"]) == "token"
+
+
+# --- effective_rating / scene_sentence (fdx-mcp) ---------------------------
+
+
+def test_effective_rating_prefers_valid_user_override() -> None:
+    from framedex.parsing import effective_rating, is_user_rated
+
+    assert effective_rating({"rating": "cull", "user_rating": "keep"}) == "keep"
+    assert is_user_rated({"rating": "cull", "user_rating": "keep"})
+    # No override, or an invalid one: the model's rating stands (whatever it is).
+    assert effective_rating({"rating": "review"}) == "review"
+    assert effective_rating({"rating": "review", "user_rating": "banana"}) == "review"
+    assert not is_user_rated({"rating": "review", "user_rating": "banana"})
+    assert effective_rating({}) is None
+
+
+def test_scene_sentence_extracts_the_scene_line() -> None:
+    from framedex.parsing import scene_sentence
+
+    body = (
+        "# x\n\n## Description\n\n**Scene:** Two lions at dawn.\n**Subjects:** Lions.\n"
+    )
+    assert scene_sentence(body) == "Two lions at dawn."
+    assert scene_sentence("no scene here") == ""

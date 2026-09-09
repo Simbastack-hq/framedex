@@ -296,3 +296,46 @@ def test_atomic_write_cleans_up_temp_on_failure(
         pipeline.atomic_write_text(target, "x")
     assert not target.exists()
     assert list(tmp_path.glob(".*.tmp")) == []
+
+
+# --- serialize_sidecar keeps the human's keys across a rewrite -------------
+
+
+def test_serialize_sidecar_preserves_user_keys_from_existing_file(
+    tmp_path: Path,
+) -> None:
+    """A re-index (--force, regrouping) rewrites the sidecar from scratch; the
+    photographer's decision recorded by fdx-mcp must survive it, like named
+    face clusters survive a re-index."""
+    out = tmp_path / "x.jpg.description.md"
+    pipeline.serialize_sidecar(out, {"file": "x.jpg", "rating": "cull"}, "x.jpg", [])
+    text = out.read_text().replace(
+        "rating: cull\n",
+        "rating: cull\nuser_rating: keep\nuser_note: cub\nuser_rated_at: '2026-09-09T02:00:00'\n",
+    )
+    out.write_text(text)
+
+    pipeline.serialize_sidecar(out, {"file": "x.jpg", "rating": "review"}, "x.jpg", [])
+    fm = pipeline.read_sidecar_frontmatter(out)
+    assert fm is not None
+    assert fm["rating"] == "review"  # the model's new verdict is written…
+    assert fm["user_rating"] == "keep"  # …and the human's stands
+    assert fm["user_note"] == "cub" and fm["user_rated_at"] == "2026-09-09T02:00:00"
+    assert list(fm)[-1] == "indexed_at"
+
+
+def test_serialize_sidecar_never_invents_user_keys_and_explicit_values_win(
+    tmp_path: Path,
+) -> None:
+    out = tmp_path / "x.jpg.description.md"
+    pipeline.serialize_sidecar(out, {"file": "x.jpg", "rating": "cull"}, "x.jpg", [])
+    fm = pipeline.read_sidecar_frontmatter(out)
+    assert fm is not None and "user_rating" not in fm
+    out.write_text(
+        out.read_text().replace("rating: cull\n", "rating: cull\nuser_rating: keep\n")
+    )
+    pipeline.serialize_sidecar(
+        out, {"file": "x.jpg", "rating": "cull", "user_rating": "cull"}, "x.jpg", []
+    )
+    fm = pipeline.read_sidecar_frontmatter(out)
+    assert fm is not None and fm["user_rating"] == "cull"

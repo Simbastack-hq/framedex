@@ -6,6 +6,19 @@ public surface (CLI flags, sidecar schema) can still shift between minor version
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.0] - 2026-09-09
+
+Highlights: still photos are first-class (RAW/JPEG/HEIC, EXIF, one corpus with
+video); bursts and RAW+JPEG pairs share one assessment; ratings reach Lightroom
+via `.xmp` sidecars; `fdx-mcp` serves the archive to any MCP host (Claude
+Desktop, LM Studio with a local model) with a contact-sheet tool and a
+`user_rating` write; the resumability promise now holds under Ctrl-C, re-runs,
+and hostile input. Breaking: the install is extras-scoped (`.[video]`,
+`.[images]`, `.[photos]`, `.[mcp]`, `.[all]`); `pip install -e .` alone no
+longer pulls the video stack.
+
 ### Added
 
 - **`fdx-mcp`: the archive as MCP tools.** A new optional command (`[mcp]`
@@ -133,6 +146,11 @@ public surface (CLI flags, sidecar schema) can still shift between minor version
 - Frame timestamps recorded for face detection (`faces.db` `frame_time`) now
   come from the actual extraction instead of being re-derived, fixing a silent
   desync when a frame write failed mid-clip.
+- Vision-backend failures (timeout, HTTP error, permission-denied) no longer write
+  a junk sidecar that would permanently skip the file — the item is reported as an
+  error and retried on the next run.
+- `fdx-query` duration filters (`--min/max-duration`) no longer match photos, which
+  have no duration.
 
 ### Changed
 
@@ -152,14 +170,6 @@ public surface (CLI flags, sidecar schema) can still shift between minor version
   case), `docs/tuning.md` (folder context, proper-noun biasing, languages,
   diarization setup), and `docs/troubleshooting.md`. An ASCII flow diagram at
   the top of the README shows the pipeline at a glance. No behavior change.
-
-### Fixed
-
-- Vision-backend failures (timeout, HTTP error, permission-denied) no longer write
-  a junk sidecar that would permanently skip the file — the item is reported as an
-  error and retried on the next run.
-- `fdx-query` duration filters (`--min/max-duration`) no longer match photos, which
-  have no duration.
 
 ## [0.1.0]
 

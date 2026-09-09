@@ -296,6 +296,8 @@ def test_image_only_run_never_loads_whisper(
     monkeypatch.setattr(index_videos, "setup_whisper", _boom)
     # Backend wiring (incl. the claude-CLI check) now lives in runner.
     monkeypatch.setattr("framedex.runner.check_claude_cli", lambda: True)
+    # The grouping pre-pass would shell out to exiftool: keep the test hermetic.
+    monkeypatch.setattr("framedex.grouping.read_group_metadata", lambda paths: {})
     monkeypatch.setattr(
         images,
         "process_one_image",
@@ -459,3 +461,237 @@ def test_vision_prompt_without_timestamps_keeps_legacy_wording() -> None:
         [Path("f0.jpg")], ctx, "", include_paths=False
     )
     assert "evenly sampled across the clip" in prompt
+
+
+# ---------------------------------------------------------------------------
+# main — burst / RAW+JPEG grouping pre-pass, group-aware resume, --no-group
+# ---------------------------------------------------------------------------
+
+
+def _wire_group_main(
+    monkeypatch: pytest.MonkeyPatch, meta: dict[Path, Any], calls: list[str]
+) -> None:
+    """Route the loop into spies: process_one_image / process_group record
+    what they were handed; exiftool is replaced by the given metadata."""
+    from framedex import grouping
+
+    monkeypatch.setattr("framedex.runner.check_claude_cli", lambda: True)
+    monkeypatch.setattr(grouping, "read_group_metadata", lambda paths: meta)
+
+    def one(image: Path, root: Path, opts: Any, ctx: Any, **kw: Any) -> Any:
+        calls.append(f"one:{image.name}")
+        return pipeline.ProcessResult(
+            sidecar=pipeline.sidecar_path(image), rating="keep"
+        )
+
+    def grp(group: Any, root: Path, opts: Any, ctx: Any) -> Any:
+        calls.append("group:" + ",".join(f.name for f in group.files))
+        return pipeline.ProcessResult(
+            sidecar=pipeline.sidecar_path(group.files[0]),
+            rating="keep",
+            stubs_written=len(group.files) - 1,
+        )
+
+    monkeypatch.setattr(images, "process_one_image", one)
+    monkeypatch.setattr(images, "process_group", grp)
+
+
+def _burst_folder(tmp_path: Path) -> tuple[list[Path], dict[Path, Any]]:
+    """Three NEFs one second apart (a burst) plus one undated lone NEF."""
+    from framedex import grouping
+
+    files = [tmp_path / f"{i}.NEF" for i in (1, 2, 3)]
+    for f in files:
+        f.write_bytes(b"x")
+    lone = tmp_path / "lone.NEF"
+    lone.write_bytes(b"x")
+    meta = {f: grouping.GroupMeta(float(i), "N|Z8") for i, f in enumerate(files)}
+    meta[lone] = grouping.GroupMeta(None, "N|Z8")
+    return files, meta
+
+
+def _argv(tmp_path: Path, *extra: str) -> list[str]:
+    return [
+        "fdx",
+        str(tmp_path),
+        "--media",
+        "images",
+        "--no-faces",
+        "--no-geocode",
+        *extra,
+    ]
+
+
+def test_main_routes_groups_and_singles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _, meta = _burst_folder(tmp_path)
+    calls: list[str] = []
+    _wire_group_main(monkeypatch, meta, calls)
+    monkeypatch.setattr(sys, "argv", _argv(tmp_path))
+    assert index_videos.main() == 0
+    assert calls == ["group:1.NEF,2.NEF,3.NEF", "one:lone.NEF"]
+    out = capsys.readouterr().out
+    assert "grouped 3 files into 1 groups" in out
+    assert "Processed: 2 work items (1 group covering 3 files), Errors: 0" in out
+
+
+def test_main_no_group_indexes_every_file_individually(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from framedex import grouping
+
+    _, meta = _burst_folder(tmp_path)
+    calls: list[str] = []
+    _wire_group_main(monkeypatch, meta, calls)
+    monkeypatch.setattr(
+        grouping, "read_group_metadata", lambda paths: pytest.fail("no exiftool pass")
+    )
+    monkeypatch.setattr(sys, "argv", _argv(tmp_path, "--no-group"))
+    assert index_videos.main() == 0
+    assert calls == ["one:1.NEF", "one:2.NEF", "one:3.NEF", "one:lone.NEF"]
+
+
+def _write_group_sidecars(files: list[Path], gid: str, primary: Path) -> None:
+    for f in files:
+        block = (
+            f"group: {{kind: burst, id: {gid}, primary: true}}"
+            if f == primary
+            else f"group: {{kind: burst, id: {gid}, primary: false, primary_file: {primary.name}}}"
+        )
+        pipeline.sidecar_path(f).write_text(
+            f"---\nfile: {f.name}\nrating: keep\n{block}\n---\n"
+        )
+
+
+def test_main_skips_complete_group_and_redoes_incomplete_group_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A group is done only when every member's sidecar belongs to it. Stubs
+    are written before the primary, so any missing member sidecar means the
+    group was interrupted (or hand-edited) and is redone whole — never
+    partially."""
+    from framedex import grouping
+
+    files, meta = _burst_folder(tmp_path)
+    _write_group_sidecars(files, grouping.group_id(files), files[1])
+    pipeline.sidecar_path(tmp_path / "lone.NEF").write_text("---\nfile: x\n---\n")
+    calls: list[str] = []
+    _wire_group_main(monkeypatch, meta, calls)
+    monkeypatch.setattr(sys, "argv", _argv(tmp_path))
+    assert index_videos.main() == 0
+    assert calls == []
+
+    pipeline.sidecar_path(files[1]).unlink()  # the primary's sidecar lost
+    assert index_videos.main() == 0
+    assert calls == ["group:1.NEF,2.NEF,3.NEF"]
+
+
+def test_main_legacy_per_file_sidecars_count_as_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An archive indexed before grouping existed is not re-indexed (its
+    per-file assessments are valid); --force regroups it."""
+    files, meta = _burst_folder(tmp_path)
+    for f in [*files, tmp_path / "lone.NEF"]:
+        pipeline.sidecar_path(f).write_text("---\nfile: x\nrating: keep\n---\n")
+    calls: list[str] = []
+    _wire_group_main(monkeypatch, meta, calls)
+    monkeypatch.setattr(sys, "argv", _argv(tmp_path))
+    assert index_videos.main() == 0
+    assert calls == []
+
+
+def test_main_redoes_group_whose_membership_changed_and_stale_singles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sidecars from a different grouping (a stale id) no longer prove the
+    group done; a lone file whose sidecar is a leftover stub is re-assessed."""
+    files, meta = _burst_folder(tmp_path)
+    _write_group_sidecars(files, "b_stale000", files[1])
+    lone = tmp_path / "lone.NEF"
+    pipeline.sidecar_path(lone).write_text(
+        "---\nfile: lone.NEF\ngroup: {kind: burst, id: b_old, primary: false}\n---\n"
+    )
+    calls: list[str] = []
+    _wire_group_main(monkeypatch, meta, calls)
+    monkeypatch.setattr(sys, "argv", _argv(tmp_path))
+    assert index_videos.main() == 0
+    assert calls == ["group:1.NEF,2.NEF,3.NEF", "one:lone.NEF"]
+
+
+def test_main_no_group_leaves_existing_grouped_sidecars_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--no-group is existence-only resume: it never re-indexes a grouped
+    folder by surprise (degrouping is the explicit --force --no-group)."""
+    from framedex import grouping
+
+    files, meta = _burst_folder(tmp_path)
+    _write_group_sidecars(files, grouping.group_id(files), files[1])
+    calls: list[str] = []
+    _wire_group_main(monkeypatch, meta, calls)
+    monkeypatch.setattr(sys, "argv", _argv(tmp_path, "--no-group"))
+    assert index_videos.main() == 0
+    assert calls == ["one:lone.NEF"]
+
+
+def test_main_exits_loudly_when_the_exif_batch_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A broken exiftool must not silently turn a burst folder into N vision
+    calls; the run stops and names --no-group as the explicit fallback."""
+    from framedex import grouping
+
+    _burst_folder(tmp_path)
+    calls: list[str] = []
+    _wire_group_main(monkeypatch, {}, calls)
+
+    def boom(paths: list[Path]) -> Any:
+        raise grouping.GroupMetadataError("grouping: exiftool batch read failed (x)")
+
+    monkeypatch.setattr(grouping, "read_group_metadata", boom)
+    monkeypatch.setattr(sys, "argv", _argv(tmp_path))
+    with pytest.raises(SystemExit) as exc:
+        index_videos.main()
+    assert "--no-group" in str(exc.value)
+    assert calls == []
+
+
+def test_main_force_reprocesses_complete_groups(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files, meta = _burst_folder(tmp_path)
+    for f in files:
+        pipeline.sidecar_path(f).write_text("---\nfile: x\n---\n")
+    calls: list[str] = []
+    _wire_group_main(monkeypatch, meta, calls)
+    monkeypatch.setattr(sys, "argv", _argv(tmp_path, "--force"))
+    assert index_videos.main() == 0
+    assert calls == ["group:1.NEF,2.NEF,3.NEF", "one:lone.NEF"]
+
+
+def test_main_max_files_counts_a_group_as_one_item(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--max-files bounds vision calls, and a group is one call."""
+    _, meta = _burst_folder(tmp_path)
+    calls: list[str] = []
+    _wire_group_main(monkeypatch, meta, calls)
+    monkeypatch.setattr(sys, "argv", _argv(tmp_path, "--max-files", "1"))
+    assert index_videos.main() == 0
+    assert calls == ["group:1.NEF,2.NEF,3.NEF"]
+
+
+def test_main_dry_run_lists_groups_without_processing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _, meta = _burst_folder(tmp_path)
+    calls: list[str] = []
+    _wire_group_main(monkeypatch, meta, calls)
+    monkeypatch.setattr(sys, "argv", _argv(tmp_path, "--dry-run"))
+    assert index_videos.main() == 0
+    out = capsys.readouterr().out
+    assert "would process [burst: 3 files -> 1 vision call]: 1.NEF .. 3.NEF" in out
+    assert "would process [image]: lone.NEF" in out
+    assert calls == []

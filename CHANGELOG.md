@@ -8,6 +8,27 @@ public surface (CLI flags, sidecar schema) can still shift between minor version
 
 ### Added
 
+- **Burst grouping + RAW/JPEG pairing: one assessment per group.** Before
+  the per-file loop, `fdx` groups a folder's stills: a RAW and its same-stem
+  camera JPEG become one pair (RAW primary, JPEG as preview source), and at
+  least 3 frames in one folder with matching camera make/model and gaps of at
+  most 2s become a burst (a burst of pairs is one burst). Each group gets a
+  single vision call on its primary (the member with the highest local
+  Laplacian sharpness score; no model choice); every alternate gets a stub
+  sidecar that copies the primary's assessment fields (not faces), carries its
+  own EXIF/GPS, says so in its body, and points at the primary via a `group:`
+  block. Vision calls per run = groups + ungrouped files, never more than
+  before. Resume is group-aware: stubs are written before the primary, the
+  primary's old sidecar is removed first, and an incomplete or changed group is
+  reprocessed together (repeating that group's call). `--no-group` (both `fdx`
+  and `fdx-photos`; a documented no-op in the latter until Photos-native burst
+  support) disables grouping for a run; `--force --no-group` re-indexes a
+  grouped folder individually. A failed batched EXIF read stops the run with a
+  clear message instead of silently indexing every file. `fdx-master` counts
+  ratings, keywords, faces, and the cull list over primaries only and reports
+  `Grouped: N files in M groups`; `fdx-query --primary-only` hides stubs;
+  `fdx-xmp` tags burst members `burst-primary` / `burst-alternate`. Thresholds
+  are constants documented in `docs/tuning.md`. No new dependency.
 - **`fdx-xmp` — get framedex ratings into Lightroom.** A new standalone command
   that projects the rating, keywords, and one-line scene caption from
   `.description.md` sidecars into standard `.xmp` sidecars next to proprietary-RAW
@@ -43,6 +64,20 @@ public surface (CLI flags, sidecar schema) can still shift between minor version
 
 ### Fixed
 
+- **exiftool failures are errors, not blanks.** `get_image_metadata` and
+  `get_gps` now raise when exiftool exits non-zero or returns no JSON, instead
+  of silently producing a sidecar with an empty camera block / no location. A
+  per-file run reports the file as an error and retries it next time; a
+  burst/pair group fails before its vision call.
+- **Atomic writes use exclusive, unique temp files.** `atomic_write_text`
+  (every sidecar, index, and XMP write) now creates its same-directory temp via
+  `mkstemp`: two writers can't collide on one temp name, and a symlink planted
+  at a predictable temp name can no longer redirect a write into another file.
+  Stale temps are `.<name>.<random>.tmp` (still hidden, still safe to delete).
+- **Sidecar parsers are fence-aware.** `fdx-query`, `fdx-master`, `fdx-xmp`,
+  `fdx-summary`, and the resume check now end the frontmatter at a line that
+  is exactly `---`, so a filename or value containing `---` no longer
+  truncates the YAML.
 - **Trust hardening — the resumability/idempotency promise now holds under
   Ctrl-C, re-runs, and hostile input.**
   - Sidecars and the `_INDEX.*` / folder-summary files are written atomically

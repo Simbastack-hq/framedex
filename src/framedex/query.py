@@ -27,7 +27,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from framedex.parsing import is_usable_path
+from framedex.parsing import is_group_stub, is_usable_path
+from framedex.pipeline import split_frontmatter
 
 try:
     import yaml
@@ -42,13 +43,11 @@ def parse_sidecar(path: Path) -> dict[str, Any] | None:
         text = path.read_text()
     except Exception:
         return None
-    if not text.startswith("---"):
-        return None
-    parts = text.split("---", 2)
-    if len(parts) < 3:
+    parts = split_frontmatter(text)
+    if parts is None:
         return None
     try:
-        fm = yaml.safe_load(parts[1])
+        fm = yaml.safe_load(parts[0])
         if isinstance(fm, dict):
             fm["_sidecar_path"] = str(path)
             return fm
@@ -59,6 +58,9 @@ def parse_sidecar(path: Path) -> dict[str, Any] | None:
 
 def matches(rec: dict[str, Any], args: argparse.Namespace) -> bool:
     """Apply all filters. Returns True if record passes all."""
+    # Burst / RAW+JPEG members carry a copied assessment; hide them on request.
+    if args.primary_only and is_group_stub(rec):
+        return False
     # Rating (csv → OR within flag)
     if args.rating:
         wanted = {v.strip() for v in args.rating.split(",")}
@@ -223,6 +225,13 @@ def main() -> int:
         action="store_true",
         dest="has_speech",
         help="Only clips with detected speech (speaker_count ≥ 1).",
+    )
+    parser.add_argument(
+        "--primary-only",
+        action="store_true",
+        dest="primary_only",
+        help="Hide burst / RAW+JPEG members whose assessment is copied from a "
+        "group primary (group.primary: false).",
     )
 
     # Output flags

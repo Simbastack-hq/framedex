@@ -43,7 +43,10 @@ survive.
   media-specific work stays in its pipeline module. cv2 image math lives in
   dedicated modules (`face_db.py`, `frame_sampling.py`), not in orchestrators.
 - Any new CLI flag goes in BOTH parsers (`index_videos.main` and
-  `photos_indexer.main`) and threads through `ProcessOptions`.
+  `photos_indexer.main`). Flags that change per-file processing thread
+  through `ProcessOptions`; discovery-time flags (`--media`, `--exclude`,
+  `--force`, `--max-files`, `--no-group`) stay in `main`, where discovery
+  happens, and nothing per-file reads them.
 - Tests are hermetic: never shell out to ffmpeg or hit the network; pure
   functions over numpy arrays / mocked subprocess.
 - Tunables ship as named module constants with a one-line comment, not flags,

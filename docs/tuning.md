@@ -72,3 +72,28 @@ auto-exposure drift doesn't count as change. Static clips, clips under 20s,
 and night footage that fails the brightness gates keep the legacy evenly-
 spaced sampling, as does `--frame-sampling even`. Pool size and thresholds
 are documented constants in `src/framedex/frame_sampling.py`.
+
+## Burst grouping
+
+`fdx` groups a folder's stills before the per-file loop so one moment costs one
+vision call (see the README section "Bursts and RAW+JPEG pairs"). The
+thresholds are constants in `src/framedex/grouping.py`, not flags:
+
+- `BURST_GAP_SEC = 2.0`: consecutive frames in the same folder with matching
+  camera make/model at most this far apart chain into one burst. Timestamps come from
+  `SubSecDateTimeOriginal` when present, else `DateTimeOriginal` plus
+  `SubSecTimeOriginal`; whole-second precision still works (a 10 fps burst
+  simply has gap 0). Files with no usable date never join a group.
+- `BURST_MIN_SIZE = 3`: a shorter chain is not a burst; its frames index
+  individually.
+- `PAIR_JPEG_EXTENSIONS = {".jpg", ".jpeg"}`: only camera JPEGs pair with a
+  same-stem RAW. PNG/TIFF/HEIC/WebP sharing a stem are treated as exports, not
+  the same capture. Two RAWs sharing a stem never pair (ambiguous).
+
+The primary is the member with the highest Laplacian variance over its
+rendered preview (the pair's JPEG when there is one); ties go to the earliest
+frame. `--no-group` disables grouping for a run. Grouping runs one batched
+`exiftool` call over the whole image list; if that call fails, indexing stops.
+Use `--no-group` to retry with individual indexing. Files that come back
+without EXIF from a successful batch never join a burst (RAW+JPEG pairing,
+which needs no EXIF, still applies).

@@ -87,6 +87,7 @@ def make_args(**overrides: object) -> argparse.Namespace:
         "keyword": None,
         "dominant_color": None,
         "has_speech": False,
+        "primary_only": False,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -310,3 +311,41 @@ def test_query_skips_photos_asset_with_malformed_present_path(
     cap = capsys.readouterr()
     assert cap.out.strip() == ""
     assert "skipped 1" in cap.err
+
+
+# --- burst / RAW+JPEG group stubs -----------------------------------------
+
+
+def test_matches_primary_only_filters_group_stubs() -> None:
+    """A stub (group.primary: false) carries a copied assessment; by default
+    it still matches (finding a burst alternate by keyword is useful), and
+    --primary-only hides it. Ungrouped records always pass."""
+    stub = {"rating": "keep", "group": {"kind": "burst", "primary": False}}
+    primary = {"rating": "keep", "group": {"kind": "burst", "primary": True}}
+    assert matches(stub, make_args()) is True
+    assert matches(stub, make_args(primary_only=True)) is False
+    assert matches(primary, make_args(primary_only=True)) is True
+    assert matches({"rating": "keep"}, make_args(primary_only=True)) is True
+
+
+def test_query_cli_accepts_primary_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "1.NEF.description.md").write_text(
+        "---\nfile: 1.NEF\npath: 1.NEF\nrating: keep\n"
+        "group: {kind: burst, primary: false, primary_file: 2.NEF}\n---\n"
+    )
+    (tmp_path / "2.NEF.description.md").write_text(
+        "---\nfile: 2.NEF\npath: 2.NEF\nrating: keep\n"
+        "group: {kind: burst, primary: true}\n---\n"
+    )
+    monkeypatch.setattr(sys, "argv", ["fdx-query", str(tmp_path), "--primary-only"])
+    assert main() == 0
+    assert capsys.readouterr().out.splitlines() == [str(tmp_path / "2.NEF")]
+
+
+def test_parse_sidecar_triple_hyphen_in_value_is_not_a_fence(tmp_path: Path) -> None:
+    p = tmp_path / "a---b.NEF.description.md"
+    p.write_text("---\nfile: a---b.NEF\nrating: keep\n---\n\n## Description\n\nx\n")
+    fm = parse_sidecar(p)
+    assert fm is not None and fm["file"] == "a---b.NEF"

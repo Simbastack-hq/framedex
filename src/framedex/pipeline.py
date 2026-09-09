@@ -22,6 +22,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -84,23 +85,72 @@ def has_sidecar(media: Path) -> bool:
     return sidecar_path(media).exists()
 
 
-def atomic_write_text(path: Path, text: str) -> None:
-    """Write `text` to `path` atomically: a same-directory temp file, then
+def split_frontmatter(text: str) -> tuple[str, str] | None:
+    """Split sidecar text into (frontmatter YAML, body). The opening fence is
+    the first line, exactly `---`; the closing fence is the next line that is
+    exactly `---`. Splitting on any `---` substring would truncate YAML that
+    merely contains one (a file named `a---b.NEF`). None without a complete
+    fence."""
+    lines = text.split("\n")
+    if not lines or lines[0].rstrip("\r") != "---":
+        return None
+    for i in range(1, len(lines)):
+        if lines[i].rstrip("\r") == "---":
+            return "\n".join(lines[1:i]), "\n".join(lines[i + 1 :])
+    return None
+
+
+def read_sidecar_frontmatter(sidecar: Path) -> dict[str, Any] | None:
+    """Parse a sidecar's YAML frontmatter. None when the file is missing,
+    unreadable, has no frontmatter fence, or the YAML is not a mapping."""
+    try:
+        text = sidecar.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    parts = split_frontmatter(text)
+    if parts is None:
+        return None
+    try:
+        fm = yaml.safe_load(parts[0])
+    except yaml.YAMLError:
+        return None
+    return fm if isinstance(fm, dict) else None
+
+
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Write `data` to `path` atomically: a same-directory temp file, then
     `os.replace`. Readers and the resume check (`has_sidecar`) never observe a
     partial file, so a Ctrl-C / crash / disk-full mid-write can't leave a
     truncated sidecar or index that marks a file permanently indexed.
 
     The temp is same-directory (`os.replace` is only atomic within one
     filesystem), dot-prefixed (both discovery walkers skip hidden files, so a
-    stale temp is invisible to discovery and `has_sidecar`), and pid-suffixed
-    (two runs racing on the same root can't collide on one temp path). A stale
-    `.<name>.<pid>.tmp` from a killed run is inert and safe to delete."""
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    # Explicit utf-8 (not the platform default) so the bytes on disk are
-    # locale-independent — fdx-xmp hashes the payload it writes and compares it
-    # to the file's bytes on re-run, which only holds if the encoding is fixed.
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    stale temp is invisible to discovery and `has_sidecar`), and created
+    exclusively by `mkstemp` with a random suffix: two writers in one process
+    (fdx-mcp runs tools on worker threads) can't collide on a name, and a
+    pre-planted symlink at that name is never followed — the write can't be
+    redirected into an original. A stale `.<name>.<random>.tmp` from a killed
+    run is inert and safe to delete."""
+    fd, tmp_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """`atomic_write_bytes` of `text` as UTF-8. Explicit utf-8 and no newline
+    translation (bytes, not text mode) so the bytes on disk are locale- and
+    platform-independent — fdx-xmp hashes the payload it writes and compares
+    it to the file's bytes on re-run, which only holds if the encoding is
+    fixed."""
+    atomic_write_bytes(path, text.encode("utf-8"))
 
 
 # ---------------------------------------------------------------------------
@@ -109,8 +159,9 @@ def atomic_write_text(path: Path, text: str) -> None:
 
 
 def get_gps(media: Path) -> dict[str, Any]:
-    """exiftool -> lat/lon/alt. Returns {} if nothing usable. Works for any
-    file exiftool understands (video container or still)."""
+    """exiftool -> lat/lon/alt. Returns {} when the file carries no usable GPS;
+    raises RuntimeError when exiftool itself fails (non-zero exit, no JSON).
+    Works for any file exiftool understands (video container or still)."""
     cmd = [
         "exiftool",
         "-json",
@@ -123,12 +174,20 @@ def get_gps(media: Path) -> dict[str, Any]:
         str(media),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
+    # A failed read is an error, not "no GPS": returning {} here would let a
+    # broken exiftool silently produce location-less sidecars (and, for group
+    # stubs, overwrite valid coordinates with nothing).
     if result.returncode != 0:
-        return {}
+        raise RuntimeError(
+            f"exiftool failed on {media.name} (exit {result.returncode}): "
+            f"{result.stderr.strip()[:200]}"
+        )
     try:
         data = json.loads(result.stdout)[0]
-    except (json.JSONDecodeError, IndexError):
-        return {}
+    except (json.JSONDecodeError, IndexError) as e:
+        raise RuntimeError(
+            f"exiftool returned no parseable output for {media.name}"
+        ) from e
     out = {}
     lat = data.get("GPSLatitude")
     lon = data.get("GPSLongitude")
@@ -560,6 +619,9 @@ class ProcessResult:
     skipped_reason: str | None = None
     rating: str = "?"
     structured: dict[str, Any] = field(default_factory=dict)
+    # Burst / RAW+JPEG members that got a stub sidecar off this file's
+    # assessment (no vision call of their own).
+    stubs_written: int = 0
 
 
 # ---------------------------------------------------------------------------

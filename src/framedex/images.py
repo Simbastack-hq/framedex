@@ -21,16 +21,26 @@ run never needs the video stack installed.
 
 from __future__ import annotations
 
+import copy
 import json
+import shutil
 import subprocess
 import tempfile
 import textwrap
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from framedex import face_db, pipeline
+import yaml
+
+from framedex import face_db, frame_sampling, pipeline
 from framedex.parsing import coerce_people_count
+
+if TYPE_CHECKING:
+    # grouping imports RAW_EXTENSIONS from this module; import it lazily at
+    # runtime (inside process_group) to avoid the cycle.
+    from framedex import grouping
 from framedex.pipeline import (
     CLI_INTER_CALL_DELAY,
     FRAME_MAX_WIDTH,
@@ -114,7 +124,8 @@ def _normalize_exif_datetime(raw: str) -> str:
 def get_image_metadata(image: Path) -> dict[str, Any]:
     """exiftool → dimensions + camera block (make/model/lens/exposure) +
     creation_time + size_bytes. Readable human values (e.g. shutter '1/1000'),
-    no `-n`, so the sidecar shows what a photographer expects."""
+    no `-n`, so the sidecar shows what a photographer expects. Absent tags give
+    empty fields; a failed exiftool run raises RuntimeError."""
     cmd = [
         "exiftool",
         "-json",
@@ -140,12 +151,20 @@ def get_image_metadata(image: Path) -> dict[str, Any]:
         "camera": {},
     }
     result = subprocess.run(cmd, capture_output=True, text=True)
+    # A failed read is an error, not "no EXIF": returning blanks would let a
+    # broken exiftool silently produce camera-less sidecars (and, for group
+    # stubs, overwrite valid metadata with nothing).
     if result.returncode != 0:
-        return meta
+        raise RuntimeError(
+            f"exiftool failed on {image.name} (exit {result.returncode}): "
+            f"{result.stderr.strip()[:200]}"
+        )
     try:
         data = json.loads(result.stdout)[0]
-    except (ValueError, IndexError):
-        return meta
+    except (ValueError, IndexError) as e:
+        raise RuntimeError(
+            f"exiftool returned no parseable output for {image.name}"
+        ) from e
 
     width = data.get("ImageWidth")
     height = data.get("ImageHeight")
@@ -237,14 +256,14 @@ def render_preview(image: Path, out_dir: Path) -> Path | None:
     # A decode/save failure here is a real error (corrupt or unreadable file),
     # not a clean skip — let it propagate so the run loop reports it loudly and
     # the file is retried, rather than masquerading as "no preview".
-    with Image.open(src) as im:
-        im = ImageOps.exif_transpose(im)  # normalize rotation
+    with Image.open(src) as opened:
+        im: Image.Image = ImageOps.exif_transpose(opened) or opened  # upright
         if im.mode != "RGB":
             im = im.convert("RGB")
         w, h = im.size
         if w > FRAME_MAX_WIDTH:
             new_h = round(h * FRAME_MAX_WIDTH / w)
-            im = im.resize((FRAME_MAX_WIDTH, new_h), Image.LANCZOS)
+            im = im.resize((FRAME_MAX_WIDTH, new_h), Image.Resampling.LANCZOS)
         out = out_dir / "preview.jpg"
         im.save(out, "JPEG", quality=90)
     return out
@@ -451,13 +470,23 @@ def process_one_image(
     place_override: str | None = None,
     extra_frontmatter: dict[str, Any] | None = None,
     omit_path: bool = False,
+    preview_override: Path | None = None,
+    before_sidecar: Callable[[dict[str, Any]], None] | None = None,
 ) -> pipeline.ProcessResult:
     """Run the full per-photo pipeline for one still and emit a sidecar.
 
     Mirrors process_one_video's override surface so fdx-photos can reuse it for
     Apple Photos stills. `metadata_override` shallow-merges over exiftool's
     output (e.g. Photos' canonical creation_time). Returns
-    skipped_reason='no_preview' for a RAW with no embedded preview to read."""
+    skipped_reason='no_preview' for a RAW with no embedded preview to read.
+
+    Two hooks serve burst grouping (`process_group`): `preview_override` is an
+    already-rendered upright JPEG used as the vision/face input instead of
+    rendering `image` again (the caller owns and cleans it up); `before_sidecar`
+    is called with the assembled frontmatter after faces are committed and
+    before the sidecar is written — group stubs are written there, so the
+    primary sidecar (the resume marker) stays the last write. If the hook
+    raises, no sidecar is written and the file is redone next run."""
     metadata = get_image_metadata(image)
     if metadata_override:
         # Caller (e.g. fdx-photos) has authoritative fields from a richer source.
@@ -481,7 +510,7 @@ def process_one_image(
     structured: dict[str, Any] = {}
     description: str = ""
     try:
-        preview = render_preview(image, tmp_dir)
+        preview = preview_override or render_preview(image, tmp_dir)
         if preview is None:
             return pipeline.ProcessResult(sidecar=None, skipped_reason="no_preview")
 
@@ -556,6 +585,8 @@ def process_one_image(
     # a transient error would wipe previously-committed faces for this file.
     if ctx.face_conn is not None and face_detection_ran:
         face_db.write_faces(ctx.face_conn, image, sidecar, detected_faces)
+    if before_sidecar is not None:
+        before_sidecar(fm)
     pipeline.serialize_sidecar(sidecar, fm, image.name, [("Description", description)])
 
     return pipeline.ProcessResult(
@@ -566,3 +597,235 @@ def process_one_image(
         rating=str(structured.get("rating", "?")),
         structured=structured,
     )
+
+
+# ---------------------------------------------------------------------------
+# Groups: bursts + RAW/JPEG pairs (one vision call, stub sidecars for the rest)
+# ---------------------------------------------------------------------------
+
+# Assessment fields a stub copies from its group primary: everything the
+# model produced. Faces are NOT copied — no detection ran on that frame, and
+# phantom cluster ids would haunt fdx-faces.
+STUB_COPIED_FIELDS = (
+    "rating",
+    "cull_reason",
+    "technical",
+    "lighting",
+    "time_of_day",
+    "dominant_color_palette",
+    "dominant_colors",
+    "scene_type",
+    "people_count",
+    "keywords",
+)
+
+
+def _group_block(
+    group: grouping.MediaGroup, member: Path, sharpness: float
+) -> dict[str, Any]:
+    """The `group:` frontmatter block for one member of a picked group. The
+    full member list lives on the primary only (repeating it on every stub
+    would grow quadratically with burst length); stubs point at the primary."""
+    assert group.primary is not None
+    block: dict[str, Any] = {
+        "kind": group.kind,
+        "id": group.id,
+        "primary": member == group.primary,
+    }
+    if member == group.primary:
+        block["members"] = [f.name for f in group.files]
+    else:
+        block["primary_file"] = group.primary.name
+    block["sharpness"] = round(sharpness, 1)
+    return block
+
+
+def build_stub_frontmatter(
+    member: Path,
+    root: Path,
+    metadata: dict[str, Any],
+    gps: dict[str, Any],
+    place: str,
+    primary_fm: dict[str, Any],
+    group: grouping.MediaGroup,
+    sharpness: float,
+) -> dict[str, Any]:
+    """Own file/EXIF/GPS/place fields + the primary's assessment (copied, so a
+    later mutation of one frontmatter can't leak into another) + a group
+    block. No faces: nothing was detected on this frame."""
+    structured = {k: copy.deepcopy(primary_fm.get(k)) for k in STUB_COPIED_FIELDS}
+    return build_image_frontmatter(
+        member,
+        root,
+        metadata,
+        gps,
+        place,
+        structured,
+        [],
+        extra_frontmatter={"group": _group_block(group, member, sharpness)},
+    )
+
+
+def stub_body(primary: Path, kind: str) -> str:
+    """The one-paragraph body of a stub sidecar: says plainly that this frame
+    was not assessed on its own, where the copied fields came from, and that
+    the empty face list means "not checked", not "nobody there"."""
+    role = (
+        "the burst primary"
+        if kind == "burst"
+        else "the RAW primary of this RAW+JPEG pair"
+    )
+    return (
+        "This file was not assessed individually. Assessment fields were copied "
+        f"from {primary.name}{pipeline.SIDECAR_SUFFIX} ({role}). Faces were not "
+        "checked; zero does not mean none are present."
+    )
+
+
+def _mark_primary_incomplete(sidecar: Path, group: grouping.MediaGroup) -> None:
+    """Rewrite an existing primary sidecar with `group.incomplete: true` (all
+    other frontmatter and the body kept) so the resume check sees the group as
+    in flight until the new primary sidecar lands. A sidecar that cannot be
+    parsed is removed instead: nothing in it can be preserved."""
+    if not sidecar.exists():
+        return
+    try:
+        text = sidecar.read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    parts = pipeline.split_frontmatter(text)
+    fm = None
+    if parts is not None:
+        try:
+            fm = yaml.safe_load(parts[0])
+        except yaml.YAMLError:
+            fm = None
+    if parts is None or not isinstance(fm, dict):
+        sidecar.unlink()
+        return
+    fm["group"] = {
+        "kind": group.kind,
+        "id": group.id,
+        "primary": True,
+        "incomplete": True,
+        "members": [f.name for f in group.files],
+    }
+    fm_text = yaml.safe_dump(
+        fm, sort_keys=False, allow_unicode=True, default_flow_style=False
+    ).rstrip()
+    pipeline.atomic_write_text(sidecar, f"---\n{fm_text}\n---{parts[1]}")
+
+
+def _score_unit(unit: grouping.Unit, tmp_dir: Path) -> float:
+    """Render the unit's preview into a scratch subdir, score it, and delete
+    the render (a long chain must not pile previews up on disk). A RAW with
+    no embedded preview scores -1 so it is never the primary while any member
+    renders."""
+    sub = tmp_dir / "score"
+    sub.mkdir()
+    try:
+        preview = render_preview(unit.preview_source, sub)
+        if preview is None:
+            return -1.0
+        return frame_sampling.laplacian_sharpness(preview)
+    finally:
+        shutil.rmtree(sub, ignore_errors=True)
+
+
+def process_group(
+    group: grouping.MediaGroup,
+    root: Path,
+    opts: pipeline.ProcessOptions,
+    ctx: pipeline.ProcessContext,
+) -> pipeline.ProcessResult:
+    """One vision call for a burst / RAW+JPEG pair. Renders + scores every
+    member locally (keeping only the current best preview on disk), reads the
+    other members' EXIF/GPS before the paid call, runs the full pipeline on
+    the sharpest member with its rendered preview reused, and writes each
+    other member a stub sidecar *before* the primary sidecar — the primary
+    is the resume marker for the group."""
+    from framedex import grouping  # runtime import: see the TYPE_CHECKING note
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="fdx-group-"))
+    try:
+        # Pass 1: score every member; nothing is kept on disk. Pass 2 renders
+        # the primary alone (one extra render of one file, instead of keeping
+        # N previews around until the group finishes).
+        scores = {u.primary: _score_unit(u, tmp_dir) for u in group.units}
+        grouping.pick_representative(group, scores)
+        primary = group.primary
+        assert primary is not None
+        primary_unit = next(u for u in group.units if u.primary == primary)
+        if scores[primary] < 0:
+            return pipeline.ProcessResult(sidecar=None, skipped_reason="no_preview")
+        preview_dir = tmp_dir / "primary"
+        preview_dir.mkdir()
+        preview = render_preview(primary_unit.preview_source, preview_dir)
+        (preview_dir / "raw_preview.jpg").unlink(missing_ok=True)  # full-size extract
+        if preview is None:
+            # Scoring just proved this file renders; a failure now is a real
+            # error (disk, signal), not a RAW without a preview.
+            raise RuntimeError(
+                f"{primary.name}: preview rendered for scoring but not for the vision call"
+            )
+        sharp_of = {f: group.sharpness[u.primary] for u in group.units for f in u.files}
+
+        members = [f for f in group.files if f != primary]
+        # Member EXIF/GPS before the vision call: a read failure here costs
+        # nothing, after it would waste the paid call.
+        member_meta = {m: (get_image_metadata(m), pipeline.get_gps(m)) for m in members}
+        if group.kind == "burst":
+            print(
+                f"  burst: {len(group.files)} files; primary {primary.name} "
+                "(highest sharpness score); 1 vision call"
+            )
+        else:
+            assert primary_unit.sibling is not None
+            print(
+                f"  RAW+JPEG: primary {primary.name}; preview "
+                f"{primary_unit.sibling.name}; 1 vision call"
+            )
+
+        def write_stubs(primary_fm: dict[str, Any]) -> None:
+            # Invalidate the primary's old sidecar first. With --force, or when
+            # regrouping a folder indexed before grouping existed, it still
+            # exists; a crash between the stubs and the new primary sidecar
+            # would otherwise leave every member with a sidecar ("done")
+            # around a primary that never acknowledged the group. Mark, don't
+            # delete: the old assessment (and any user-written keys) survives
+            # the interruption, and the final primary write replaces it.
+            _mark_primary_incomplete(pipeline.sidecar_path(primary), group)
+            for m in members:
+                metadata, gps = member_meta[m]
+                place = ""
+                if gps.get("lat") is not None and ctx.geocoder is not None:
+                    place = ctx.geocoder.reverse(gps["lat"], gps["lon"])
+                fm = build_stub_frontmatter(
+                    m, root, metadata, gps, place, primary_fm, group, sharp_of[m]
+                )
+                stub = pipeline.sidecar_path(m)
+                if ctx.face_conn is not None:
+                    # This frame's assessment now lives on the primary: clear
+                    # any face rows an earlier per-file index left for it, so
+                    # faces.db mirrors the sidecars (named clusters survive).
+                    face_db.write_faces(ctx.face_conn, m, stub, [])
+                pipeline.serialize_sidecar(
+                    stub, fm, m.name, [("Description", stub_body(primary, group.kind))]
+                )
+
+        result = process_one_image(
+            primary,
+            root,
+            opts,
+            ctx,
+            extra_frontmatter={
+                "group": _group_block(group, primary, sharp_of[primary])
+            },
+            preview_override=preview,
+            before_sidecar=write_stubs,
+        )
+        if result.sidecar is not None:
+            result.stubs_written = len(members)
+        return result
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)

@@ -298,3 +298,73 @@ def test_main_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(_sys, "argv", ["fdx-xmp", str(tmp_path)])
     assert xmp_export.main() == 0
     assert (tmp_path / "DSC_A.xmp").exists()
+
+
+# --- burst groups: picks vs alternates ------------------------------------
+
+
+def test_subject_tags_mark_burst_pick_and_alternate() -> None:
+    """In Lightroom the photographer filters `burst-alternate` to sweep the
+    non-picks after confirming the picks. A RAW+JPEG pair is not a burst and
+    gets neither tag."""
+    pick = xmp_export._subject_tags(_fm(group={"kind": "burst", "primary": True}))
+    alt = xmp_export._subject_tags(
+        _fm(group={"kind": "burst", "primary": False, "primary_file": "DSC_2.RAF"})
+    )
+    pair = xmp_export._subject_tags(_fm(group={"kind": "raw_jpeg", "primary": True}))
+    assert "burst-primary" in pick and "burst-alternate" not in pick
+    assert "burst-alternate" in alt and "burst-primary" not in alt
+    assert "burst-primary" not in pair and "burst-alternate" not in pair
+    assert "lion" in pick  # the copied keywords are still exported
+
+
+def _write_group_sidecar(root: Path, name: str, group: dict[str, Any]) -> None:
+    import yaml
+
+    fm = {
+        "file": name,
+        "path": name,
+        "media_type": "image",
+        "rating": "keep",
+        "keywords": ["cheetah"],
+        "group": group,
+    }
+    (root / name).write_bytes(b"x")
+    (root / f"{name}.description.md").write_text(
+        "---\n" + yaml.safe_dump(fm, sort_keys=False) + "---\n\n## Description\n\n"
+        "**Scene:** A cheetah.\n"
+    )
+
+
+def test_run_burst_of_pairs_exports_one_pick_and_alternates_for_raws_only(
+    tmp_path: Path,
+) -> None:
+    """N RAW+JPEG pairs in one burst → N RAW .xmp files (one burst-primary, N-1
+    burst-alternate), nothing for the JPEG stubs, and an idempotent rerun."""
+    gid = "b_12345678"
+    for n in ("1", "2", "3"):
+        primary = n == "2"
+        block: dict[str, Any] = {"kind": "burst", "id": gid, "primary": primary}
+        if primary:
+            block["members"] = ["1.NEF", "1.jpg", "2.NEF", "2.jpg", "3.NEF", "3.jpg"]
+        else:
+            block["primary_file"] = "2.NEF"
+        _write_group_sidecar(tmp_path, f"{n}.NEF", block)
+        _write_group_sidecar(
+            tmp_path,
+            f"{n}.jpg",
+            {"kind": "burst", "id": gid, "primary": False, "primary_file": "2.NEF"},
+        )
+
+    summary = xmp_export.run(tmp_path)
+    assert summary.wrote == 3 and summary.skipped_nonraw == 3 and summary.conflicts == 0
+    xmps = sorted(tmp_path.glob("*.xmp"))
+    assert [x.name for x in xmps] == ["1.xmp", "2.xmp", "3.xmp"]
+    texts = {x.name: x.read_text() for x in xmps}
+    assert "burst-primary" in texts["2.xmp"] and "burst-alternate" not in texts["2.xmp"]
+    for n in ("1.xmp", "3.xmp"):
+        assert "burst-alternate" in texts[n] and "burst-primary" not in texts[n]
+    assert all("cheetah" in t for t in texts.values())
+
+    again = xmp_export.run(tmp_path)
+    assert again.wrote == 0 and again.up_to_date == 3

@@ -178,6 +178,33 @@ fdx /Volumes/SSD-photos --media images                 # stills only
 
 Photo sidecars add a `camera:` block, `dimensions`, `scene_type`, and `media_type: image`, and drop the video-only audio/duration fields.
 
+### Bursts and RAW+JPEG pairs
+
+Before the per-file loop, `fdx` groups a folder's stills so that a burst or a RAW+JPEG pair shares one assessment per group:
+
+- **RAW+JPEG pair:** a RAW and a same-stem camera JPEG (`.jpg`/`.jpeg` only) in the same folder. The RAW is the primary (the edit target); the JPEG is used as the preview, so no embedded-preview extraction is needed.
+- **Burst:** at least 3 frames in one folder with matching camera make/model (EXIF) and gaps of at most 2 s between consecutive frames (`DateTimeOriginal`). Separate shots taken that quickly therefore join one burst. Pairs collapse to their RAW before chaining, so a burst of pairs is one burst.
+
+Each group gets one vision call, on the member with the highest sharpness score (variance of the Laplacian over the rendered preview, computed locally; no model is asked to choose). That member is the group's **primary**; every other member is an **alternate** and gets a **stub sidecar**: its own file/EXIF/GPS/place fields, a copy of the primary's assessment (`rating`, `cull_reason`, `technical`, `lighting`, `scene_type`, `keywords`, ...), a `group:` block that names the primary, and a body that says so. Faces are not copied (no detection ran on that frame; an empty list means "not checked"), and any face rows an earlier per-file index left for that frame are cleared so `faces.db` mirrors the sidecars. The primary's block lists the members; a stub's block points at the primary:
+
+```yaml
+group:                     # on the primary
+  kind: burst              # burst | raw_jpeg
+  id: b_3f9a1c2e           # hash of the member file names
+  primary: true
+  members: [DSC_0141.NEF, DSC_0142.NEF, DSC_0143.NEF]
+  sharpness: 214.7         # this file's Laplacian score
+
+group:                     # on a stub
+  kind: burst
+  id: b_3f9a1c2e
+  primary: false
+  primary_file: DSC_0142.NEF
+  sharpness: 88.2
+```
+
+Vision calls for a run = groups + ungrouped files, never more than the file count. Incomplete or changed groups are reprocessed together, which repeats that group's call. Stubs cost two `exiftool` reads each and no model call. Files without a usable `DateTimeOriginal` or camera make/model never join a burst; they index individually. Grouping reads EXIF for the whole folder in one batched `exiftool` call; if that call fails, indexing stops and says so rather than silently paying for every file (`--no-group` indexes files individually). `fdx-master` counts ratings, keywords, faces, and the cull list over primaries only. `fdx-query --primary-only` hides stubs (by default an alternate still matches, e.g. by keyword). `fdx-xmp` tags burst members `burst-primary` / `burst-alternate` so Lightroom can filter the alternates. `--no-group` disables grouping for a run and skips existing sidecars like any run; to re-index a grouped folder individually run `fdx --force --no-group`. Thresholds are constants documented in [docs/tuning.md](docs/tuning.md).
+
 ## Getting ratings into Lightroom (`fdx-xmp`)
 
 The `.description.md` sidecars are the source of truth, but Lightroom can't read them. `fdx-xmp` projects the rating, keywords, and one-line caption into standard `.xmp` sidecars next to your RAW files, so an editor picks them up:
@@ -209,7 +236,7 @@ Album/person/date filters, the sidecar mirror layout, Photos-side frontmatter, a
 | Flag | Purpose |
 |---|---|
 | `--dry-run` | Show what would be processed; no API/model calls |
-| `--max-files N` | Stop after N clips (testing) |
+| `--max-files N` | Stop after N work items; each single file or group counts once (testing) |
 | `--force` | Re-process clips even if a sidecar exists |
 | `--whisper-model large-v3` | Higher quality, slower (default is large-v3-turbo) |
 | `--no-diarize` | Skip speaker diarization (faster; no HF_TOKEN needed) |
@@ -217,6 +244,7 @@ Album/person/date filters, the sidecar mirror layout, Photos-side frontmatter, a
 | `--no-geocode` | Skip Nominatim reverse geocoding (GPS still recorded) |
 | `--max-duration MINUTES` | Skip clips longer than N minutes (default: 30; 0 = no limit) |
 | `--frame-sampling diverse\|even` | How the 5 vision frames are picked (default: diverse; `even` = legacy evenly-spaced) |
+| `--no-group` | Disable grouping for this run (default: bursts and RAW+JPEG pairs share one assessment). Existing sidecars are skipped; `--force --no-group` re-indexes a grouped folder individually |
 | `--exclude PATTERN` | Skip paths matching substring (repeatable) |
 | `--backend cli\|api\|local` | Vision backend (see below) |
 | `--vision-model haiku\|sonnet` | Claude model for `cli`/`api`. Default `haiku` |
@@ -251,7 +279,9 @@ The `cli` backend runs `claude -p` locked down: `--permission-mode dontAsk` plus
 
 Already-indexed clips are skipped on re-runs (a sidecar existing = done). Ctrl-C any time; a restart picks up where it stopped. `--force` regenerates everything.
 
-Writes are atomic: every sidecar and index goes to a temp file and is renamed into place, so an interrupt mid-write never leaves a truncated, half-indexed file. Faces are committed before the sidecar (the sidecar is the "done" marker), so a crash in between just re-runs that file cleanly. A stale `.<name>.<pid>.tmp` file left by a killed run is inert (hidden from discovery) and safe to delete.
+Writes are atomic: every sidecar and index goes to a temp file and is renamed into place, so an interrupt mid-write never leaves a truncated, half-indexed file. Faces are committed before the sidecar (the sidecar is the "done" marker), so a crash in between just re-runs that file cleanly. A stale `.<name>.<random>.tmp` file left by a killed run is inert (hidden from discovery) and safe to delete.
+
+A burst or RAW+JPEG pair is done only when every member's sidecar belongs to that exact group (same `group.id`), or when every member's sidecar predates grouping. Stubs are written before the primary's sidecar, and the primary's previous sidecar (if any, e.g. under `--force`) is first marked `group.incomplete: true` (its content is kept), so an interrupt inside a group always leaves the group visibly unfinished. Incomplete or changed groups are reprocessed together next run; this repeats that group's vision call. A file whose folder was regrouped, so that its old stub no longer matches, is redone too.
 
 ## Companion tools
 
@@ -276,6 +306,7 @@ fdx-query /Volumes/SSD-2024 --place-contains California --language es
 - pyannote diarization degrades on heavy ambient noise (wind, music, crowd)
 - WhisperX runs on CPU on Apple Silicon
 - Face cluster IDs are temporary hashes until the `fdx-faces` labeling tool ships; embeddings are captured now, so no re-indexing will be needed
+- Bursts are inferred from EXIF: at least 3 frames in one folder with matching camera make/model and gaps of at most 2 s between consecutive frames. Separate shots taken that quickly join one burst (`--no-group` opts out). Two bodies of the same model in one folder look like one camera. Stub sidecars mirror the primary's assessment without the model having seen that frame; `fdx-photos` does not group yet (Apple Photos exposes native burst info; planned)
 
 ## Built by SimbaStack
 

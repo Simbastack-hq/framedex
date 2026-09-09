@@ -45,7 +45,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from framedex import face_db, frame_sampling, images, pipeline, runner
+from framedex import face_db, frame_sampling, grouping, images, pipeline, runner
 from framedex.parsing import (
     coerce_people_count,
     pick_diar_auth_kwarg,
@@ -1216,7 +1216,11 @@ def main() -> int:
         help="List what would be processed; no API/model calls",
     )
     parser.add_argument(
-        "--max-files", type=int, default=None, help="Stop after N files (for testing)"
+        "--max-files",
+        type=int,
+        default=None,
+        help="Stop after N work items; each single file or group counts once "
+        "(a group may write many sidecars). For testing.",
     )
     parser.add_argument(
         "--max-duration",
@@ -1321,6 +1325,16 @@ def main() -> int:
         "different, sharpest moments. 'even' is the legacy evenly-spaced "
         "sampling.",
     )
+    parser.add_argument(
+        "--no-group",
+        action="store_true",
+        help="Disable grouping for this run: index each still individually. By "
+        "default 3+ frames in one folder with matching camera make/model and "
+        "gaps of at most 2s, and RAW+JPEG pairs, share one assessment (one "
+        "vision call on the primary, stub sidecars for the rest). Existing "
+        "sidecars are skipped either way; use --force --no-group to re-index "
+        "a grouped folder individually.",
+    )
     args = parser.parse_args()
 
     root = Path(args.root).expanduser().resolve()
@@ -1332,7 +1346,10 @@ def main() -> int:
     # Enumerate each requested media type, drop already-indexed (unless --force),
     # and tag each survivor with its kind so the loop can route it. Both kinds
     # share the suffix-append sidecar scheme, so resume works identically.
-    todo: list[tuple[Path, str]] = []
+    # A work item is one vision call: a video, a lone image, or a whole group
+    # (burst / RAW+JPEG pair). Items are (Path, "video"|"image") or
+    # (MediaGroup, "group").
+    todo: list[tuple[Any, str]] = []
     n_found = 0
     if args.media in ("all", "videos"):
         vids = find_videos(root, args.exclude)
@@ -1344,13 +1361,55 @@ def main() -> int:
         imgs = images.find_images(root, args.exclude)
         n_found += len(imgs)
         print(f"  found {len(imgs)} image files")
-        itodo = imgs if args.force else [im for im in imgs if not has_sidecar(im)]
+        groups: list[grouping.MediaGroup] = []
+        singles = imgs
+        if args.no_group:
+            # Existence-only resume, like video: an existing grouped sidecar is
+            # left alone. Degrouping an indexed folder is `--force --no-group`.
+            itodo = (
+                singles if args.force else [im for im in singles if not has_sidecar(im)]
+            )
+        else:
+            try:
+                meta = grouping.read_group_metadata(imgs)
+            except grouping.GroupMetadataError as e:
+                sys.exit(f"{e} Use --no-group to index files individually.")
+            groups, singles = grouping.build_groups(imgs, meta)
+            if groups:
+                n_grouped = sum(len(grp.files) for grp in groups)
+                print(
+                    f"  grouped {n_grouped} files into {len(groups)} groups "
+                    "(bursts + RAW+JPEG pairs)"
+                )
+            # Resume is group-aware: a group is done only when every member's
+            # sidecar belongs to this exact group (or all predate grouping); a
+            # single is done only when its sidecar is not a leftover of an
+            # earlier grouping. Stubs are written before the primary, so an
+            # interrupted group is redone whole.
+            read = pipeline.read_sidecar_frontmatter
+            itodo = (
+                singles
+                if args.force
+                else [im for im in singles if not grouping.single_is_done(im, read)]
+            )
+            gtodo = (
+                groups
+                if args.force
+                else [grp for grp in groups if not grouping.group_is_done(grp, read)]
+            )
+            todo += [(grp, "group") for grp in gtodo]
         todo += [(im, "image") for im in itodo]
 
-    todo.sort(key=lambda t: t[0])
-    skipped = n_found - len(todo)
+    def _first_path(item: tuple[Any, str]) -> Path:
+        obj, kind = item
+        first: Path = obj.files[0] if kind == "group" else obj
+        return first
+
+    todo.sort(key=_first_path)
+    n_files_todo = sum(len(t[0].files) if t[1] == "group" else 1 for t in todo)
+    skipped = n_found - n_files_todo
     if skipped:
-        print(f"  skipping {skipped} already-indexed")
+        print(f"  skipping {skipped} already-indexed files")
     if args.max_files and len(todo) > args.max_files:
         todo = todo[: args.max_files]
         print(f"  limiting to {len(todo)} for this run")
@@ -1367,8 +1426,16 @@ def main() -> int:
     )
 
     if args.dry_run:
-        for path, kind in todo:
-            print(f"  would process [{kind}]: {path.relative_to(root)}")
+        for item, kind in todo:
+            if kind == "group":
+                first = item.files[0].relative_to(root)
+                label = grouping.KIND_LABELS[item.kind]
+                print(
+                    f"  would process [{label}: {len(item.files)} files -> 1 vision call]: "
+                    f"{first} .. {item.files[-1].name}"
+                )
+            else:
+                print(f"  would process [{kind}]: {item.relative_to(root)}")
         return 0
 
     # Drive-level context is loaded per-clip via load_context_for_clip() which
@@ -1418,14 +1485,22 @@ def main() -> int:
     )
 
     tally = runner.RunTally()
-    for i, (path, kind) in enumerate(todo, start=1):
-        rel = path.relative_to(root)
-        print(f"[{i}/{len(todo)}] {rel}")
+    for i, (item, kind) in enumerate(todo, start=1):
+        if kind == "group":
+            first = item.files[0].relative_to(root)
+            print(
+                f"[{i}/{len(todo)}] {first} .. {item.files[-1].name} "
+                f"({grouping.KIND_LABELS[item.kind]}: {len(item.files)} files)"
+            )
+        else:
+            print(f"[{i}/{len(todo)}] {item.relative_to(root)}")
         try:
             if kind == "video":
-                result = process_one_video(path, root, opts, ctx)
+                result = process_one_video(item, root, opts, ctx)
+            elif kind == "group":
+                result = images.process_group(item, root, opts, ctx)
             else:
-                result = images.process_one_image(path, root, opts, ctx)
+                result = images.process_one_image(item, root, opts, ctx)
             runner.record_result(
                 result, tally, backend=args.backend, max_duration_min=args.max_duration
             )
@@ -1440,7 +1515,15 @@ def main() -> int:
             traceback.print_exc()
             continue
 
-    summary = f"\nDone. Processed: {tally.processed}, Errors: {tally.errors}"
+    if tally.groups:
+        n_files = tally.groups + tally.stubs
+        summary = (
+            f"\nDone. Processed: {tally.processed} work items ({tally.groups} "
+            f"group{'s' if tally.groups != 1 else ''} covering {n_files} files), "
+            f"Errors: {tally.errors}"
+        )
+    else:
+        summary = f"\nDone. Processed: {tally.processed}, Errors: {tally.errors}"
     if tally.skipped_too_long:
         summary += f", Skipped (too long): {tally.skipped_too_long}"
     if tally.skipped_no_preview:

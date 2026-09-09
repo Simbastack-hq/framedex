@@ -205,6 +205,33 @@ keywords: [giraffe, waterhole, drinking, savanna]
 RAW is read from the embedded full-res JPEG preview (no libraw). Requires the
 `[images]` extra (`Pillow` + `pillow-heif`); video indexing needs `[video]`.
 
+**Bursts + RAW/JPEG pairs (folder mode, on by default).** Before the per-file
+loop, `fdx` pairs a RAW with its same-stem camera JPEG (RAW = primary, JPEG =
+preview source) and chains at least 3 frames in one folder with matching camera
+make/model and gaps of at most 2s into a burst (separate shots taken that
+quickly join it). Each group shares one assessment: one vision call on the
+primary (highest local Laplacian sharpness score, no model choice); every
+alternate gets a stub sidecar that copies the primary's assessment fields (not
+faces; an empty face list means "not checked") and carries a `group:` block
+(`kind`, `id`, `primary`, `primary_file` or `members`, `sharpness`). A group is
+done only when every member's sidecar belongs to it (or every member's sidecar
+predates grouping: legacy per-file assessments stay valid until `--force`);
+incomplete or changed groups are reprocessed together (repeating that group's
+call). Vision calls per
+run = groups + ungrouped files.
+
+```bash
+fdx /Volumes/SSD-photos --media images --dry-run      # shows [burst: 12 files -> 1 vision call] items
+fdx /Volumes/SSD-photos --media images --no-group     # no grouping this run (existing sidecars still skipped)
+fdx /Volumes/SSD-photos --media images --force --no-group   # re-index a grouped folder individually
+fdx-query /Volumes/SSD-photos --rating keep --primary-only   # hide alternates
+```
+
+`fdx-master` counts ratings/keywords/faces/cull list over primaries only;
+`fdx-xmp` tags members `burst-primary` / `burst-alternate`. `fdx-photos`
+accepts `--no-group` for parity but does not group yet. Thresholds:
+`docs/tuning.md`.
+
 ### Apple Photos library
 
 If the library is local on disk (no iCloud, or iCloud without Optimize Storage),

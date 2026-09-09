@@ -431,6 +431,14 @@ def run_query(
             n_bad_path += 1
             continue
         rec["_sidecar_path"] = str(real)  # the canonical file, never an alias
+        # Folder-mode sidecars sit next to their original: that adjacency is
+        # ground truth, so a query rooted anywhere above the folder (or at a
+        # subfolder of the indexing root) still resolves the right file. The
+        # stored `path` only decides when no adjacent original exists
+        # (Photos-mirror sidecars, moved files).
+        adjacent = real.with_name(real.name[: -len(SIDECAR_SUFFIX)])
+        if adjacent.is_file():
+            rec["path"] = str(adjacent)
         # Sidecars store `path` relative to the scan root (portable). Resolve it
         # back to an absolute path so the printed output is usable for piping
         # (xargs, ffplay, etc.). Older sidecars with absolute paths pass through.

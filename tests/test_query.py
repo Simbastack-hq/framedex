@@ -513,3 +513,24 @@ def test_run_query_survives_a_nul_byte_in_a_path(tmp_path: Path) -> None:
     res = run_query(tmp_path, Filters(), require_media_under_root=True)
     assert [Path(r["path"]).name for r in res.records] == ["ok.NEF"]
     assert res.skipped_malformed == 1
+
+
+def test_run_query_prefers_the_original_next_to_the_sidecar(tmp_path: Path) -> None:
+    """Sidecars store `path` relative to the root they were indexed from. A
+    query rooted at a parent (or a subfolder) must still find the file: the
+    original next to the sidecar is ground truth in folder mode."""
+    from framedex.query import Filters, run_query
+
+    trip = tmp_path / "trip"
+    trip.mkdir()
+    (trip / "a.NEF").write_bytes(b"x")
+    # Indexed with `fdx trip`: path is relative to trip/, not to tmp_path.
+    (trip / "a.NEF.description.md").write_text(
+        "---\nfile: a.NEF\npath: a.NEF\nrating: keep\n---\n"
+    )
+    res = run_query(tmp_path, Filters(), require_media_under_root=True)
+    assert [r["path"] for r in res.records] == [str(trip / "a.NEF")]
+    # A moved-away original falls back to the stored path (still relative to root).
+    (trip / "a.NEF").unlink()
+    res = run_query(tmp_path, Filters())
+    assert [r["path"] for r in res.records] == [str(tmp_path / "a.NEF")]

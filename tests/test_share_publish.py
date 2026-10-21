@@ -213,9 +213,9 @@ def test_build_objects_for_a_bucket(tmp_path: Path) -> None:
         f"g/trip-abc/thumbs/{file}",
     }
     page = objs["g/trip-abc"].data.decode()
-    assert f'src="trip-abc/thumbs/{file}"' in page  # resolves from <base>/g/
+    assert f'href="trip-abc/photos/{file}"' in page  # resolves from <base>/g/
     index = objs["g/trip-abc/index.html"].data.decode()
-    assert f'src="thumbs/{file}"' in index
+    assert f'href="photos/{file}"' in index
     assert f"https://p.ex/g/trip-abc/thumbs/{file}" in page  # og:image
     assert objs["g/trip-abc"].content_type == pub.HTML_TYPE
     assert objs[f"g/trip-abc/photos/{file}"].cache_control == pub.CACHE_IMMUTABLE

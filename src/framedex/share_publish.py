@@ -67,9 +67,9 @@ _SAFE_PREFIX = re.compile(r"^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$")
 
 CONFIG_TEMPLATE = """\
 # fdx share publish target (see docs/share.md). base_url is where the
-# target is served from; fdx.art is the planned domain, not live yet.
+# target is served from (framedex.art: galleries under /g/, DNS not pointed yet).
 target: ssh://deploy@YOUR-SERVER:/srv/fdx-galleries
-base_url: https://fdx.art
+base_url: https://framedex.art
 prefix: g                     # galleries live under <base_url>/g/ ("" for none)
 
 # Cloudflare R2 instead (credentials from FDX_SHARE_ACCESS_KEY_ID and

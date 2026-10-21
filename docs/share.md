@@ -18,7 +18,7 @@ Picked     30 of 41 photos  ·  Narok · November 2025
 Rendering  30/30
 Editor     http://127.0.0.1:60428/s0jOVoWuvxtR6OUn3ufhwbI7/
            Ctrl-C to stop
-Published  https://fdx.art/g/narok-2025-11-k3j9x2q7m4pt/
+Published  https://framedex.art/g/narok-2025-11-k3j9x2q7m4pt/
 ```
 
 ## The editor
@@ -112,14 +112,15 @@ passcode, or switching the toggle off (`--no-passcode`) on purpose.
 ## Publishing
 
 The config lives at `~/.config/framedex/share.yaml` (or `$FDX_SHARE_CONFIG`,
-or `--config`). `fdx.art` is the planned domain and is not live yet; use
-whatever host you serve from.
+or `--config`). `framedex.art` is registered for galleries (under `/g/`;
+the bare root is left for a landing page), but its DNS isn't pointed at a
+server yet; use whatever host you serve from.
 
 **Your own server (rsync over SSH, served by Caddy)**, the default:
 
 ```yaml
 target: ssh://deploy@your-server:/srv/fdx-galleries
-base_url: https://fdx.art
+base_url: https://framedex.art
 prefix: g
 ```
 
@@ -136,7 +137,7 @@ target: r2                       # or s3 with endpoint: and region:
 account_id: 0123456789abcdef0123456789abcdef
 bucket: galleries
 prefix: g
-base_url: https://fdx.art        # where the bucket is served
+base_url: https://framedex.art        # where the bucket is served
 ```
 
 Keys come from `FDX_SHARE_ACCESS_KEY_ID` / `FDX_SHARE_SECRET_ACCESS_KEY` (or

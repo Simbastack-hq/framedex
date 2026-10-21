@@ -125,7 +125,7 @@ Publish button that ends on a success sheet with the link and Copy.
 ## Publish targets
 
 Config `~/.config/framedex/share.yaml` (or `$FDX_SHARE_CONFIG`/`--config`);
-`base_url` e.g. `https://fdx.art` (planned domain, not live).
+`base_url` e.g. `https://framedex.art` (registered 2026-10-20; DNS not pointed yet).
 - `ssh` (NJ's pick: the Hetzner box): `target: ssh://user@host:/srv/fdx-galleries`.
   The gallery is staged locally as `<prefix>/<slug>/...` and sent with
   `rsync -rt --delete` filtered to that one gallery's directory, so a
@@ -158,5 +158,5 @@ editor, expiry, analytics, custom themes, a hosted multi-tenant service.
 
 ## Open questions for NJ
 
-- Domain: fdx.art (being bought) vs a subdomain; and lab vs prod Hetzner box.
+- Domain: framedex.art (registered 2026-10-20), galleries under `/g/`, the root left for a landing page; DNS and which server (lab vs prod) still open.
 - Unlisted-only by default, passcode opt-in: confirm that default.

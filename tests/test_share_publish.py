@@ -82,7 +82,7 @@ def test_ssh_target_from_a_url() -> None:
     cfg = pub.parse_config(
         {
             "target": "ssh://deploy@lab:/srv/fdx-galleries/",
-            "base_url": "https://fdx.art/",
+            "base_url": "https://framedex.art/",
             "prefix": "g",
         },
         CREDS,
@@ -92,7 +92,7 @@ def test_ssh_target_from_a_url() -> None:
         "deploy@lab",
         "/srv/fdx-galleries",
     )
-    assert (cfg.base_url, cfg.prefix) == ("https://fdx.art", "g")
+    assert (cfg.base_url, cfg.prefix) == ("https://framedex.art", "g")
     assert pub.parse_ssh_target("ssh://lab/srv/g") == ("lab", PurePosixPath("/srv/g"))
 
 
@@ -222,18 +222,18 @@ def test_config_path_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _r2() -> pub.PublishConfig:
     return pub.PublishConfig(
-        "r2", "https://fdx.art", "g", "bucket", "https://e.r2", "auto"
+        "r2", "https://framedex.art", "g", "bucket", "https://e.r2", "auto"
     )
 
 
 def test_links() -> None:
-    assert pub.link_url(_r2(), "mara-abc") == "https://fdx.art/g/mara-abc"
-    d = pub.PublishConfig("dir", "https://fdx.art", "", path=Path("/srv"))
-    assert pub.link_url(d, "mara-abc") == "https://fdx.art/mara-abc/"
+    assert pub.link_url(_r2(), "mara-abc") == "https://framedex.art/g/mara-abc"
+    d = pub.PublishConfig("dir", "https://framedex.art", "", path=Path("/srv"))
+    assert pub.link_url(d, "mara-abc") == "https://framedex.art/mara-abc/"
     ssh = pub.PublishConfig(
-        "ssh", "https://fdx.art", "g", path=Path("/srv"), host="lab"
+        "ssh", "https://framedex.art", "g", path=Path("/srv"), host="lab"
     )
-    assert pub.link_url(ssh, "mara-abc") == "https://fdx.art/g/mara-abc/"
+    assert pub.link_url(ssh, "mara-abc") == "https://framedex.art/g/mara-abc/"
 
 
 def _site(
@@ -259,7 +259,7 @@ def test_artifact_is_shown_photos_then_pages(tmp_path: Path) -> None:
         site,
         gallery,
         slug="trip-abc",
-        page_url="https://fdx.art/g/trip-abc",
+        page_url="https://framedex.art/g/trip-abc",
         page_object=True,
     )
     a = site.photos["a.JPG"].name
@@ -270,7 +270,7 @@ def test_artifact_is_shown_photos_then_pages(tmp_path: Path) -> None:
     page = objs[-1].data.decode()
     assert f'href="trip-abc/photos/{a}"' in page  # resolves from <base>/g/
     assert f'href="photos/{a}"' in objs[2].data.decode()
-    assert f"https://fdx.art/g/trip-abc/thumbs/{a}" in page  # og:image
+    assert f"https://framedex.art/g/trip-abc/thumbs/{a}" in page  # og:image
     assert objs[0].cache_control == pub.CACHE_IMMUTABLE
     assert (
         objs[2].content_type == pub.HTML_TYPE
@@ -425,7 +425,7 @@ def test_s3_delete_treats_missing_as_done(monkeypatch: pytest.MonkeyPatch) -> No
 def _dir_config(tmp_path: Path) -> Path:
     cfg = tmp_path / "share.yaml"
     cfg.write_text(
-        f"target: dir\npath: {tmp_path / 'www'}\nbase_url: https://fdx.art\nprefix: g\n"
+        f"target: dir\npath: {tmp_path / 'www'}\nbase_url: https://framedex.art\nprefix: g\n"
     )
     return cfg
 
@@ -459,7 +459,7 @@ def test_publish_then_edit_then_unpublish(
     link = json.loads((work / pub.STATE_FILE).read_text())["links"][0]
     assert link["slug"].startswith("mara-trip-") and copied == [link["url"]]
     assert (
-        link["url"] == f"https://fdx.art/g/{link['slug']}/"
+        link["url"] == f"https://framedex.art/g/{link['slug']}/"
         and link["protected"] is False
     )
     www = tmp_path / "www" / "g" / link["slug"]
@@ -531,7 +531,7 @@ def test_confirm_sees_the_summary_and_can_cancel(tmp_path: Path) -> None:
             passcode=None,
             confirm=no,
         )
-    assert "1 photos" in seen[0] and "https://fdx.art/g/t-" in seen[0]
+    assert "1 photos" in seen[0] and "https://framedex.art/g/t-" in seen[0]
     assert not (tmp_path / "www").exists()
     assert not (tmp_path / "work" / pub.STATE_FILE).exists()  # nothing recorded
 

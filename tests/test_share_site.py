@@ -97,7 +97,7 @@ def test_asset_prefix_and_link_preview_for_the_published_page() -> None:
         _gallery(),
         photos,
         asset_prefix="mara-abc/",
-        page_url="https://fdx.art/g/mara-abc",
+        page_url="https://framedex.art/g/mara-abc",
     )
     wide = photos["wide.JPG"].name
     assert (
@@ -105,7 +105,7 @@ def test_asset_prefix_and_link_preview_for_the_published_page() -> None:
     )
     assert f'href="mara-abc/photos/{wide}"' in html
     assert (
-        f'<meta property="og:image" content="https://fdx.art/g/mara-abc/thumbs/{wide}">'
+        f'<meta property="og:image" content="https://framedex.art/g/mara-abc/thumbs/{wide}">'
         in html
     )
 

@@ -95,7 +95,7 @@ def test_locked_artifact_holds_nothing_readable(tmp_path: Path) -> None:
         site,
         gallery,
         slug="t-abc",
-        page_url="https://fdx.art/g/t-abc",
+        page_url="https://framedex.art/g/t-abc",
         passcode="leopard2025",
         page_object=True,
     )

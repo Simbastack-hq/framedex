@@ -8,6 +8,12 @@ a directory of ciphertext.
 Nothing here runs automatically. These are the steps to do once, by hand,
 on the box you choose.
 
+**Status:** `framedex.art` is registered, but its DNS isn't pointed at any
+server yet. Which server hosts it, and its A/AAAA records, are the owner's
+call; nothing in this repo deploys anything or changes any server or DNS.
+Galleries live under `/g/` (`https://framedex.art/g/<name>-<random>/`); the
+bare root is left for a future landing page.
+
 ## 1. The folder and the account
 
 ```bash
@@ -36,18 +42,21 @@ sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 sudo systemctl reload caddy
 ```
 
-The block serves static files only: pages revalidate (`no-cache`), photos
+The block serves galleries under `/g/` only and answers everything else,
+the bare root included, with a 404 until a landing page goes there. Under
+`/g/` it serves static files only: pages revalidate (`no-cache`), photos
 and their encrypted twins are cached for a year (`immutable`; their names
 change whenever their content does), every response carries
 `X-Robots-Tag: noindex, nofollow, noimageindex, noarchive` and
-`Referrer-Policy: no-referrer`, there is no front page and no directory
-listing, dotfiles (rsync's in-flight temp files) are never served, and
-errors are a bare status code. Caddy gets the TLS certificate on its own
+`Referrer-Policy: no-referrer`, there is no directory listing, dotfiles
+(rsync's in-flight temp files) are never served, and errors are a bare
+status code. Caddy gets the TLS certificate on its own
 once DNS points at the box.
 
 ## 3. DNS
 
-An `A` (and `AAAA`) record for the domain pointing at the server.
+An `A` (and `AAAA`) record for the domain pointing at the server. For
+`framedex.art` this hasn't been done yet (see Status above).
 
 ## 4. Your laptop
 
@@ -55,14 +64,14 @@ An `A` (and `AAAA`) record for the domain pointing at the server.
 
 ```yaml
 target: ssh://deploy@your-server:/srv/fdx-galleries
-base_url: https://fdx.art
+base_url: https://framedex.art
 prefix: g
 ```
 
 Then `fdx share <folder>` and Publish. Check a published gallery:
 
 ```bash
-curl -sI https://fdx.art/g/<name>-<random>/ | grep -iE 'x-robots|cache-control'
+curl -sI https://framedex.art/g/<name>-<random>/ | grep -iE 'x-robots|cache-control'
 ```
 
 ## What a publish can touch

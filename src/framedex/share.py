@@ -17,8 +17,11 @@ passcodes in `share_lock`, uploads in `share_publish`.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 from collections import Counter
@@ -78,6 +81,12 @@ LINK_TOKEN_LEN = 12
 ADMIN_WORDS = {"ward", "county", "district", "municipality", "province", "constituency"}
 EN_DASH = "\u2013"
 SELECTION_FILE = "selection.txt"
+# fdx develop's file convention (AI RAW edits, a separate command): an edited
+# copy of <dir>/<raw> is <root>/developed/<dir>/<stem>.jpg (or <file name>.jpg
+# when two RAWs in a folder share a stem) with a <same>.develop.json record.
+# fdx share reads those files; it never imports or runs fdx develop's code.
+DEVELOPED_DIR = "developed"
+DEVELOP_RECORD = ".develop.json"
 SHARE_DIR = "_share"
 
 _EPOCH = datetime(1970, 1, 1)
@@ -963,6 +972,41 @@ def in_date_range(p: Photo, start: date | None, end: date | None) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def is_develop_output(path: Path) -> bool:
+    """An fdx develop edited copy (it has a .develop.json record beside it):
+    the edit of a photo already in the folder, never a photo of its own."""
+    return path.with_name(path.stem + DEVELOP_RECORD).is_file()
+
+
+def developed_copy(original: Path, folder: Path) -> Path | None:
+    """The fdx develop edit of `original`, if one exists that can be trusted:
+    its record says done, names this exact original (same name, size and
+    mtime, so an original changed since is never shown with a stale edit),
+    and the JPEG's SHA-256 is the one recorded (no hand-edited or truncated
+    file). None otherwise; the original is used."""
+    try:
+        rel = original.relative_to(folder)
+        st = original.stat()
+    except (ValueError, OSError):
+        return None
+    base = folder / DEVELOPED_DIR / rel.parent
+    source = {"name": original.name, "size": st.st_size, "mtime_ns": st.st_mtime_ns}
+    for name in (original.stem, original.name):  # fdx develop's two namings
+        jpg, record = base / f"{name}.jpg", base / f"{name}{DEVELOP_RECORD}"
+        try:
+            rec = json.loads(record.read_text(encoding="utf-8"))
+            if not isinstance(rec, dict) or rec.get("status") != "done":
+                continue
+            if rec.get("source") != source:
+                continue
+            if rec.get("output_sha256") != hashlib.sha256(jpg.read_bytes()).hexdigest():
+                continue
+        except (OSError, ValueError):
+            continue
+        return jpg
+    return None
+
+
 def load_photos(folder: Path) -> list[Photo]:
     from framedex.query import Filters, run_query
 
@@ -971,8 +1015,13 @@ def load_photos(folder: Path) -> list[Photo]:
     for rec in result.records:
         rec["_subjects"] = _subjects_sentence(Path(str(rec.get("_sidecar_path"))))
         p = photo_from_record(rec, folder)
-        if p is not None and SHARE_DIR not in PurePosixPath(p.rel).parts:
-            out.append(p)
+        if (
+            p is None
+            or SHARE_DIR in PurePosixPath(p.rel).parts
+            or is_develop_output(p.path)
+        ):
+            continue
+        out.append(p)
     return out
 
 
@@ -992,7 +1041,11 @@ def unindexed_images(folder: Path) -> list[Path]:
     from framedex.images import find_images
     from framedex.pipeline import has_sidecar
 
-    return [p for p in find_images(folder, []) if not has_sidecar(p)]
+    return [
+        p
+        for p in find_images(folder, [])
+        if not has_sidecar(p) and not is_develop_output(p)
+    ]
 
 
 def _date_arg(text: str) -> date:
@@ -1084,6 +1137,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-open", action="store_true", help="Don't open the browser."
     )
+    parser.add_argument(
+        "--edit",
+        action="store_true",
+        help="Edit the RAWs first with fdx develop (if installed); its edited copies "
+        "are used for the web copies.",
+    )
+    parser.add_argument(
+        "--examples",
+        metavar="DIR",
+        help="With --edit: RAW + finished-JPEG pairs that show your style "
+        "(passed to fdx develop).",
+    )
     pub = parser.add_argument_group("publishing without the editor")
     pub.add_argument(
         "--publish",
@@ -1126,6 +1191,25 @@ def _run_indexer(folder: Path, backend: str | None) -> int:
     return subprocess.run(cmd).returncode
 
 
+def _run_develop(folder: Path, examples: str | None) -> int:
+    """Run fdx develop on the folder before the pick. It is a separate
+    command (framedex's AI RAW editing); fdx share only reads its files."""
+    exe = shutil.which("fdx-develop")
+    if exe is None:
+        return _err(
+            "--edit needs fdx develop (framedex's AI RAW editing), which isn't installed "
+            "here; install a framedex that includes it, or drop --edit"
+        )
+    cmd = [exe, str(folder)]
+    if examples:
+        cmd += ["--examples", str(Path(examples).expanduser())]
+    print("Editing    " + " ".join(["fdx-develop", *cmd[1:]]), flush=True)
+    code = subprocess.run(cmd).returncode
+    if code != 0:
+        return _err(f"fdx develop stopped (exit {code}); see above")
+    return 0
+
+
 def _err(msg: str) -> int:
     print(f"error: {msg}", file=sys.stderr)
     return 1
@@ -1159,6 +1243,11 @@ def main(argv: list[str] | None = None) -> int:
         return share_publish.unpublish_cli(
             work, config=args.config, assume_yes=args.yes
         )
+
+    if args.examples and not args.edit:
+        return _err("--examples only applies with --edit")
+    if args.edit and _run_develop(folder, args.examples) != 0:
+        return 1
 
     if (
         args.index
@@ -1246,6 +1335,17 @@ def main(argv: list[str] | None = None) -> int:
             "outside the photos, or leave the default _share/ folder"
         )
 
+    # Each web copy is made from the photo's fdx develop edit when a trusted
+    # one exists, else from the original.
+    sources = {
+        rel: developed_copy(path, folder) or path for rel, path in originals.items()
+    }
+    edited = sum(1 for rel in sources if sources[rel] != originals[rel])
+    if edited:
+        print(
+            f"Edited     {edited} of {len(sources)} photos use their fdx develop copy"
+        )
+
     tty = sys.stdout.isatty()
 
     def progress(n: int, total: int) -> None:
@@ -1257,7 +1357,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Rendered   {total} photos", flush=True)
 
     site = share_site.render_site(
-        gallery, originals, work, keep_gps=args.keep_gps, progress=progress
+        gallery, sources, work, keep_gps=args.keep_gps, progress=progress
     )
     if args.verbose:
         print(f"Work       {work}  ({site.total_bytes / 1e6:.1f} MB rendered)")

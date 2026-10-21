@@ -83,6 +83,22 @@ on a phone every photo runs edge to edge. Each photo's alt text is a short
 line from its sidecar (`An adult leopard crossing the road.`); `--captions`
 also shows those lines under the photos.
 
+## Edited copies (fdx develop)
+
+`fdx share <folder> --edit` first runs `fdx develop` on the folder (framedex's
+AI RAW editing, a separate command; `--examples DIR` passes your before/after
+pairs to it). Without it installed, `--edit` stops with one line saying so.
+
+With or without `--edit`, a web copy is made from a photo's edited copy
+whenever fdx develop left a trustworthy one: `developed/<dir>/<name>.jpg`
+whose `.develop.json` record says `done`, names this exact original (same
+name, size and modification time) and matches the JPEG's SHA-256. Anything
+else (an unfinished edit, an original changed since, a file changed after
+fdx develop wrote it) falls back to the original. fdx share reads those
+files only; it never imports or runs fdx develop's code, and the edited
+copies never show up as photos of their own. The editor shows the edited
+copy as the photo; nothing else changes.
+
 ## Passcodes
 
 Turn on **Passcode** in the editor (or `fdx share <folder> --publish

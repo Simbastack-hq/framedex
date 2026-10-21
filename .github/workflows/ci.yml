@@ -71,4 +71,4 @@ jobs:
         run: uv run --no-sync mypy src/framedex tests --ignore-missing-imports
 
       - name: pytest (fdx share)
-        run: uv run --no-sync pytest tests/test_share.py tests/test_share_site.py tests/test_share_lock.py tests/test_share_publish.py tests/test_share_edit.py tests/test_trips.py
+        run: uv run --no-sync pytest tests/test_share.py tests/test_share_site.py tests/test_share_lock.py tests/test_share_publish.py tests/test_share_edit.py tests/test_share_develop.py tests/test_trips.py

@@ -32,7 +32,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from framedex import grouping
-from framedex.images import IMAGE_EXTENSIONS
+from framedex.images import IMAGE_EXTENSIONS, RAW_EXTENSIONS
 from framedex.parsing import is_user_rated
 
 # Default size of a gallery: enough to tell a weekend, few enough that family
@@ -81,10 +81,11 @@ LINK_TOKEN_LEN = 12
 ADMIN_WORDS = {"ward", "county", "district", "municipality", "province", "constituency"}
 EN_DASH = "\u2013"
 SELECTION_FILE = "selection.txt"
-# fdx develop's file convention (AI RAW edits, a separate command): an edited
-# copy of <dir>/<raw> is <root>/developed/<dir>/<stem>.jpg (or <file name>.jpg
-# when two RAWs in a folder share a stem) with a <same>.develop.json record.
-# fdx share reads those files; it never imports or runs fdx develop's code.
+# fdx-develop's file convention (AI RAW edits, a separate command): an edited
+# copy of <dir>/<raw> is <root>/developed/<dir>/<name>.jpg with a
+# <name>.develop.json record, <name> as in `develop_names`. fdx share reads
+# those files and never imports fdx-develop's code (--edit only runs the
+# command).
 DEVELOPED_DIR = "developed"
 DEVELOP_RECORD = ".develop.json"
 SHARE_DIR = "_share"
@@ -978,33 +979,59 @@ def is_develop_output(path: Path) -> bool:
     return path.with_name(path.stem + DEVELOP_RECORD).is_file()
 
 
+def develop_names(raw_names: list[str]) -> dict[str, str]:
+    """fdx develop's output names for the RAWs of one folder: the stem, or the
+    full file name for every RAW whose name would clash (case-insensitively)
+    with another's, repeated until nothing clashes (A.NEF + A.DNG ->
+    'A.NEF', 'A.DNG'; then A.NEF.DNG -> 'A.NEF.DNG')."""
+    names = {n: Path(n).stem for n in raw_names}
+    while True:
+        groups: dict[str, list[str]] = {}
+        for n in raw_names:
+            groups.setdefault(names[n].lower(), []).append(n)
+        clashes = [n for group in groups.values() if len(group) > 1 for n in group]
+        if not clashes:
+            return names
+        for n in clashes:
+            names[n] = n
+
+
 def developed_copy(original: Path, folder: Path) -> Path | None:
-    """The fdx develop edit of `original`, if one exists that can be trusted:
-    its record says done, names this exact original (same name, size and
-    mtime, so an original changed since is never shown with a stale edit),
-    and the JPEG's SHA-256 is the one recorded (no hand-edited or truncated
-    file). None otherwise; the original is used."""
+    """The fdx develop edit of a RAW `original`, if one exists that can be
+    trusted: at the path fdx develop writes today (so an older edit left
+    under a superseded name is never picked up), its record says done, names
+    this exact original (same name, size and mtime, so an original changed
+    since is never shown with a stale edit), and the JPEG's SHA-256 is the
+    one recorded. None otherwise; the original is used."""
+    if original.suffix.lower() not in RAW_EXTENSIONS:
+        return None  # fdx develop only edits RAWs
     try:
         rel = original.relative_to(folder)
         st = original.stat()
+        siblings = [
+            p.name
+            for p in original.parent.iterdir()
+            if p.is_file()
+            and not p.name.startswith(".")
+            and p.suffix.lower() in RAW_EXTENSIONS
+        ]
     except (ValueError, OSError):
         return None
+    name = develop_names(siblings).get(original.name, original.stem)
     base = folder / DEVELOPED_DIR / rel.parent
+    jpg, record = base / f"{name}.jpg", base / f"{name}{DEVELOP_RECORD}"
     source = {"name": original.name, "size": st.st_size, "mtime_ns": st.st_mtime_ns}
-    for name in (original.stem, original.name):  # fdx develop's two namings
-        jpg, record = base / f"{name}.jpg", base / f"{name}{DEVELOP_RECORD}"
-        try:
-            rec = json.loads(record.read_text(encoding="utf-8"))
-            if not isinstance(rec, dict) or rec.get("status") != "done":
-                continue
-            if rec.get("source") != source:
-                continue
-            if rec.get("output_sha256") != hashlib.sha256(jpg.read_bytes()).hexdigest():
-                continue
-        except (OSError, ValueError):
-            continue
-        return jpg
-    return None
+    try:
+        rec = json.loads(record.read_text(encoding="utf-8"))
+        if not isinstance(rec, dict) or rec.get("status") != "done":
+            return None
+        if rec.get("source") != source:
+            return None
+        if rec.get("output_sha256") != hashlib.sha256(jpg.read_bytes()).hexdigest():
+            return None
+    except (OSError, ValueError):
+        return None
+    return jpg
 
 
 def load_photos(folder: Path) -> list[Photo]:
@@ -1197,14 +1224,17 @@ def _run_develop(folder: Path, examples: str | None) -> int:
     exe = shutil.which("fdx-develop")
     if exe is None:
         return _err(
-            "--edit needs fdx develop (framedex's AI RAW editing), which isn't installed "
-            "here; install a framedex that includes it, or drop --edit"
+            "--edit needs fdx-develop (framedex's AI RAW editing), which isn't on PATH; "
+            "install a framedex that includes it, or drop --edit"
         )
     cmd = [exe, str(folder)]
     if examples:
         cmd += ["--examples", str(Path(examples).expanduser())]
     print("Editing    " + " ".join(["fdx-develop", *cmd[1:]]), flush=True)
-    code = subprocess.run(cmd).returncode
+    try:
+        code = subprocess.run(cmd).returncode
+    except OSError as e:
+        return _err(f"fdx-develop could not start ({e})")
     if code != 0:
         return _err(f"fdx develop stopped (exit {code}); see above")
     return 0

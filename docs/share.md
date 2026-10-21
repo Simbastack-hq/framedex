@@ -83,21 +83,24 @@ on a phone every photo runs edge to edge. Each photo's alt text is a short
 line from its sidecar (`An adult leopard crossing the road.`); `--captions`
 also shows those lines under the photos.
 
-## Edited copies (fdx develop)
+## Edited copies (fdx-develop)
 
-`fdx share <folder> --edit` first runs `fdx develop` on the folder (framedex's
-AI RAW editing, a separate command; `--examples DIR` passes your before/after
-pairs to it). Without it installed, `--edit` stops with one line saying so.
+`fdx share <folder> --edit` first runs `fdx-develop` on the folder
+(framedex's AI RAW editing, a separate command; `--examples DIR` passes
+your before/after pairs to it). If `fdx-develop` isn't on PATH, `--edit`
+stops with one line saying so.
 
-With or without `--edit`, a web copy is made from a photo's edited copy
-whenever fdx develop left a trustworthy one: `developed/<dir>/<name>.jpg`
-whose `.develop.json` record says `done`, names this exact original (same
-name, size and modification time) and matches the JPEG's SHA-256. Anything
-else (an unfinished edit, an original changed since, a file changed after
-fdx develop wrote it) falls back to the original. fdx share reads those
-files only; it never imports or runs fdx develop's code, and the edited
-copies never show up as photos of their own. The editor shows the edited
-copy as the photo; nothing else changes.
+With or without `--edit`, a RAW's web copy is made from its edited copy
+whenever fdx-develop left a trustworthy one in its default output folder:
+`developed/<dir>/<name>.jpg`, at the name fdx-develop uses today (the stem,
+or the full file name when two RAWs in a folder would clash), whose
+`.develop.json` record says `done`, names this exact original (same name,
+size and modification time) and matches the JPEG's SHA-256. Anything else
+(an unfinished edit, an original changed since, a file changed after
+fdx-develop wrote it, an edit under a superseded name) falls back to the
+original. fdx share reads those files and never imports fdx-develop's code;
+edited copies with a record never show up as photos of their own. The
+editor shows the edited copy as the photo; nothing else changes.
 
 ## Passcodes
 

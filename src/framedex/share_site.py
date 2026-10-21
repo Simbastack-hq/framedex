@@ -184,11 +184,12 @@ class Site:
         return sum(f.stat().st_size for f in self.root.rglob("*") if f.is_file())
 
 
-def render_name(rel: str, original: Path, keep_gps: bool) -> str:
-    """Content-addressed output name: changes when the original, the GPS
-    choice, or the encoder settings change; reveals nothing about the file."""
-    st = original.stat()
-    key = f"{RENDER_VERSION}|{rel}|{st.st_mtime_ns}|{st.st_size}|{int(keep_gps)}"
+def render_name(rel: str, source: Path, keep_gps: bool) -> str:
+    """Content-addressed output name: changes when the file it is rendered
+    from (the original, or its edited copy) changes or is swapped, or the
+    GPS choice or encoder settings change; reveals nothing about the file."""
+    st = source.stat()
+    key = f"{RENDER_VERSION}|{rel}|{source.name}|{st.st_mtime_ns}|{st.st_size}|{int(keep_gps)}"
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16] + ".jpg"
 
 
@@ -277,14 +278,15 @@ def _owned_renders(work: Path) -> set[str]:
 
 def render_site(
     gallery: Gallery,
-    originals: dict[str, Path],
+    sources: dict[str, Path],
     work: Path,
     *,
     keep_gps: bool = False,
     progress: Callable[[int, int], None] | None = None,
 ) -> Site:
     """Write work/site/{index.html, photos/, thumbs/}: web copies of every
-    photo in the gallery, hidden ones included (the editor can restore them
+    photo in the gallery, each made from `sources[rel]` (the original, or an
+    edited copy of it), hidden ones included (the editor can restore them
     without a re-render). Copies are re-used while the original is
     unchanged; copies of photos no longer in the gallery are deleted.
     Publishing never uploads this folder as is: it uploads the artifact
@@ -294,9 +296,9 @@ def render_site(
     photos_dir.mkdir(parents=True, exist_ok=True)
     thumbs_dir.mkdir(parents=True, exist_ok=True)
     site = Site(root, gallery)
-    todo = [i for i in gallery.all_items if i.rel in originals]
+    todo = [i for i in gallery.all_items if i.rel in sources]
     for n, item in enumerate(todo, 1):
-        original = originals[item.rel]
+        original = sources[item.rel]
         name = render_name(item.rel, original, keep_gps)
         out_photo, out_thumb = photos_dir / name, thumbs_dir / name
         if progress is not None:

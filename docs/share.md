@@ -83,6 +83,39 @@ on a phone every photo runs edge to edge. Each photo's alt text is a short
 line from its sidecar (`An adult leopard crossing the road.`); `--captions`
 also shows those lines under the photos.
 
+## Edited copies (fdx-develop)
+
+`fdx share <folder> --edit` sends the picked RAWs, and only those, to
+`fdx-develop` (framedex's AI RAW editing, a separate command) after the pick
+and before the web copies are made: `fdx-develop <folder> --files-from
+<list>`, with `--examples DIR` passed through. It first prints one line:
+fdx-develop's own dry-run count and cost, plus the time (about 2.5 minutes a
+photo), then runs without asking; when every pick is edited already it
+doesn't run again. Each photo costs model time and money, so more than
+`--edit-max` picks (default 60) is refused before anything runs:
+
+```
+Editing    412 RAWs, 31 listed, 0 already developed, 31 to do; est. $7.75, ~78 min
+```
+
+JPEG and HEIC photos are not sent; they render as they are. If
+`fdx-develop` isn't on PATH, `--edit` stops with one line saying so. Hiding
+or restoring a photo in the editor re-runs nothing: a restored photo without
+an edited copy shows its original.
+
+With or without `--edit`, a RAW's web copy is made from its edited copy
+whenever fdx-develop left a trustworthy one in its default output folder:
+a `developed/<dir>/*.develop.json` record that names this exact original
+(same file name, size and modification time), says `done`, and whose
+`output` JPEG still has the recorded SHA-256 (and, symlinks resolved, sits
+inside the shoot). If an older edit survives under a superseded name, the
+newest record wins. Anything else (a `partial`, `failed` or `pending` edit,
+an original changed since, a file changed after fdx-develop wrote it) falls
+back to the original. fdx share reads those files and never imports
+fdx-develop's code. An edited copy whose record holds its SHA-256 never shows
+up as a photo of its own; a JPEG you saved over one by hand does. The editor
+shows the edited copy as the photo; nothing else changes.
+
 ## Passcodes
 
 Turn on **Passcode** in the editor (or `fdx share <folder> --publish

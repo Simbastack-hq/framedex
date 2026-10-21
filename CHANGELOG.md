@@ -26,6 +26,12 @@ public surface (CLI flags, sidecar schema) can still shift between minor version
   the visitor's browser with WebCrypto; a protected gallery never goes out
   open by accident. New `[share]` extra (Pillow, pillow-heif, cryptography).
   See `docs/share.md`.
+- **`fdx share --edit`**: after the pick, sends the picked RAWs only to
+  `fdx-develop` (AI RAW edits; `--files-from`, a dry-run estimate first,
+  `--edit-max` cap), and RAWs' web copies are made from fdx-develop's edited copies
+  whenever a trustworthy one exists (found by its record: same source
+  fingerprint, `done`, matching SHA-256; the newest record wins). A file
+  convention: no import of fdx-develop's code.
 - **`fdx trips`**: lists the trips in an indexed archive (split on time gaps
   and long GPS jumps) with a draft gallery size and the `fdx share` command
   for each.

@@ -17,10 +17,15 @@ passcodes in `share_lock`, uploads in `share_publish`.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import math
 import re
 import secrets
+import shutil
 import subprocess
 import sys
+import tempfile
 from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -29,7 +34,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from framedex import grouping
-from framedex.images import IMAGE_EXTENSIONS
+from framedex.images import IMAGE_EXTENSIONS, RAW_EXTENSIONS
 from framedex.parsing import is_user_rated
 
 # Default size of a gallery: enough to tell a weekend, few enough that family
@@ -78,6 +83,17 @@ LINK_TOKEN_LEN = 12
 ADMIN_WORDS = {"ward", "county", "district", "municipality", "province", "constituency"}
 EN_DASH = "\u2013"
 SELECTION_FILE = "selection.txt"
+# fdx-develop's file convention (AI RAW edits, a separate command): an edited
+# copy of <dir>/<raw> is <root>/developed/<dir>/<base>.jpg with a
+# <base>.develop.json record beside it naming its source RAW. fdx share reads
+# those files and never imports fdx-develop's code (--edit only runs the
+# command).
+DEVELOPED_DIR = "developed"
+# --edit sends at most this many picked RAWs to fdx-develop unless raised
+# (about $0.23 and 2.5 min a photo on Opus 5.5 when measured).
+DEFAULT_EDIT_MAX = 60
+EDIT_MINUTES_PER_PHOTO = 2.5
+DEVELOP_RECORD = ".develop.json"
 SHARE_DIR = "_share"
 
 _EPOCH = datetime(1970, 1, 1)
@@ -963,6 +979,71 @@ def in_date_range(p: Photo, start: date | None, end: date | None) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def is_develop_output(path: Path) -> bool:
+    """An fdx-develop edited copy: the edit of a photo already in the folder,
+    never a photo of its own. Proven by fdx-develop's own rule: the record
+    beside it holds these exact bytes' SHA-256 (its output, or the one an
+    unfinished later attempt left in place). A JPEG put there by hand is a
+    photo like any other."""
+    try:
+        record = path.with_name(path.stem + DEVELOP_RECORD).read_text(encoding="utf-8")
+        rec = json.loads(record)
+        if not isinstance(rec, dict):
+            return False
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except (OSError, ValueError):
+        return False
+    return digest in (rec.get("output_sha256"), rec.get("previous_sha256"))
+
+
+def developed_copy(original: Path, folder: Path) -> Path | None:
+    """fdx-develop's edit of a RAW `original`, if one can be trusted. Found by
+    record, not by re-deriving its name: among `developed/<dir>/*.develop.json`
+    the records whose `source` is exactly this original (name, size and
+    mtime_ns, so an original changed since is never shown with a stale edit),
+    whose status is `done`, and whose `output` JPEG (a file in the same
+    folder, inside the shoot once symlinks are resolved) has the recorded
+    SHA-256. When an older edit survives under a superseded name, the newest
+    record wins. None otherwise; the original is used."""
+    if original.suffix.lower() not in RAW_EXTENSIONS:
+        return None  # fdx-develop only edits RAWs
+    try:
+        root = folder.resolve()
+        rel = original.relative_to(folder)
+        st = original.stat()
+        out_dir = folder / DEVELOPED_DIR / rel.parent
+        records = sorted(out_dir.glob("*" + DEVELOP_RECORD))
+    except (ValueError, OSError):
+        return None
+    source = {"name": original.name, "size": st.st_size, "mtime_ns": st.st_mtime_ns}
+    best: tuple[tuple[str, int], Path] | None = None
+    for record in records:
+        try:
+            rec = json.loads(record.read_text(encoding="utf-8"))
+            if not isinstance(rec, dict) or rec.get("source") != source:
+                continue
+            output = rec.get("output")
+            if rec.get("status") != "done" or not isinstance(output, str):
+                continue
+            if not output or Path(output).name != output:
+                continue  # a file in this folder, nothing else
+            jpg = (out_dir / output).resolve()
+            if root not in jpg.parents:
+                continue  # like resolve_item: never an image from outside the shoot
+            if rec.get("output_sha256") != hashlib.sha256(jpg.read_bytes()).hexdigest():
+                continue
+            rank = (str(rec.get("created_at") or ""), record.stat().st_mtime_ns)
+        except (
+            OSError,
+            ValueError,
+            RuntimeError,
+        ):  # RuntimeError: a symlink loop (3.12)
+            continue
+        if best is None or rank > best[0]:
+            best = (rank, jpg)
+    return best[1] if best else None
+
+
 def load_photos(folder: Path) -> list[Photo]:
     from framedex.query import Filters, run_query
 
@@ -971,8 +1052,13 @@ def load_photos(folder: Path) -> list[Photo]:
     for rec in result.records:
         rec["_subjects"] = _subjects_sentence(Path(str(rec.get("_sidecar_path"))))
         p = photo_from_record(rec, folder)
-        if p is not None and SHARE_DIR not in PurePosixPath(p.rel).parts:
-            out.append(p)
+        if (
+            p is None
+            or SHARE_DIR in PurePosixPath(p.rel).parts
+            or is_develop_output(p.path)
+        ):
+            continue
+        out.append(p)
     return out
 
 
@@ -992,7 +1078,11 @@ def unindexed_images(folder: Path) -> list[Path]:
     from framedex.images import find_images
     from framedex.pipeline import has_sidecar
 
-    return [p for p in find_images(folder, []) if not has_sidecar(p)]
+    return [
+        p
+        for p in find_images(folder, [])
+        if not has_sidecar(p) and not is_develop_output(p)
+    ]
 
 
 def _date_arg(text: str) -> date:
@@ -1084,6 +1174,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-open", action="store_true", help="Don't open the browser."
     )
+    parser.add_argument(
+        "--edit",
+        action="store_true",
+        help="After the pick, edit the picked RAWs with fdx-develop (if installed); "
+        "their edited copies are used for the web copies.",
+    )
+    parser.add_argument(
+        "--examples",
+        metavar="DIR",
+        help="With --edit: RAW + finished-JPEG pairs that show your style "
+        "(passed to fdx-develop).",
+    )
+    parser.add_argument(
+        "--edit-max",
+        type=int,
+        default=DEFAULT_EDIT_MAX,
+        metavar="N",
+        help=f"With --edit: refuse to send more than N RAWs to fdx-develop "
+        f"(default {DEFAULT_EDIT_MAX}; each costs model time and money).",
+    )
     pub = parser.add_argument_group("publishing without the editor")
     pub.add_argument(
         "--publish",
@@ -1126,6 +1236,77 @@ def _run_indexer(folder: Path, backend: str | None) -> int:
     return subprocess.run(cmd).returncode
 
 
+def edit_picks(gallery: Gallery, originals: dict[str, Path]) -> list[Path]:
+    """The RAWs `--edit` sends to fdx-develop: the photos on the page (not the
+    hidden ones, not the pool), RAW files only (JPEG/HEIC render as they are)."""
+    return [
+        originals[i.rel]
+        for i in gallery.items
+        if i.rel in originals and originals[i.rel].suffix.lower() in RAW_EXTENSIONS
+    ]
+
+
+def _run_develop(
+    folder: Path, picks: list[Path], examples: str | None, edit_max: int
+) -> int:
+    """Run fdx-develop on the picked RAWs only (`--files-from`, paths relative
+    to the shoot root, one per line), after printing its own dry-run
+    estimate. It is a separate command (framedex's AI RAW editing); fdx share
+    only reads the files it writes. Each photo costs model time and money,
+    so more than `edit_max` picks is refused rather than started."""
+    exe = shutil.which("fdx-develop")
+    if exe is None:
+        return _err(
+            "--edit needs fdx-develop (framedex's AI RAW editing), which isn't on PATH; "
+            "install a framedex that includes it, or drop --edit"
+        )
+    if len(picks) > edit_max:
+        return _err(
+            f"--edit would send {len(picks)} RAWs to fdx-develop, more than --edit-max "
+            f"{edit_max}; hide some in the editor or raise --edit-max"
+        )
+    # fdx-develop strips each line and skips '#' comments: './' keeps a name
+    # that starts with '#' or a space; a line can't carry the rest.
+    entries = ["./" + p.relative_to(folder).as_posix() for p in picks]
+    for entry in entries:
+        if entry.strip() != entry or len(entry.splitlines()) != 1:
+            return _err(
+                f"--edit can't list {entry[2:]!r} for fdx-develop (a line break or "
+                "trailing space in its name); rename it or hide it"
+            )
+    try:
+        with tempfile.TemporaryDirectory(prefix="fdx-share-") as tmp:
+            listing = Path(tmp) / "picks.txt"
+            listing.write_text("".join(e + "\n" for e in entries), encoding="utf-8")
+            cmd = [exe, str(folder), "--files-from", str(listing)]
+            if examples:
+                cmd += ["--examples", str(Path(examples).expanduser())]
+            plan = subprocess.run([*cmd, "--dry-run"], capture_output=True, text=True)
+            if plan.returncode != 0:
+                return _err(
+                    f"fdx-develop --dry-run failed (exit {plan.returncode}): "
+                    f"{plan.stderr.strip()[-300:]}"
+                )
+            lines = [ln.strip() for ln in plan.stdout.splitlines() if ln.strip()]
+            summary = next(
+                (ln for ln in lines if "est." in ln), lines[0] if lines else ""
+            )
+            # fdx-develop gives the count and the cost; add the time it takes
+            todo = re.search(r"(\d+) to do", summary)
+            if todo and int(todo.group(1)):
+                minutes = math.ceil(int(todo.group(1)) * EDIT_MINUTES_PER_PHOTO)
+                summary += f", ~{minutes} min"
+            print(f"Editing    {summary or f'{len(picks)} RAWs'}", flush=True)
+            if todo and not int(todo.group(1)):
+                return 0  # all edited already; a run would still want its engine
+            code = subprocess.run(cmd).returncode
+    except OSError as e:  # the temp list, or fdx-develop itself, failed to start
+        return _err(f"fdx-develop could not run ({e})")
+    if code != 0:
+        return _err(f"fdx-develop stopped (exit {code}); see above")
+    return 0
+
+
 def _err(msg: str) -> int:
     print(f"error: {msg}", file=sys.stderr)
     return 1
@@ -1138,6 +1319,8 @@ def main(argv: list[str] | None = None) -> int:
         return _err(f"not a directory: {folder}")
     if args.max_photos < 1:
         return _err("--max must be at least 1")
+    if args.edit_max < 1:
+        return _err("--edit-max must be at least 1")
     if args.passcode and args.no_passcode:
         return _err("--passcode and --no-passcode contradict each other")
     try:
@@ -1159,6 +1342,9 @@ def main(argv: list[str] | None = None) -> int:
         return share_publish.unpublish_cli(
             work, config=args.config, assume_yes=args.yes
         )
+
+    if (args.examples or args.edit_max != DEFAULT_EDIT_MAX) and not args.edit:
+        return _err("--examples and --edit-max only apply with --edit")
 
     if (
         args.index
@@ -1246,6 +1432,24 @@ def main(argv: list[str] | None = None) -> int:
             "outside the photos, or leave the default _share/ folder"
         )
 
+    if args.edit:
+        picks = edit_picks(gallery, originals)
+        if not picks:
+            print("Editing    no RAW photos in the pick; nothing to edit")
+        elif _run_develop(folder, picks, args.examples, args.edit_max) != 0:
+            return 1
+
+    # Each web copy is made from the photo's fdx-develop edit when a trusted
+    # one exists, else from the original.
+    sources = {
+        rel: developed_copy(path, folder) or path for rel, path in originals.items()
+    }
+    edited = sum(1 for rel in sources if sources[rel] != originals[rel])
+    if edited:
+        print(
+            f"Edited     {edited} of {len(sources)} photos use their fdx-develop copy"
+        )
+
     tty = sys.stdout.isatty()
 
     def progress(n: int, total: int) -> None:
@@ -1257,7 +1461,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Rendered   {total} photos", flush=True)
 
     site = share_site.render_site(
-        gallery, originals, work, keep_gps=args.keep_gps, progress=progress
+        gallery, sources, work, keep_gps=args.keep_gps, progress=progress
     )
     if args.verbose:
         print(f"Work       {work}  ({site.total_bytes / 1e6:.1f} MB rendered)")

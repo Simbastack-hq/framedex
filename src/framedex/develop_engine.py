@@ -267,8 +267,8 @@ def orientation_code(value: Any) -> int:
 def crop_box_display(
     full_size: tuple[int, int], crop: Crop, orientation: int
 ) -> tuple[float, float, float, float]:
-    """Axis-aligned crop box (x0, y0, x1, y1) in displayed full-frame pixels.
-    Ignores the (small) crop angle; used to place masks."""
+    """Axis-aligned crop box (x0, y0, x1, y1) in displayed full-frame pixels,
+    ignoring the crop angle: RapidRAW's own `crop` field for unrotated crops."""
     wd, hd = full_size
     w, h = (hd, wd) if orientation in (6, 8) else (wd, hd)
     corners = [(crop.left * w, crop.top * h), (crop.right * w, crop.bottom * h)]
@@ -291,20 +291,77 @@ def crop_box_display(
 # ---------------------------------------------------------------------------
 
 
-def _mask_to_engine(
-    i: int, mask: dict[str, Any], box: tuple[float, float, float, float]
-) -> dict[str, Any]:
-    x0, y0, x1, y1 = box
-    fw, fh = x1 - x0, y1 - y0
+@dataclass(frozen=True)
+class FrameMap:
+    """Maps fractions of the displayed, cropped frame (what the model sees) to
+    displayed full-frame engine pixels, through the inverse of the crop
+    (including its straightening angle) and the EXIF orientation."""
+
+    full_size: tuple[int, int]
+    crop: Crop = IDENTITY_CROP
+    orientation: int = 1
+
+    def _sensor(self) -> tuple[float, float, float, float, float, float, float]:
+        wd, hd = self.full_size
+        w, h = (hd, wd) if self.orientation in (6, 8) else (wd, hd)
+        c = self.crop
+        left, top, right, bottom = c.left * w, c.top * h, c.right * w, c.bottom * h
+        th = math.radians(c.angle)
+        dx, dy = right - left, bottom - top
+        cw = dx * math.cos(th) + dy * math.sin(th)
+        ch = -dx * math.sin(th) + dy * math.cos(th)
+        return w, h, (left + right) / 2, (top + bottom) / 2, cw, ch, th
+
+    @property
+    def frame_size(self) -> tuple[float, float]:
+        """(width, height) of the displayed cropped frame in pixels."""
+        _, _, _, _, cw, ch, _ = self._sensor()
+        return (ch, cw) if self.orientation in (6, 8) else (cw, ch)
+
+    def __call__(self, u: float, v: float) -> tuple[float, float]:
+        w, h, cx, cy, cw, ch, th = self._sensor()
+        # displayed-frame fractions -> sensor-frame fractions
+        if self.orientation == 3:
+            us, vs = 1 - u, 1 - v
+        elif self.orientation == 6:  # displayed = sensor rotated 90° clockwise
+            us, vs = v, 1 - u
+        elif self.orientation == 8:  # displayed = sensor rotated 90° counter-clockwise
+            us, vs = 1 - v, u
+        else:
+            us, vs = u, v
+        # undo the straightening rotation about the crop centre
+        ox, oy = (us - 0.5) * cw, (vs - 0.5) * ch
+        sx = cx + ox * math.cos(th) - oy * math.sin(th)
+        sy = cy + ox * math.sin(th) + oy * math.cos(th)
+        # sensor pixels -> displayed full-frame pixels
+        if self.orientation == 3:
+            return w - sx, h - sy
+        if self.orientation == 6:
+            return h - sy, sx
+        if self.orientation == 8:
+            return sy, w - sx
+        return sx, sy
+
+
+def _mask_to_engine(i: int, mask: dict[str, Any], fmap: FrameMap) -> dict[str, Any]:
+    fw, fh = fmap.frame_size
     params: dict[str, Any]
     if mask.get("kind") == "radial":
         r = mask["radial"]
+        u = _num(r["center_x"], -0.5, 1.5, 0.5)
+        v = _num(r["center_y"], -0.5, 1.5, 0.5)
+        rx = max(1.0 / max(fw, 1.0), _num(r["radius_x"], 0, 3, 0.3))
+        ry = max(1.0 / max(fh, 1.0), _num(r["radius_y"], 0, 3, 0.3))
+        cx, cy = fmap(u, v)
+        ax, ay = fmap(u + rx, v)  # end of the ellipse's own x-axis
+        bx, by = fmap(u, v + ry)
         params = {
-            "centerX": x0 + _num(r["center_x"], -0.5, 1.5, 0.5) * fw,
-            "centerY": y0 + _num(r["center_y"], -0.5, 1.5, 0.5) * fh,
-            "radiusX": max(1.0, _num(r["radius_x"], 0, 3, 0.3) * fw),
-            "radiusY": max(1.0, _num(r["radius_y"], 0, 3, 0.3) * fh),
-            "rotation": 0,
+            "centerX": cx,
+            "centerY": cy,
+            "radiusX": max(1.0, math.hypot(ax - cx, ay - cy)),
+            "radiusY": max(1.0, math.hypot(bx - cx, by - cy)),
+            # the engine rotates the ellipse's x-axis to (cos r, sin r) on screen
+            "rotation": math.degrees(math.atan2(ay - cy, ax - cx)),
             "feather": _num(r["feather"], 0, 1, 0.5),
         }
         kind = "radial"
@@ -315,18 +372,17 @@ def _mask_to_engine(
         edge = g.get("edge", "top")
         # The engine's linear mask is fully on at -range from the start->end
         # line, on the left-hand side of that direction (screen coordinates).
+        # Orientation and straightening are rotations, so that side survives
+        # the mapping.
         if edge == "bottom":
-            yb = y1 - pos * fh
-            start, end, rng = (x1, yb), (x0, yb), soft * fh
+            (su, sv), (eu, ev), rng = (1.0, 1 - pos), (0.0, 1 - pos), soft * fh
         elif edge == "left":
-            xl = x0 + pos * fw
-            start, end, rng = (xl, y1), (xl, y0), soft * fw
+            (su, sv), (eu, ev), rng = (pos, 1.0), (pos, 0.0), soft * fw
         elif edge == "right":
-            xr = x1 - pos * fw
-            start, end, rng = (xr, y0), (xr, y1), soft * fw
+            (su, sv), (eu, ev), rng = (1 - pos, 0), (1 - pos, 1), soft * fw
         else:
-            yt = y0 + pos * fh
-            start, end, rng = (x0, yt), (x1, yt), soft * fh
+            (su, sv), (eu, ev), rng = (0, pos), (1, pos), soft * fh
+        start, end = fmap(su, sv), fmap(eu, ev)
         params = {
             "startX": start[0],
             "startY": start[1],
@@ -424,9 +480,9 @@ def to_rapidraw(
         "vignetteMidpoint": _num(edit["vignette"]["midpoint"], 0, 100, 50),
         "vignetteFeather": _num(edit["vignette"]["feather"], 0, 100, 50),
     }
-    box = crop_box_display(full_size, crop, orientation)
+    fmap = FrameMap(full_size, crop, orientation)
     adj["masks"] = [
-        _mask_to_engine(i, m, box) for i, m in enumerate(edit["masks"][:MAX_MASKS])
+        _mask_to_engine(i, m, fmap) for i, m in enumerate(edit["masks"][:MAX_MASKS])
     ]
     return adj
 

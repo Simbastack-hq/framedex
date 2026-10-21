@@ -121,6 +121,7 @@ EXIF (camera, focal length, aperture, shutter, ISO, capture time) only.
   `--force` redoes done ones. An output JPEG framedex has no record for is
   never overwritten. Same-stem RAWs in one folder keep their extension in
   the output name. Subfolders are mirrored under `--out`.
+  (Superseded by the diff review: see the last table.)
 - `<raw>.rrdata` next to the original — RapidRAW's own sidecar, so the user
   can open the RAW in RapidRAW and keep editing from the AI's values, with
   the crop in RapidRAW's own `crop` field (verified pixel-identical to
@@ -193,3 +194,16 @@ Hermetic (repo convention): no engine, no network, no real photos.
 | Backend interface vague | One `Backend.complete(system, images, text)` contract, own max_tokens (no 800-token cap), local/cli tested by envelope |
 | CI can't import Pillow | Renderer injected; loop tests need no Pillow; pixel tests skip without it |
 | "Subprocess so MIT" too categorical | Scoped rationale above and in docs/develop.md |
+
+## Codex diff review (2026-10-21) and what changed
+
+| Finding | Resolution |
+|---|---|
+| Any record let framedex overwrite an existing JPEG | `owns_output`: only a `pending` record for this RAW, or a `done`/`partial` record whose `output_sha256` matches the file; a user's replacement is skipped |
+| Collision names could still clash (`A.NEF` vs `A.nef.DNG`) | Colliding outputs use the full file name (`A.NEF.jpg`), unique per folder |
+| Interrupt between JPEG and record orphaned the JPEG | `pending` record written before publishing, finalized after |
+| `.rrdata` could be left truncated | Temp file + `os.link` (atomic, never replaces) |
+| Masks ignored crop straightening | `FrameMap` maps frame fractions through the inverse crop rotation + orientation; ellipse `rotation` set; tested against `apply_crop` pixels |
+| First-render failure aborted the batch | Failed record per photo; `main` has a per-photo exception boundary |
+| A later-round failure was recorded `done` | Status `partial`: best earlier render ships, photo retried next run, exit code 1 |
+| A failed call was reported as free | Known spend summed; any failed or unpriced call marks cost incomplete (`+ unknown`) |

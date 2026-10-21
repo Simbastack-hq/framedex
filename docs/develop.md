@@ -80,18 +80,23 @@ white conversion unless the photo calls for it.
 
 - **Originals are never modified, moved, or renamed.**
 - `<out>/<name>.jpg`: the edited copy, sRGB, quality 90. If two RAWs in one
-  folder share a name (`A.NEF` + `A.ARW`), outputs keep the extension
-  (`A.nef.jpg`).
+  folder share a name (`A.NEF` + `A.ARW`), outputs use the full file name
+  (`A.NEF.jpg`, `A.ARW.jpg`).
 - `<out>/<name>.develop.json`: plain text. Status, source fingerprint (name,
-  size, mtime), engine and version, backend and model, every round's values,
-  stats and cost, the final engine adjustments, the crop. Written last; a
-  re-run skips a photo only if this record says `done`, the JPEG exists, and
-  the RAW is unchanged. Failed photos stay retryable.
+  size, mtime), the output's SHA-256, engine and version, backend and model,
+  every round's values, stats and cost, the final engine adjustments, the
+  crop. A `pending` record is written before the JPEG is published and
+  finalized after, so an interrupted run recovers. A re-run skips a photo only
+  if the record says `done`, the RAW is unchanged and the JPEG is byte-for-byte
+  what framedex wrote. `failed` photos (no usable render) and `partial` ones (a
+  later round failed; the best earlier render ships) are retried next run.
 - `<raw>.rrdata`: RapidRAW's own sidecar with the final adjustments (and the
   crop, if it has no rotation), so you can open the RAW in RapidRAW and keep
   editing from the model's values. Written only if no `.rrdata` exists; your
   own RapidRAW edits are never overwritten. `--no-rrdata` skips it.
-- framedex never overwrites an output JPEG it didn't write.
+- framedex never overwrites an output JPEG it can't prove it wrote (no
+  record, a record for another RAW, or a digest mismatch because you replaced
+  the file). Those photos are skipped with a message.
 
 ## Cost
 
@@ -100,7 +105,8 @@ images, the calibration sheet, and up to three 1024 px example pairs.
 Measured on Claude Opus 5.5 (effort `high`, adaptive thinking): about $0.17 per
 photo with no examples and $0.30-0.35 with two example pairs and 4 rounds. The
 run prints an estimate before it starts and the actual cost at the end
-(`unknown` for the CLI backend, which doesn't report usage). `--backend local`
+(marked `+ unknown` for the CLI backend, which doesn't report usage, and
+for any call that failed mid-flight, which may still have been billed). `--backend local`
 is $0. This command is the one place framedex spends more than one call per
 file; the cap is the round count.
 

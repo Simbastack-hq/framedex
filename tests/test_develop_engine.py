@@ -366,3 +366,63 @@ def test_render_stats_reports_clipping() -> None:
     s = eng.render_stats(img)
     assert "100.00% of pixels have a channel >=250" in s
     assert "mean luma 255/255" in s
+
+
+def test_frame_map_inverts_an_angled_crop() -> None:
+    # Codex's case: 1000x800, crop (0.1, 0.2, 0.8, 0.9) rotated 10°: the
+    # frame point (0.8, 0.2) sits at about (705, 354) in the source.
+    fmap = eng.FrameMap((1000, 800), eng.Crop(0.1, 0.2, 0.8, 0.9, 10.0))
+    assert fmap(0.8, 0.2) == pytest.approx((704.8, 353.96), abs=0.1)
+
+
+@pytest.mark.parametrize("orientation", [1, 3, 6, 8])
+def test_frame_map_matches_crop_box_when_unrotated(orientation: int) -> None:
+    full = (200, 400) if orientation in (6, 8) else (400, 200)
+    crop = eng.Crop(0.25, 0.1, 0.75, 0.5)
+    fmap = eng.FrameMap(full, crop, orientation)
+    x0, y0, x1, y1 = eng.crop_box_display(full, crop, orientation)
+    corners = {fmap(0, 0), fmap(1, 1), fmap(0, 1), fmap(1, 0)}
+    xs = sorted(round(c[0], 6) for c in corners)
+    ys = sorted(round(c[1], 6) for c in corners)
+    assert (xs[0], ys[0], xs[-1], ys[-1]) == pytest.approx((x0, y0, x1, y1))
+    assert fmap(0, 0) == pytest.approx((x0, y0))  # top-left stays top-left
+
+
+def test_radial_mask_follows_crop_rotation() -> None:
+    e = eng.normalize_edit(
+        {
+            "masks": [
+                {
+                    "kind": "radial",
+                    "radial": {
+                        "center_x": 0.5,
+                        "center_y": 0.5,
+                        "radius_x": 0.2,
+                        "radius_y": 0.1,
+                    },
+                }
+            ]
+        }
+    )
+    crop = eng.Crop(0.1, 0.2, 0.8, 0.9, 10.0)
+    p = eng.to_rapidraw(e, (1000, 800), crop)["masks"][0]["subMasks"][0]["parameters"]
+    assert p["rotation"] == pytest.approx(10.0)
+    fw, fh = eng.FrameMap((1000, 800), crop).frame_size
+    assert p["radiusX"] == pytest.approx(0.2 * fw)
+    assert p["radiusY"] == pytest.approx(0.1 * fh)
+
+
+@pytest.mark.parametrize("orientation", [1, 6, 8])
+def test_frame_map_agrees_with_apply_crop_pixels(orientation: int) -> None:
+    image = pytest.importorskip("PIL.Image")
+    sensor = (600, 400)
+    full = (400, 600) if orientation in (6, 8) else sensor
+    crop = eng.Crop(0.15, 0.1, 0.8, 0.85, 3.0)
+    fmap = eng.FrameMap(full, crop, orientation)
+    x, y = fmap(0.3, 0.6)
+    img = image.new("RGB", full, (0, 0, 0))
+    img.paste((255, 255, 255), (round(x) - 2, round(y) - 2, round(x) + 3, round(y) + 3))
+    out = eng.apply_crop(img, crop, orientation)
+    w, h = out.size
+    px = out.getpixel((round(0.3 * w), round(0.6 * h)))
+    assert px[0] > 128, (orientation, out.size)

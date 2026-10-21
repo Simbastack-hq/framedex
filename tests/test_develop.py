@@ -168,21 +168,22 @@ def test_bad_first_reply_fails_and_stays_retryable(raw: Path) -> None:
 
 def test_bad_later_reply_keeps_the_last_good_render(raw: Path) -> None:
     res = run(raw, FakeBackend([edit(exposure=0.4), "garbage"]))
-    assert res.status == "done"
+    assert res.status == "partial"  # ships round 1, stays retryable
     assert record(raw)["final_round"] == 1
     assert "bad reply" in record(raw)["rounds"][-1]["error"]
 
 
 def test_backend_error_keeps_the_last_good_render(raw: Path) -> None:
     res = run(raw, FakeBackend([edit()]))  # second call raises
-    assert res.status == "done"
+    assert res.status == "partial"
+    assert res.cost_complete is False  # the failed call may have been billed
     assert record(raw)["rounds"][-1]["error"].startswith("backend:")
 
 
 def test_unknown_cost_propagates(raw: Path) -> None:
     res = run(raw, FakeBackend([edit(), edit(), edit(done=True)], cost=None))
-    assert res.cost_usd is None
-    assert record(raw)["cost_usd"] is None
+    assert res.cost_complete is False
+    assert record(raw)["cost_complete"] is False
 
 
 def test_original_is_untouched_and_rrdata_written_once(raw: Path) -> None:
@@ -267,7 +268,10 @@ def test_output_paths_disambiguate_stem_collisions(tmp_path: Path) -> None:
         out / "day1" / "A.jpg",
         out / "day1" / "A.develop.json",
     )
-    assert D.output_paths(raw, root, out, True)[0] == out / "day1" / "A.nef.jpg"
+    assert D.output_paths(raw, root, out, True)[0] == out / "day1" / "A.NEF.jpg"
+    # file names are unique per folder, so colliding outputs can't clash
+    other = root / "day1" / "A.nef.DNG"
+    assert D.output_paths(other, root, out, True)[0] == out / "day1" / "A.nef.DNG.jpg"
 
 
 def test_discover_skips_hidden_output_and_non_raw(tmp_path: Path) -> None:
@@ -298,7 +302,7 @@ def test_main_dry_run_writes_nothing(
     assert D.main([str(tmp_path), "--dry-run"]) == 0
     out = capsys.readouterr().out
     assert "2 RAWs, 0 already developed, 2 to do" in out
-    assert "a.nef.jpg" in out and "a.arw.jpg" in out
+    assert "a.NEF.jpg" in out and "a.ARW.jpg" in out
     assert not (tmp_path / "developed").exists()
 
 
@@ -343,3 +347,106 @@ def test_system_prompt_embeds_the_neutral_template() -> None:
     s = D.system_prompt()
     assert json.dumps(eng.default_edit()) in s
     assert "ABSOLUTE" in s
+
+
+class BrokenRenderer(FakeRenderer):
+    def render(
+        self,
+        raw: Path,
+        adjustments: dict[str, Any],
+        tag: str,
+        crop: eng.Crop,
+        orientation: int,
+    ) -> D.Rendered:
+        raise RuntimeError("rapidraw failed on _DSC0001.NEF (exit 1): unsupported")
+
+
+def test_engine_failure_fails_the_photo_not_the_run(raw: Path) -> None:
+    backend = FakeBackend([edit()])
+    res = run(raw, backend, BrokenRenderer())
+    assert res.status == "failed" and "unsupported" in res.message
+    assert backend.calls == []
+    assert record(raw)["status"] == "failed"
+
+
+def _paths(raw: Path) -> tuple[Path, Path]:
+    out = raw.parent / "developed"
+    return out / "_DSC0001.jpg", out / "_DSC0001.develop.json"
+
+
+def test_owns_output_rules(raw: Path) -> None:
+    jpg, rec = _paths(raw)
+    assert D.owns_output(raw, jpg, rec)  # nothing there yet
+    run(raw, FakeBackend([edit(), edit(), edit(done=True)]))
+    assert D.owns_output(raw, jpg, rec)  # our digest
+    jpg.write_bytes(b"the user's own export")
+    assert not D.owns_output(raw, jpg, rec)  # replaced by the user
+    assert not D.is_complete(raw, jpg, rec)
+
+
+def test_failed_record_does_not_claim_a_users_jpeg(raw: Path) -> None:
+    jpg, rec = _paths(raw)
+    run(raw, FakeBackend(["nope"]))
+    jpg.write_bytes(b"user export")
+    assert not D.owns_output(raw, jpg, rec)
+
+
+def test_record_for_another_raw_does_not_claim(raw: Path, tmp_path: Path) -> None:
+    jpg, rec = _paths(raw)
+    run(raw, FakeBackend([edit(), edit(), edit(done=True)]))
+    other = raw.with_name("_DSC0002.NEF")
+    other.write_bytes(b"x")
+    assert not D.owns_output(other, jpg, rec)
+
+
+def test_interrupt_between_publish_and_finalize_is_recoverable(
+    raw: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    jpg, rec = _paths(raw)
+    real = D.write_rrdata
+
+    def crash(*a: Any, **k: Any) -> bool:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(D, "write_rrdata", crash)
+    with pytest.raises(KeyboardInterrupt):
+        run(raw, FakeBackend([edit(), edit(), edit(done=True)]))
+    assert jpg.exists() and record(raw)["status"] == "pending"
+    assert D.owns_output(raw, jpg, rec) and not D.is_complete(raw, jpg, rec)
+    monkeypatch.setattr(D, "write_rrdata", real)
+    run(raw, FakeBackend([edit(), edit(), edit(done=True)]))
+    assert D.is_complete(raw, jpg, rec)
+
+
+def test_rrdata_publish_leaves_no_temp_file(raw: Path) -> None:
+    assert D.write_rrdata(raw, {"exposure": 1})
+    assert sorted(p.name for p in raw.parent.iterdir()) == [
+        "_DSC0001.NEF",
+        "_DSC0001.NEF.rrdata",
+    ]
+    assert not D.write_rrdata(raw, {"exposure": 2})
+    assert json.loads(eng.rrdata_path(raw).read_text())["adjustments"] == {
+        "exposure": 1
+    }
+
+
+def test_main_isolates_a_crashing_photo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for n in ("a.NEF", "b.NEF"):
+        (tmp_path / n).write_bytes(b"x")
+    seen: list[str] = []
+
+    def fake_develop(raw: Path, **kw: Any) -> D.PhotoResult:
+        seen.append(raw.name)
+        if raw.name == "a.NEF":
+            raise ValueError("boom")
+        return D.PhotoResult(raw, "done", cost_usd=0.2)
+
+    monkeypatch.setattr(eng, "find_engine", lambda explicit=None: Path("/bin/rr"))
+    monkeypatch.setattr(D, "make_backend", lambda args: FakeBackend([]))
+    monkeypatch.setattr(D, "develop_photo", fake_develop)
+    assert D.main([str(tmp_path)]) == 1
+    assert seen == ["a.NEF", "b.NEF"]
+    out = capsys.readouterr().out
+    assert "done 1, partial 0, failed 1" in out and "$0.20 + unknown" in out

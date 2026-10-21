@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import sys
@@ -584,17 +585,20 @@ def round_text(
 @dataclass
 class PhotoResult:
     raw: Path
-    status: str  # done | skipped | failed | dry-run
+    status: str  # done | partial | failed | skipped
     output: Path | None = None
-    cost_usd: float | None = 0.0
+    cost_usd: float = 0.0  # known spend
+    cost_complete: bool = True  # False: some call's cost is unknown
     message: str = ""
 
 
 def output_paths(
     raw: Path, root: Path, out_dir: Path, colliding: bool
 ) -> tuple[Path, Path]:
+    """<out>/<subdir>/<stem>.jpg, or <out>/<subdir>/<file name>.jpg when another
+    RAW in the same folder shares the stem (file names are unique per folder)."""
     rel = raw.relative_to(root)
-    name = f"{raw.stem}{raw.suffix.lower()}" if colliding else raw.stem
+    name = raw.name if colliding else raw.stem
     base = out_dir / rel.parent / name
     return base.with_name(base.name + ".jpg"), base.with_name(base.name + RECORD_SUFFIX)
 
@@ -602,6 +606,10 @@ def output_paths(
 def _fingerprint(raw: Path) -> dict[str, Any]:
     st = raw.stat()
     return {"name": raw.name, "size": st.st_size, "mtime_ns": st.st_mtime_ns}
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _load_record(path: Path) -> dict[str, Any] | None:
@@ -619,20 +627,40 @@ def is_complete(raw: Path, jpg: Path, record: Path) -> bool:
         and rec.get("status") == "done"
         and jpg.is_file()
         and rec.get("source") == _fingerprint(raw)
+        and rec.get("output_sha256") == _sha256(jpg)
     )
 
 
+def owns_output(raw: Path, jpg: Path, record: Path) -> bool:
+    """May framedex (re)write `jpg` for `raw`? Only if nothing is there, or the
+    record proves framedex wrote exactly what is there for this RAW: a
+    `pending` record (interrupted between publish and finalize) or a matching
+    content digest. A user's own export at that path is never touched."""
+    if not jpg.exists():
+        return True
+    rec = _load_record(record)
+    if rec is None or (rec.get("source") or {}).get("name") != raw.name:
+        return False
+    if rec.get("status") == "pending":
+        return True
+    return bool(rec.get("output_sha256")) and rec.get("output_sha256") == _sha256(jpg)
+
+
 def write_rrdata(raw: Path, adjustments: dict[str, Any]) -> bool:
-    """Create `<raw>.rrdata` only if nothing (file or symlink) is there."""
+    """Publish `<raw>.rrdata` atomically and only if nothing (file or symlink)
+    is there: write a temp file, then hard-link it into place, which fails
+    instead of replacing anything."""
     path = eng.rrdata_path(raw)
     if os.path.lexists(path):
         return False
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        tmp.write_text(json.dumps(eng.rrdata_payload(adjustments), indent=1))
+        os.link(tmp, path)
     except OSError:
-        return False  # exists now, or read-only media: never fatal
-    with os.fdopen(fd, "w") as f:
-        json.dump(eng.rrdata_payload(adjustments), f, indent=1)
+        return False  # appeared meanwhile, read-only media, no hard links: never fatal
+    finally:
+        tmp.unlink(missing_ok=True)
     return True
 
 
@@ -652,6 +680,60 @@ def rrdata_adjustments(
     return out
 
 
+@dataclass
+class _Run:
+    """Per-photo bookkeeping shared by the loop and the record writer."""
+
+    raw: Path
+    record: Path
+    backend: Backend
+    engine_info: dict[str, str]
+    crop: eng.Crop
+    history: list[RoundLog] = field(default_factory=list)
+    cost: float = 0.0
+    cost_complete: bool = True
+
+    def write(
+        self,
+        status: str,
+        message: str = "",
+        *,
+        final_round: int | None = None,
+        adjustments: dict[str, Any] | None = None,
+        output: Path | None = None,
+        output_sha256: str = "",
+        rrdata_written: bool = False,
+    ) -> None:
+        rec = {
+            "framedex": framedex.__version__,
+            "status": status,
+            "message": message,
+            "source": _fingerprint(self.raw),
+            "output": output.name if output else "",
+            "output_sha256": output_sha256,
+            "engine": self.engine_info,
+            "backend": self.backend.name,
+            "model": self.backend.model,
+            "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "crop": None if self.crop.is_identity else vars(self.crop),
+            "final_round": final_round,
+            "rrdata_written": rrdata_written,
+            "cost_usd": round(self.cost, 4),
+            "cost_complete": self.cost_complete,
+            "rounds": [vars(h) for h in self.history],
+            "adjustments": adjustments,
+        }
+        self.record.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(self.record, json.dumps(rec, indent=1, default=str))
+
+    def result(
+        self, status: str, output: Path | None = None, message: str = ""
+    ) -> PhotoResult:
+        return PhotoResult(
+            self.raw, status, output, self.cost, self.cost_complete, message
+        )
+
+
 def develop_photo(
     raw: Path,
     *,
@@ -668,26 +750,29 @@ def develop_photo(
 ) -> PhotoResult:
     context, orientation = photo_context(raw)
     crop = read_crop(raw)
-    neutral = renderer.render(
-        raw, eng.to_rapidraw(eng.default_edit(), (1, 1)), "r0", crop, orientation
-    )
-    full_size = neutral.full_size
+    run = _Run(raw, record, backend, engine_info, crop)
     fixed: list[Img] = _example_images(examples)
-    if calibration:
-        fixed.append(
-            Img(
-                "Calibration sheet: this photo with single-slider probes in this engine (labels under each tile):",
-                renderer.calibration_sheet(raw, full_size, crop, orientation),
-            )
+    try:
+        neutral = renderer.render(
+            raw, eng.to_rapidraw(eng.default_edit(), (1, 1)), "r0", crop, orientation
         )
+        full_size = neutral.full_size
+        if calibration:
+            fixed.append(
+                Img(
+                    "Calibration sheet: this photo with single-slider probes in this engine (labels under each tile):",
+                    renderer.calibration_sheet(raw, full_size, crop, orientation),
+                )
+            )
+    except RuntimeError as e:  # engine can't read this RAW: fail the photo, not the run
+        run.write("failed", f"render: {e}")
+        return run.result("failed", message=f"render: {e}")
     fixed.append(
         Img("The photo, neutral render (cropped to the final frame):", neutral.preview)
     )
     system = system_prompt()
-    history: list[RoundLog] = []
     best: Rendered | None = None
     best_round: RoundLog | None = None
-    total: float | None = 0.0
     for rnd in range(1, rounds + 1):
         imgs = list(fixed)
         if best is not None and best_round is not None:
@@ -700,15 +785,19 @@ def develop_photo(
         try:
             reply = backend.complete(system, imgs, text)
         except Exception as e:  # backend down: keep the best render so far
-            history.append(RoundLog(rnd, {}, error=f"backend: {e}"))
+            # The call may have been billed before it failed (e.g. a stream
+            # timeout), so its cost is unknown rather than zero.
+            run.cost_complete = False
+            run.history.append(RoundLog(rnd, {}, error=f"backend: {e}"))
             break
-        total = (
-            None if total is None or reply.cost_usd is None else total + reply.cost_usd
-        )
+        if reply.cost_usd is None:
+            run.cost_complete = False
+        else:
+            run.cost += reply.cost_usd
         try:
             edit = eng.normalize_edit(eng.extract_json_object(reply.text))
         except ValueError as e:
-            history.append(
+            run.history.append(
                 RoundLog(
                     rnd,
                     {},
@@ -721,7 +810,7 @@ def develop_photo(
         entry = RoundLog(rnd, edit, cost_usd=reply.cost_usd, usage=reply.usage)
         if edit["done"] and best is not None and rnd > MIN_EDIT_ROUNDS:
             entry.accepted_previous = True
-            history.append(entry)
+            run.history.append(entry)
             log(
                 f"  round {rnd}: accepted round {best_round.round if best_round else 0}"
             )
@@ -731,86 +820,39 @@ def develop_photo(
             rendered = renderer.render(raw, adj, f"r{rnd}", crop, orientation)
         except RuntimeError as e:
             entry.error = f"render: {e}"
-            history.append(entry)
+            run.history.append(entry)
             break
         entry.stats = rendered.stats
-        history.append(entry)
+        run.history.append(entry)
         best, best_round = rendered, entry
         log(f"  round {rnd}: {edit.get('intent', '')[:90]}")
+    errors = [h.error for h in run.history if h.error]
     if best is None or best_round is None:
-        msg = next((h.error for h in history if h.error), "no edit produced")
-        _write_record(
-            record,
-            raw,
-            "failed",
-            history,
-            None,
-            crop,
-            None,
-            backend,
-            engine_info,
-            total,
-            msg,
-        )
-        return PhotoResult(raw, "failed", cost_usd=total, message=msg)
+        msg = errors[0] if errors else "no edit produced"
+        run.write("failed", msg)
+        return run.result("failed", message=msg)
     adjustments = eng.to_rapidraw(best_round.edit, full_size, crop, orientation)
+    # Claim the path before publishing, so an interrupt between the two leaves
+    # a JPEG framedex can prove it owns (status pending), not an orphan.
+    run.write("pending", final_round=best_round.round, output=jpg)
     jpg.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_bytes(jpg, best.deliverable)
     rr = write_engine_sidecar and write_rrdata(
         raw, rrdata_adjustments(adjustments, full_size, crop, orientation)
     )
-    _write_record(
-        record,
-        raw,
-        "done",
-        history,
-        best_round.round,
-        crop,
-        adjustments,
-        backend,
-        engine_info,
-        total,
-        "",
-        jpg.name,
-        rr,
+    # A round that failed after a good render still ships that render, but the
+    # photo stays retryable ("partial") rather than silently "done".
+    status = "partial" if errors else "done"
+    run.write(
+        status,
+        errors[0] if errors else "",
+        final_round=best_round.round,
+        adjustments=adjustments,
+        output=jpg,
+        output_sha256=hashlib.sha256(best.deliverable).hexdigest(),
+        rrdata_written=rr,
     )
-    return PhotoResult(raw, "done", jpg, total)
-
-
-def _write_record(
-    record: Path,
-    raw: Path,
-    status: str,
-    history: list[RoundLog],
-    final_round: int | None,
-    crop: eng.Crop,
-    adjustments: dict[str, Any] | None,
-    backend: Backend,
-    engine_info: dict[str, str],
-    cost: float | None,
-    message: str,
-    output: str = "",
-    rrdata_written: bool = False,
-) -> None:
-    rec = {
-        "framedex": framedex.__version__,
-        "status": status,
-        "message": message,
-        "source": _fingerprint(raw),
-        "output": output,
-        "engine": engine_info,
-        "backend": backend.name,
-        "model": backend.model,
-        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "crop": None if crop.is_identity else vars(crop),
-        "final_round": final_round,
-        "rrdata_written": rrdata_written,
-        "cost_usd": None if cost is None else round(cost, 4),
-        "rounds": [vars(h) for h in history],
-        "adjustments": adjustments,
-    }
-    record.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(record, json.dumps(rec, indent=1, default=str))
+    return run.result(status, jpg, errors[0] if errors else "")
 
 
 # ---------------------------------------------------------------------------
@@ -925,50 +967,51 @@ def main(argv: list[str] | None = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     total = 0.0
     unknown_cost = False
-    counts = {"done": 0, "failed": 0, "skipped": 0}
+    counts = {"done": 0, "partial": 0, "failed": 0, "skipped": 0}
     with tempfile.TemporaryDirectory(prefix=".fdx-develop-", dir=out_dir) as td:
         renderer = EngineRenderer(engine, Path(td), args.size)
-        examples = (
-            load_examples(Path(args.examples).expanduser(), renderer)
-            if args.examples
-            else []
-        )
+        try:
+            examples = (
+                load_examples(Path(args.examples).expanduser(), renderer)
+                if args.examples
+                else []
+            )
+        except (OSError, RuntimeError) as e:
+            sys.exit(f"Could not load --examples: {e}")
         if args.examples:
             print(f"style examples: {len(examples)} pair(s)")
         for raw, jpg, rec in todo:
-            if jpg.exists() and _load_record(rec) is None:
+            if not owns_output(raw, jpg, rec):
                 print(f"skip {raw.name}: {jpg} exists and framedex didn't write it")
                 counts["skipped"] += 1
                 continue
             print(f"{raw.relative_to(root)}")
             t0 = time.time()
-            res = develop_photo(
-                raw,
-                jpg=jpg,
-                record=rec,
-                backend=backend,
-                renderer=renderer,
-                rounds=args.rounds,
-                examples=examples,
-                calibration=not args.no_calibration,
-                write_engine_sidecar=not args.no_rrdata,
-                engine_info=engine_info,
-            )
+            try:
+                res = develop_photo(
+                    raw,
+                    jpg=jpg,
+                    record=rec,
+                    backend=backend,
+                    renderer=renderer,
+                    rounds=args.rounds,
+                    examples=examples,
+                    calibration=not args.no_calibration,
+                    write_engine_sidecar=not args.no_rrdata,
+                    engine_info=engine_info,
+                )
+            except Exception as e:  # one bad photo never stops the batch
+                res = PhotoResult(raw, "failed", cost_complete=False, message=repr(e))
             counts[res.status] = counts.get(res.status, 0) + 1
-            if res.cost_usd is None:
-                unknown_cost = True
-            else:
-                total += res.cost_usd
+            total += res.cost_usd
+            unknown_cost = unknown_cost or not res.cost_complete
             print(f"  {res.status} in {time.time() - t0:.0f}s {res.message}".rstrip())
-    cost = (
-        "unknown"
-        if unknown_cost and total == 0
-        else f"${total:.2f}" + (" + unknown" if unknown_cost else "")
-    )
+    cost = f"${total:.2f}" + (" + unknown" if unknown_cost else "")
     print(
-        f"\ndone {counts['done']}, failed {counts['failed']}, skipped {counts['skipped']}; cost {cost}; output {out_dir}"
+        f"\ndone {counts['done']}, partial {counts['partial']}, failed "
+        f"{counts['failed']}, skipped {counts['skipped']}; cost {cost}; output {out_dir}"
     )
-    return 1 if counts["failed"] else 0
+    return 1 if counts["failed"] or counts["partial"] else 0
 
 
 if __name__ == "__main__":

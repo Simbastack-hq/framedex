@@ -425,4 +425,4 @@ def test_frame_map_agrees_with_apply_crop_pixels(orientation: int) -> None:
     out = eng.apply_crop(img, crop, orientation)
     w, h = out.size
     px = out.getpixel((round(0.3 * w), round(0.6 * h)))
-    assert px[0] > 128, (orientation, out.size)
+    assert isinstance(px, tuple) and px[0] > 128, (orientation, out.size)

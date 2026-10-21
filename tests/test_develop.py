@@ -127,12 +127,20 @@ def test_model_can_stop_early_and_the_accepted_render_ships(raw: Path) -> None:
     assert res.cost_usd == pytest.approx(0.03)
 
 
-def test_done_is_ignored_before_min_edit_rounds(raw: Path) -> None:
-    backend = FakeBackend([edit(), edit(done=True, exposure=1.0), edit(done=True)])
+def test_done_on_round_one_is_ignored(raw: Path) -> None:
+    backend = FakeBackend([edit(done=True, exposure=1.0), edit(done=True)])
     renderer = FakeRenderer()
     run(raw, backend, renderer)
-    assert renderer.tags == ["r0", "r1", "r2"]  # round-2 "done" still rendered
-    assert record(raw)["final_round"] == 2
+    assert renderer.tags == ["r0", "r1"]  # nothing to accept yet: r1 rendered
+    assert record(raw)["final_round"] == 1
+
+
+def test_model_can_accept_its_first_render(raw: Path) -> None:
+    backend = FakeBackend([edit(exposure=0.7), edit(done=True)])
+    renderer = FakeRenderer()
+    res = run(raw, backend, renderer)
+    assert renderer.tags == ["r0", "r1"] and res.status == "done"
+    assert record(raw)["rounds"][-1]["accepted_previous"] is True
 
 
 def test_round_cap(raw: Path) -> None:
@@ -151,8 +159,8 @@ def test_each_round_is_stateless_and_carries_the_latest_render(raw: Path) -> Non
     assert [i.jpeg for i in first_imgs] == [b"sheet", b"preview-r0"]
     assert second_imgs[-1].jpeg == b"preview-r1"
     assert '"exposure": 0.3' in second_text and "stats-r1" in second_text
-    assert "done=true is not allowed yet" in second_text
-    assert "done=true only if" in backend.calls[2][1]
+    assert "If it already hits the target, set done=true" in second_text
+    assert "your intent" in second_text  # no examples: own intent is the target
 
 
 def test_bad_first_reply_fails_and_stays_retryable(raw: Path) -> None:

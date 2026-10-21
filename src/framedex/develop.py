@@ -56,7 +56,9 @@ if TYPE_CHECKING:
 DEFAULT_MODEL = "claude-opus-5-5"
 DEFAULT_ROUNDS = 3
 MAX_ROUNDS = 4
-MIN_EDIT_ROUNDS = 2  # the model may only call a render final from round 3 on
+# The model may accept its round-1 render from round 2 on. Forcing a second
+# edit made it drift back toward its own "neutral" taste (blind-test finding).
+MIN_EDIT_ROUNDS = 1
 PREVIEW_LONG = 1600  # px, long edge of what the model sees
 EXAMPLE_LONG = 1024  # px, long edge of each before/after example
 OUTPUT_LONG = 2048  # px, default long edge of the deliverable
@@ -101,7 +103,7 @@ Controls and ranges (0 = neutral unless noted). Values are ABSOLUTE settings, no
   - "graduated": a soft gradient from an edge ("top", "bottom", "left", "right") to a midline at `position` (fraction of the frame from that edge), fading over `softness` (fraction of the frame) on each side of the midline.
   - mask adjustments: exposure, contrast, highlights, shadows, whites, blacks, saturation, temperature, tint, clarity, dehaze.
 
-Reviewing a render: be a harsh critic, not a proud author. Compare it with the photographer's examples (if any) and with what a magazine would print. Is the subject bright enough? Are shadows muddy? Is the color as rich and warm (or cool) as the light deserves? Name concrete shortcomings and fix them. Set done=true only when you would sign the current render; your returned values are then ignored.
+Reviewing a render: judge it against the target look, not against your own taste. With the photographer's examples, the target is their look: compare brightness, warmth, saturation and contrast with their AFTER images, and don't pull warmth or saturation back below theirs unless something clips or skin turns unnatural. Without examples, the target is what a top magazine would print. Name concrete shortcomings and fix only those. If the render already hits the target, set done=true: an unnecessary change is a regression. When done=true your returned values are ignored.
 
 Reply with exactly one JSON object, no prose before or after, with these keys (this is the neutral template; replace values as you choose):
 """
@@ -567,14 +569,18 @@ def round_text(
             f"{prev.stats}"
         )
         final_ok = rnd > MIN_EDIT_ROUNDS
+        target = (
+            "the photographer's examples (their brightness, warmth, saturation "
+            "and contrast)"
+            if has_examples
+            else "your intent"
+        )
         parts.append(
-            f"Round {rnd} of {rounds}: critique that render harshly against your "
-            "intent"
-            + (" and the photographer's examples" if has_examples else "")
-            + ", list its concrete shortcomings in changes_this_round, then "
-            "return the complete revised values."
+            f"Round {rnd} of {rounds}: compare that render with {target}. List "
+            "its concrete shortcomings in changes_this_round and return the "
+            "complete revised values."
             + (
-                " Set done=true only if you would sign this render as is."
+                " If it already hits the target, set done=true instead of changing it."
                 if final_ok
                 else " (done=true is not allowed yet.)"
             )

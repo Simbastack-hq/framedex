@@ -1,170 +1,213 @@
-# fdx-share: a gallery link from an indexed shoot
+# fdx share: a gallery link from an indexed shoot
 
-`fdx-share` turns a folder of photos that framedex has indexed into one
-static web page you can send to family and friends. The sidecars do the
-curation; you get a local preview and a plain-text list to adjust; one
-more command uploads it and puts the link on your clipboard.
+`fdx share` turns a folder framedex has indexed into one quiet web page you
+can send to family and friends. framedex already knows which frames are
+keepers, which ones are a burst, and when and where each was taken; `fdx
+share` uses that to pick and order the photos, opens the gallery in your
+browser so you can adjust it, and publishes it to your own server or bucket
+at an unlisted link.
 
 ```bash
-uv pip install -e '.[images]'                 # Pillow + pillow-heif
-fdx --media images ~/Pictures/2025-11-mara    # index first (or pass --index below)
-fdx-share ~/Pictures/2025-11-mara             # pick, render, open the preview
-fdx-share ~/Pictures/2025-11-mara --publish   # upload, print + copy the link
+uv pip install -e '.[share]'          # Pillow, pillow-heif, cryptography
+fdx --media images ~/Pictures/2025-11-mara
+fdx share ~/Pictures/2025-11-mara     # pick, render, open the editor
 ```
 
-`exiftool` must be on PATH for RAW files without a camera JPEG next to them
-(their embedded preview is used).
+```
+Picked     30 of 41 photos  ·  Narok · November 2025
+Rendering  30/30
+Editor     http://127.0.0.1:60428/s0jOVoWuvxtR6OUn3ufhwbI7/
+           Ctrl-C to stop
+Published  https://fdx.art/g/narok-2025-11-k3j9x2q7m4pt/
+```
+
+## The editor
+
+The browser opens on the gallery as visitors will see it, with a thin
+toolbar on top:
+
+- **Tap a photo** to hide it; it stays in place, dimmed, until you tap it
+  again. Hidden photos never leave your machine.
+- **Drag** a photo to reorder it within its day (or focus it and press
+  Alt+arrow).
+- **Click the title** to rename the gallery.
+- **Make cover** on any photo chooses the opening frame.
+- **Passcode** protects the gallery (below).
+- **Publish** uploads it and shows the link with a Copy button. Publish
+  again after more edits: the link stays the same.
+
+Every edit is saved to `selection.txt` straight away, so closing the browser
+or pressing Ctrl-C loses nothing; run `fdx share` on the folder again to pick
+up where you left off. The editor listens on 127.0.0.1 only, behind a random
+per-run token, and serves the rendered web copies and nothing else.
 
 ## What it picks
 
 From every photo sidecar under the folder:
 
 1. **Keep-rated only.** The effective rating: a `user_rating` you set (via
-   fdx-mcp) wins over the model's. `--include-review` lets review-rated photos
-   compete too.
-2. **One frame per burst.** Bursts and RAW+JPEG pairs recorded by the indexer
-   keep the frame you rated keep, else the indexer's primary (the sharpest).
-   Folders indexed with `--no-group` are chained on the fly with the same
-   rule as the indexer (same folder and camera, frames ≤ 2 s apart).
-3. **No near-duplicates.** Two candidates taken within 10 minutes whose
-   64-bit difference hashes differ by ≤ 10 bits are the same picture; the one
-   with the better sidecar assessment stays.
-4. **A cap (`--max`, default 40)** spread across the sections: every
-   day/place gets at least one photo, the rest go in proportion to how much
-   you shot there. Within a section the best-assessed frames win, preferring
-   frames at least 90 s apart. Ranking uses the sidecar's technical block
-   (focus, exposure, composition), and a photo you rated keep yourself
-   outranks any model assessment.
+   fdx-mcp) wins over the model's. `--include-review` lets review-rated
+   photos compete too.
+2. **One frame per burst.** Bursts and RAW+JPEG pairs keep the frame you
+   rated keep, else the indexer's primary (the sharpest). Folders indexed
+   with `--no-group` are chained on the fly by the indexer's own rule.
+3. **No near-duplicates.** Two frames of the same shape taken within 10
+   minutes whose 16x16 thumbnails correlate at 0.6 or more and differ by 24
+   levels or less on average are the same picture; the better-assessed one
+   stays.
+4. **A cap (`--max`, default 40)** spread across days and places: each gets
+   at least one photo, the rest go where you shot the most. Within a day the
+   best-assessed frames win, preferring frames at least 90 s apart, and the
+   last day always keeps its best late frame, so the gallery ends well.
+   Ranking uses the sidecar's focus, exposure and composition; a photo you
+   rated keep yourself outranks any model assessment.
 
-`--from` / `--to` (YYYY-MM-DD) limit the pick to some days of a longer folder.
+The **cover** is the strongest frame, whatever its shape; it opens the
+gallery once, uncropped. `--from` / `--to` (YYYY-MM-DD) limit the pick to
+some days of a longer folder.
 
-## How it is ordered
+## How it reads
 
-By capture time, in sections by **day** and **place**. A day runs 04:00 to
-04:00, so the campfire after midnight stays with its evening. The place is the
-reverse-geocoded name in the sidecar: a section changes when the area changes
-(the third-from-last part of the Nominatim name, a town or sub-county in most
-countries), so a game drive or a walk around town stays one section. Photos
-without GPS stay in the section of their day; a single frame elsewhere is
-folded into its day rather than becoming its own section. Headings read
-`Sunday 9 November · Ewangan, Narok West`.
+By capture time, in sections by **day** (04:00 to 04:00, so the campfire
+after midnight stays with its evening) and **place** (the reverse-geocoded
+area in the sidecar: a game drive or a walk around town stays one section).
+The title is made from the place most photos share and the month
+(`Narok · November 2025`, `Portugal · August 2024`); the line under it gives
+the days. Wide frames hang large, two portraits in a row hang as a pair, and
+on a phone every photo runs edge to edge. Each photo's alt text is a short
+line from its sidecar (`An adult leopard crossing the road.`); `--captions`
+also shows those lines under the photos.
 
-Each photo gets a one-line caption from the sidecar's `**Scene:**` sentence,
-cut at the first clause if it runs long. `--no-captions` leaves them off.
+## Passcodes
 
-## Preview and edit
+Turn on **Passcode** in the editor (or `fdx share <folder> --publish
+--passcode`, which asks for it; it is never taken from the command line) and
+the gallery is encrypted before it leaves your machine:
 
-The first run writes, under `FOLDER/_share/<name>/` (`--out` to put it
-elsewhere; `_`-prefixed folders are skipped by the indexer):
+- a key from the passcode with PBKDF2-HMAC-SHA256 (600,000 rounds, a random
+  salt per publish);
+- every photo and the page itself sealed with AES-256-GCM, each file bound
+  to its own path;
+- visitors see the title over a heavily blurred cover and one field; the
+  browser decrypts with WebCrypto, so the server only ever holds ciphertext
+  and needs no logic of its own.
 
+What stays visible without the passcode: the title, a 32 px blurred copy of
+the cover, the link's readable part (`narok-2025-11-...`), and how many
+files there are and how big. **A weak passcode can be brute-forced offline
+from the published files.** That is fine for a family album and not for
+anything sensitive. A server you don't control could also swap the page's
+script for one that records the passcode. Turning protection on for a
+gallery that was published open deletes the open copies from your server,
+but cannot recall copies someone already saved.
+
+Once a gallery is protected it stays protected: publishing again needs the
+passcode, or switching the toggle off (`--no-passcode`) on purpose.
+
+## Publishing
+
+The config lives at `~/.config/framedex/share.yaml` (or `$FDX_SHARE_CONFIG`,
+or `--config`). `fdx.art` is the planned domain and is not live yet; use
+whatever host you serve from.
+
+**Your own server (rsync over SSH, served by Caddy)**, the default:
+
+```yaml
+target: ssh://deploy@your-server:/srv/fdx-galleries
+base_url: https://fdx.art
+prefix: g
 ```
-selection.txt     the pick, in gallery order: edit this
-site/             the publishable page: index.html, photos/, thumbs/
-preview.html      the page with an edit banner and file names on each photo
-publish.json      after --publish: the link and what was uploaded
+
+Each publish syncs into exactly one folder, `/srv/fdx-galleries/g/<name>-<random>/`:
+photos first, the page last, then whatever you dropped is deleted, in that
+folder only. Ports and keys go in `~/.ssh/config`. The server side (a
+Caddy site block that serves static files with `noindex` headers and long
+cache lifetimes) is in [hosting/](hosting/README.md).
+
+**Cloudflare R2 or any S3-compatible bucket:**
+
+```yaml
+target: r2                       # or s3 with endpoint: and region:
+account_id: 0123456789abcdef0123456789abcdef
+bucket: galleries
+prefix: g
+base_url: https://fdx.art        # where the bucket is served
 ```
 
-`selection.txt` looks like this:
+Keys come from `FDX_SHARE_ACCESS_KEY_ID` / `FDX_SHARE_SECRET_ACCESS_KEY` (or
+`AWS_*`), or `credentials_file:` pointing at a chmod-600 YAML with
+`access_key_id` / `secret_access_key`; never from this file. Requests are
+signed with AWS Signature V4 by framedex itself. R2 does not resolve
+`/<key>/index.html`, so the page is also stored as the object `g/<name>-<random>`
+and that is the link you get.
 
+**A local folder:** `target: dir` with `path:` copies the gallery there (a
+static-site repo, a synced folder).
+
+Without the editor:
+
+```bash
+fdx share <folder> --publish            # publish the current selection (asks first)
+fdx share <folder> --publish --passcode # ... protected
+fdx share <folder> --publish --new-link # under a fresh link
+fdx share <folder> --unpublish          # delete it from the target (all its links)
 ```
-title: Mara Nov 2025
-subtitle: 4–9 November 2025 · Narok, Kenya
-cover: IMG_0175.JPG
-
-## Sunday 9 November · Ewangan, Narok West
-IMG_0293.JPG | A black-backed jackal stands in tall grass at dawn.
-IMG_0739.JPG | A leopard walks along a dirt track.
-
-# ---- Not picked (remove the leading '# ' to add one) ----
-# IMG_0740.JPG | A leopard walks along a dirt track.  # near-duplicate of IMG_0739.JPG
-```
-
-Delete a line (or put `# ` in front) to drop a photo, move lines to reorder,
-edit the text after ` | ` to re-caption, edit `## ` lines, `title:`,
-`subtitle:` and `cover:` (`cover: none` for no opening photo). Text after two
-spaces and `#` is a note and never shown. Then re-run `fdx-share FOLDER`: it
-re-renders from the file, re-using web copies that have not changed.
-`--reselect` picks again from the sidecars (the old file is kept as
-`selection.txt.bak`).
 
 ## What leaves your machine
 
-Only the files in `site/`:
+Only the published gallery:
 
-- **Web copies, never originals.** 2048 px on the long edge (JPEG q82) plus
-  a 1024 px grid copy, upright, colour profile kept. Originals are opened
-  read-only and never modified, moved or uploaded.
-- **GPS stripped by default.** The copies carry make, model and capture time
-  and nothing else from EXIF: no GPS, no serial numbers, no maker notes, no
-  XMP. `--keep-gps` keeps the GPS block. Section headings show place
-  *names*; edit them in `selection.txt` if a name says too much (a rhino
-  or leopard location, a home).
-- **Unlisted.** The link ends in a 12-character random token (~59 bits);
-  the page carries `noindex, nofollow, noimageindex, noarchive` and
+- **Web copies, never originals:** 2048 px on the long edge plus a 1024 px
+  copy, upright, colour profile kept. Originals are only ever read.
+- **No GPS:** the copies keep make, model and capture time, nothing else
+  from EXIF (no GPS, serial numbers, maker notes or XMP). `--keep-gps`
+  keeps the GPS block. Section headings show place *names*; edit them in
+  `selection.txt` if a name says too much (a rhino sighting, a home).
+- **Unlisted:** the link ends in 12 random characters (about 59 bits). The
+  page carries `noindex, nofollow, noimageindex, noarchive` and
   `referrer: no-referrer`, makes no third-party requests (no web fonts, no
-  analytics), and links only to framedex in the footer. Anyone who has the
-  link can open it; there is no password.
+  analytics), and links only to framedex in its footer.
 
-## Publish
+## selection.txt
 
-`--publish` re-renders, shows what will be uploaded and the link, and asks
-before sending anything (`--yes` skips the question; without a terminal it
-refuses). The link is `<base_url>/<prefix>/<name>-<random>`, recorded in
-`publish.json`: re-publishing after an edit keeps the same link, uploads only
-new or changed files, and deletes the files of photos you dropped.
-`--new-link` publishes under a fresh link; `--unpublish` deletes everything
-this gallery published to the configured target and breaks its links.
+The editor writes it; you can too. Under `FOLDER/_share/<name>/`
+(`_`-prefixed folders are skipped by the indexer):
 
-The config lives at `~/.config/framedex/share.yaml` (or `$FDX_SHARE_CONFIG`,
-or `--config`). Credentials never go in it.
-
-### Cloudflare R2
-
-1. Create a bucket (Cloudflare dashboard, R2). Keep it private to listing:
-   the default.
-2. Make it publicly readable through a custom domain on your zone (R2 →
-   bucket → Settings → Custom Domains) or the `r2.dev` subdomain (rate
-   limited; fine for testing). That URL is `base_url`.
-3. Create an R2 API token with Object Read & Write on that bucket; it shows
-   an Access Key ID and a Secret Access Key.
-4. Write the config and export the keys:
-
-```yaml
-target: r2
-account_id: 0123456789abcdef0123456789abcdef   # dashboard, R2 overview
-bucket: galleries
-prefix: g
-base_url: https://photos.example.com
 ```
+title: Narok · November 2025
+subtitle: 8–9 November
+cover: IMG_0320.JPG
+captions: off
+
+## Sunday 9 November · Narok West
+IMG_0293.JPG | An impala, tan and dark-marked.
+# IMG_0302.JPG | An adult African elephant with a young calf.  # hidden
+
+# ---- Not picked (remove the leading '# ' to add one) ----
+# IMG_0520.JPG | An adult male lion.  # near-duplicate of IMG_0518.JPG
+```
+
+Delete a line to drop a photo, move lines to reorder, edit the text after
+` | ` for its alt text and caption, edit `## ` headings and the header lines
+(`cover: none` for no opening photo). `--reselect` picks again from the
+sidecars (the old file is kept as `selection.txt.bak`).
+
+## fdx trips
 
 ```bash
-export FDX_SHARE_ACCESS_KEY_ID=...        # or AWS_ACCESS_KEY_ID
-export FDX_SHARE_SECRET_ACCESS_KEY=...    # or credentials_file: in the config
+fdx trips /Volumes/SSD-2025
 ```
 
-R2 does not turn `/<key>/` into `/<key>/index.html`, so the page is also
-stored as the extensionless object `<prefix>/<slug>` and that is the link
-you get; `<prefix>/<slug>/index.html` is uploaded too for hosts that do
-resolve it. Photos are uploaded with `Cache-Control: immutable` (their names
-change when their content does); the page with `no-cache`.
-
-### Any S3-compatible store
-
-`target: s3` with `endpoint:` (the S3 API URL, path-style) and `region:`
-instead of `account_id` works the same way (AWS S3, Backblaze B2, MinIO).
-Requests are signed with AWS Signature V4 by framedex itself (no boto3).
-
-### A local folder
-
-`target: dir` with `path:` copies the site into `path/<prefix>/<slug>/`
-(a static-site repo, a synced folder) and prints `<base_url>/<prefix>/<slug>/`.
+lists the trips in an archive (split where there is more than a day and a
+half without a photo, or a long GPS jump), each with a draft gallery size
+and the `fdx share` command that makes it.
 
 ## Known limitations (v0)
 
-- Photos only; video clips in the folder are ignored.
+- Photos only; videos in the folder are ignored.
 - One gallery per work folder; `--name` gives a folder a second one.
-- Captions come from the indexing model's scene sentence; they are plain
-  but not checked by a person until you read `selection.txt`.
-- There is no password or expiry: the link is the only key. `--unpublish`
-  is the way to take a gallery down.
-- Hosting is your own bucket. framedex does not run a shared host.
+- The editor reorders within a day; moving a photo to another day is a
+  `selection.txt` edit.
+- No expiry and no per-visitor access: the link (and the passcode, if set)
+  is the key. `--unpublish` takes a gallery down.
+- Hosting is your own server or bucket. framedex does not run a shared host.

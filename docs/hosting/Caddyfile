@@ -1,0 +1,36 @@
+# fdx share galleries on your own server: static files only, nothing else.
+# Replace the domain and the root; `fdx share` publishes into the root over
+# rsync (target: ssh://deploy@your-server:/srv/fdx-galleries).
+fdx.art {
+	root * /srv/fdx-galleries
+	encode zstd gzip
+
+	header {
+		X-Robots-Tag "noindex, nofollow, noimageindex, noarchive"
+		Referrer-Policy "no-referrer"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+
+	# Photos (and their sealed .bin twins) never change under a name.
+	@media path_regexp ^/.+/(photos|thumbs)/[0-9a-f]{16}\.(jpg|bin)$
+	header @media Cache-Control "public, max-age=31536000, immutable"
+
+	# Pages revalidate, so a re-publish shows at once.
+	@pages path */ */index.html
+	header @pages Cache-Control "no-cache"
+
+	# No front page, no listings, no dotfiles (rsync's in-flight temp files).
+	@root path /
+	respond @root 404
+	file_server {
+		hide .*
+	}
+
+	# Errors get the same quiet headers and say nothing about the server.
+	handle_errors {
+		header X-Robots-Tag "noindex, nofollow, noimageindex, noarchive"
+		header -Server
+		respond "{err.status_code}" {err.status_code}
+	}
+}

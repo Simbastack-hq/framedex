@@ -1,10 +1,11 @@
-"""Tests for fdx share's use of fdx-develop's edited copies — a file
-convention, not an import: <root>/developed/<dir>/<name>.jpg plus a
-<name>.develop.json record (status, source fingerprint, output SHA-256),
-<name> chosen by fdx-develop's own collision rule.
+"""Tests for fdx share --edit and its use of fdx-develop's edited copies — a
+file convention, not an import: fdx share hands fdx-develop the picked RAWs
+(--files-from) and finds each edit by scanning <root>/developed/<dir>/ for a
+*.develop.json record (status, source fingerprint, output name, output
+SHA-256) that matches the original.
 
-Synthetic files in tmp_path only; fdx-develop itself is never run (its
-command is mocked).
+Synthetic files in tmp_path only; the real fdx-develop is never run (a fake
+stands in for it on PATH, or its command is mocked).
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -20,10 +22,16 @@ import pytest
 from framedex import share
 
 
-def _record(raw: Path, jpg: Path, status: str = "done") -> dict[str, Any]:
+def _record(
+    raw: Path,
+    jpg: Path,
+    status: str = "done",
+    created_at: str = "2026-10-21T04:00:00+00:00",
+) -> dict[str, Any]:
     st = raw.stat()
     return {
         "status": status,
+        "created_at": created_at,
         "source": {"name": raw.name, "size": st.st_size, "mtime_ns": st.st_mtime_ns},
         "output": jpg.name,
         "output_sha256": hashlib.sha256(jpg.read_bytes()).hexdigest(),
@@ -37,9 +45,8 @@ def _shoot(
     raw = folder / "day1" / "DSC_1.NEF"
     raw.parent.mkdir(parents=True)
     raw.write_bytes(b"raw sensor data")
-    if (
-        naming == "file name"
-    ):  # another RAW shares the stem: fdx-develop uses file names
+    if naming == "file name":
+        # another RAW shares the stem, so fdx-develop names outputs by file name
         (raw.parent / "dsc_1.ARW").write_bytes(b"other raw")
     name = raw.stem if naming == "stem" else raw.name
     out = folder / "developed" / "day1"
@@ -48,19 +55,6 @@ def _shoot(
     jpg.write_bytes(b"edited jpeg bytes")
     (out / f"{name}.develop.json").write_text(json.dumps(_record(raw, jpg, status)))
     return folder, raw, jpg
-
-
-def test_develop_names_mirror_fdx_develop() -> None:
-    assert share.develop_names(["A.NEF"]) == {"A.NEF": "A"}
-    assert share.develop_names(["A.NEF", "a.dng"]) == {
-        "A.NEF": "A.NEF",
-        "a.dng": "a.dng",
-    }
-    assert share.develop_names(["A.NEF", "A.DNG", "A.NEF.DNG"]) == {
-        "A.NEF": "A.NEF",
-        "A.DNG": "A.DNG",
-        "A.NEF.DNG": "A.NEF.DNG",  # its stem clashed with A.NEF's file name
-    }
 
 
 @pytest.mark.parametrize("naming", ["stem", "file name"])
@@ -73,14 +67,44 @@ def test_a_finished_edit_of_this_exact_original_is_used(
     assert not share.is_develop_output(raw)
 
 
-def test_an_edit_under_a_superseded_name_is_ignored(tmp_path: Path) -> None:
-    folder, raw, _ = _shoot(tmp_path)  # DSC_1.jpg, valid on its own
-    (raw.parent / "DSC_1.ARW").write_bytes(
-        b"a second body's RAW"
-    )  # now the stems clash
-    assert (
-        share.developed_copy(raw, folder) is None
-    )  # fdx-develop writes DSC_1.NEF.jpg now
+def test_clash_renamed_outputs_are_found_by_their_records(tmp_path: Path) -> None:
+    folder = tmp_path / "shoot"
+    folder.mkdir()
+    out = folder / "developed"
+    out.mkdir()
+    raws = [folder / n for n in ("A.ARW", "A.NEF", "A.NEF.DNG")]
+    for (
+        raw
+    ) in raws:  # fdx-develop's plan_outputs: every clashing name becomes the file name
+        raw.write_bytes(f"sensor data of {raw.name}".encode())
+        jpg = out / f"{raw.name}.jpg"
+        jpg.write_bytes(f"edit of {raw.name}".encode())
+        (out / f"{raw.name}.develop.json").write_text(json.dumps(_record(raw, jpg)))
+    assert [share.developed_copy(raw, folder) for raw in raws] == [
+        out / "A.ARW.jpg",
+        out / "A.NEF.jpg",
+        out / "A.NEF.DNG.jpg",
+    ]
+
+
+def test_the_newest_record_wins_over_an_edit_left_under_an_old_name(
+    tmp_path: Path,
+) -> None:
+    folder, raw, old_jpg = _shoot(tmp_path)  # DSC_1.jpg, from before a clash
+    new_jpg = old_jpg.with_name("DSC_1.NEF.jpg")  # the name fdx-develop uses now
+    new_jpg.write_bytes(b"the newer edit")
+    record = _record(raw, new_jpg, created_at="2026-10-22T09:00:00+00:00")
+    new_jpg.with_name("DSC_1.NEF.develop.json").write_text(json.dumps(record))
+    assert share.developed_copy(raw, folder) == new_jpg
+
+
+def test_a_record_cannot_point_outside_its_folder(tmp_path: Path) -> None:
+    folder, raw, jpg = _shoot(tmp_path)
+    record = jpg.with_name("DSC_1.develop.json")
+    rec = json.loads(record.read_text())
+    rec["output"] = "../../day1/DSC_1.NEF"
+    record.write_text(json.dumps(rec))
+    assert share.developed_copy(raw, folder) is None
 
 
 def test_only_raws_have_edits(tmp_path: Path) -> None:
@@ -133,35 +157,107 @@ def test_edited_copies_are_not_photos_waiting_to_be_indexed(tmp_path: Path) -> N
     ]  # not developed/day1/DSC_1.jpg
 
 
+def test_edit_sends_only_the_shown_raws(tmp_path: Path) -> None:
+    folder = tmp_path / "shoot"
+    originals = {n: folder / n for n in ("a.NEF", "b.JPG", "c.HEIC", "d.ARW", "e.NEF")}
+    gallery = share.Gallery(
+        "T",
+        sections=[
+            share.GallerySection(
+                "",
+                [
+                    share.Item("a.NEF"),
+                    share.Item("b.JPG"),  # not a RAW: rendered as it is
+                    share.Item("c.HEIC"),
+                    share.Item("d.ARW"),
+                    share.Item("e.NEF", hidden=True),  # hidden: not sent
+                ],
+            )
+        ],
+        pool=[(share.Item("f.NEF"), "over the cap")],  # not picked: not sent
+    )
+    assert share.edit_picks(gallery, originals) == [folder / "a.NEF", folder / "d.ARW"]
+
+
 class _Done:
-    def __init__(self, code: int) -> None:
-        self.returncode = code
+    def __init__(self, code: int, out: str = "", err: str = "") -> None:
+        self.returncode, self.stdout, self.stderr = code, out, err
 
 
-def test_edit_runs_fdx_develop_with_the_examples(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def _fake_develop(
+    monkeypatch: pytest.MonkeyPatch, *, dry: _Done, real: _Done
+) -> list[dict[str, Any]]:
+    """fdx-develop 'on PATH': records each call and the --files-from list it
+    received (read while the call runs: the list is a temp file)."""
+    calls: list[dict[str, Any]] = []
+
+    def run(cmd: list[str], **kw: Any) -> _Done:
+        listing = Path(cmd[cmd.index("--files-from") + 1]).read_text()
+        calls.append({"cmd": cmd, "files": listing.splitlines()})
+        return dry if "--dry-run" in cmd else real
+
+    monkeypatch.setattr(
+        "framedex.share.shutil.which", lambda name: "/opt/bin/fdx-develop"
+    )
+    monkeypatch.setattr("framedex.share.subprocess.run", run)
+    return calls
+
+
+def test_fdx_develop_gets_only_the_picks_after_its_estimate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    calls: list[list[str]] = []
+    picks = [tmp_path / "day1" / "a.NEF", tmp_path / "d.ARW"]
+    # fdx-develop's dry run: its summary line, then one line per photo to do
+    estimate = "9 RAWs, 2 listed, 0 already developed, 2 to do; est. $0.50"
+    listed = "  day1/a.NEF -> developed/day1/a.jpg\n  d.ARW -> developed/d.jpg\n"
+    calls = _fake_develop(
+        monkeypatch, dry=_Done(0, f"{estimate}\n{listed}"), real=_Done(0)
+    )
+    style = str(tmp_path / "style")
+    assert share._run_develop(tmp_path, picks, style, edit_max=60) == 0
+    # relative to the shoot, one per line
+    assert [c["files"] for c in calls] == [["day1/a.NEF", "d.ARW"]] * 2
+    dry, real = (c["cmd"] for c in calls)
+    assert dry == [*real, "--dry-run"]
+    assert real[:2] == ["/opt/bin/fdx-develop", str(tmp_path)]
+    assert real[real.index("--examples") + 1] == style
+    # one line (count, cost and the time it'll take), then it runs, unasked
+    assert capsys.readouterr().out == f"Editing    {estimate}, ~5 min\n"
 
-    def ok(cmd: list[str]) -> _Done:
-        calls.append(cmd)
-        return _Done(0)
+    # all edited already: no real run (it would still look for its RAW engine)
+    done = "9 RAWs, 2 listed, 2 already developed, 0 to do; est. $0.00"
+    calls = _fake_develop(monkeypatch, dry=_Done(0, done + "\n"), real=_Done(1))
+    assert share._run_develop(tmp_path, picks, None, edit_max=60) == 0
+    assert len(calls) == 1 and capsys.readouterr().out == f"Editing    {done}\n"
 
-    monkeypatch.setattr("framedex.share.shutil.which", lambda name: "/bin/fdx-develop")
-    monkeypatch.setattr("framedex.share.subprocess.run", ok)
-    assert share._run_develop(tmp_path, str(tmp_path / "style")) == 0
-    assert calls == [
-        ["/bin/fdx-develop", str(tmp_path), "--examples", str(tmp_path / "style")]
-    ]
 
-    monkeypatch.setattr("framedex.share.subprocess.run", lambda cmd: _Done(3))
-    assert share._run_develop(tmp_path, None) == 1
+def test_too_many_picks_are_refused_before_anything_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = _fake_develop(monkeypatch, dry=_Done(0), real=_Done(0))
+    picks = [tmp_path / f"{n}.NEF" for n in range(61)]
+    assert share._run_develop(tmp_path, picks, None, edit_max=60) == 1
+    assert calls == []
+    assert "more than --edit-max 60" in capsys.readouterr().err
 
-    def cannot_start(cmd: list[str]) -> _Done:
+
+def test_fdx_develop_failures_are_one_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    picks = [tmp_path / "a.NEF"]
+    _fake_develop(monkeypatch, dry=_Done(2, "", "no RapidRAW engine"), real=_Done(0))
+    assert share._run_develop(tmp_path, picks, None, edit_max=60) == 1
+    assert "no RapidRAW engine" in capsys.readouterr().err
+    calls = _fake_develop(monkeypatch, dry=_Done(0, "1 RAW; est. $0.23"), real=_Done(3))
+    assert share._run_develop(tmp_path, picks, None, edit_max=60) == 1
+    assert len(calls) == 2 and "exit 3" in capsys.readouterr().err
+
+    def cannot_start(cmd: list[str], **kw: Any) -> _Done:
         raise OSError("bad interpreter")
 
     monkeypatch.setattr("framedex.share.subprocess.run", cannot_start)
-    assert share._run_develop(tmp_path, None) == 1  # one error line, no traceback
+    assert share._run_develop(tmp_path, picks, None, edit_max=60) == 1
+    assert capsys.readouterr().err.count("\n") == 1  # no traceback
 
 
 def test_edit_without_fdx_develop_says_how_to_get_it(
@@ -173,11 +269,127 @@ def test_edit_without_fdx_develop_says_how_to_get_it(
         raise AssertionError("nothing may run")
 
     monkeypatch.setattr("framedex.share.subprocess.run", never)
-    assert share.main([str(tmp_path), "--edit"]) == 1
+    assert share._run_develop(tmp_path, [tmp_path / "a.NEF"], None, edit_max=60) == 1
     err = capsys.readouterr().err
     assert "--edit needs fdx-develop" in err and err.count("\n") == 1  # one clear line
     assert share.main([str(tmp_path), "--examples", "x"]) == 1
-    assert "--examples only applies with --edit" in capsys.readouterr().err
+    assert share.main([str(tmp_path), "--edit-max", "5"]) == 1
+    assert "only apply with --edit" in capsys.readouterr().err
+
+
+# Stands in for fdx-develop: logs what it was given, prints an estimate on
+# --dry-run, else writes an edit plus its record for every listed RAW.
+FAKE_DEVELOP = """
+import hashlib, json, os, sys
+from pathlib import Path
+
+args = sys.argv[1:]
+root = Path(args[0])
+files = Path(args[args.index("--files-from") + 1]).read_text().splitlines()
+with open(os.environ["FAKE_DEVELOP_LOG"], "a") as log:
+    log.write(json.dumps({"args": args, "files": files}) + "\\n")
+if "--dry-run" in args:
+    print(f"5 RAWs, {len(files)} listed, 0 already developed, {len(files)} to do; est. $0.50")
+    for rel in files:
+        print(f"  {rel} -> developed/{rel}.jpg")
+    sys.exit(0)
+for rel in files:
+    raw = root / rel
+    out = root / "developed" / Path(rel).parent
+    out.mkdir(parents=True, exist_ok=True)
+    jpg = out / (raw.stem + ".jpg")
+    jpg.write_bytes(b"edit of " + raw.name.encode())
+    st = raw.stat()
+    (out / (raw.stem + ".develop.json")).write_text(json.dumps({
+        "status": "done",
+        "created_at": "2026-10-21T04:00:00+00:00",
+        "source": {"name": raw.name, "size": st.st_size, "mtime_ns": st.st_mtime_ns},
+        "output": jpg.name,
+        "output_sha256": hashlib.sha256(jpg.read_bytes()).hexdigest(),
+    }))
+"""
+
+
+class _Rendered(Exception):
+    pass
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the fake fdx-develop is a sh script")
+def test_edit_runs_fdx_develop_on_the_picks_and_renders_their_edits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from framedex import share_site
+
+    folder = tmp_path / "shoot"
+    for rel in (
+        "day1/a.NEF",
+        "day1/b.JPG",
+        "day1/c.ARW",
+        "day2/f.ARW",
+        "d.NEF",
+        "e.NEF",
+    ):
+        (folder / rel).parent.mkdir(parents=True, exist_ok=True)
+        (folder / rel).write_bytes(f"sensor data of {rel}".encode())
+    gallery = share.Gallery(
+        "T",
+        sections=[
+            share.GallerySection(
+                "Day 1",
+                [
+                    share.Item("day1/a.NEF"),
+                    share.Item("day1/b.JPG"),  # a JPEG: rendered as it is
+                    share.Item("day1/c.ARW", hidden=True),  # hidden: never edited
+                ],
+            ),
+            share.GallerySection("Day 2", [share.Item("day2/f.ARW")]),
+        ],
+        pool=[(share.Item("d.NEF"), "near-duplicate of day1/a.NEF")],  # not picked
+    )  # e.NEF was never picked at all
+    work = folder / share.SHARE_DIR / share.slugify(folder.name)
+    work.mkdir(parents=True)
+    share.write_selection_file(work / share.SELECTION_FILE, gallery)
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "fake_develop.py").write_text(FAKE_DEVELOP)
+    exe = bin_dir / "fdx-develop"
+    exe.write_text(
+        f'#!/bin/sh\nexec "{sys.executable}" "{bin_dir / "fake_develop.py"}" "$@"\n'
+    )
+    exe.chmod(0o755)
+    log = tmp_path / "develop.log"
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_DEVELOP_LOG", str(log))
+
+    rendered: dict[str, Path] = {}
+
+    def render_site(gallery: Any, sources: dict[str, Path], *a: Any, **kw: Any) -> Any:
+        rendered.update(sources)
+        raise _Rendered
+
+    monkeypatch.setattr(share_site, "render_site", render_site)
+
+    assert share.main([str(folder), "--edit", "--edit-max", "1", "--no-open"]) == 1
+    assert "would send 2 RAWs" in capsys.readouterr().err
+    assert not log.exists() and not rendered  # refused before anything ran
+
+    with pytest.raises(_Rendered):
+        share.main([str(folder), "--edit", "--no-open"])
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert [c["files"] for c in calls] == [["day1/a.NEF", "day2/f.ARW"]] * 2
+    assert ["--dry-run" in c["args"] for c in calls] == [True, False]
+    out = capsys.readouterr().out
+    est = "5 RAWs, 2 listed, 0 already developed, 2 to do; est. $0.50, ~5 min"
+    assert f"Editing    {est}\n" in out
+    assert "Edited     2 of 4 photos use their fdx-develop copy" in out
+    assert rendered == {
+        "day1/a.NEF": folder / "developed/day1/a.jpg",
+        "day1/b.JPG": folder / "day1/b.JPG",
+        "day1/c.ARW": folder
+        / "day1/c.ARW",  # restored later, it renders from its original
+        "day2/f.ARW": folder / "developed/day2/f.jpg",
+    }
 
 
 def test_the_web_copy_is_made_from_the_edit(tmp_path: Path) -> None:

@@ -107,6 +107,23 @@ def test_a_record_cannot_point_outside_its_folder(tmp_path: Path) -> None:
     assert share.developed_copy(raw, folder) is None
 
 
+@pytest.mark.skipif(os.name == "nt", reason="symlinks")
+def test_an_edit_that_resolves_outside_the_shoot_is_never_used(tmp_path: Path) -> None:
+    folder, raw, jpg = _shoot(tmp_path)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "private.jpg").write_bytes(jpg.read_bytes())  # same bytes, same SHA
+    jpg.unlink()
+    jpg.symlink_to(outside / "private.jpg")
+    assert share.developed_copy(raw, folder) is None
+
+    folder, raw, jpg = _shoot(tmp_path / "second")
+    day = jpg.parent
+    day.rename(outside / "day1")
+    day.symlink_to(outside / "day1", target_is_directory=True)  # developed/day1 -> out
+    assert share.developed_copy(raw, folder) is None
+
+
 def test_only_raws_have_edits(tmp_path: Path) -> None:
     folder, _, _ = _shoot(tmp_path)
     camera_jpeg = folder / "day1" / "DSC_1.JPG"
@@ -151,10 +168,25 @@ def test_edited_copies_are_not_photos_waiting_to_be_indexed(tmp_path: Path) -> N
     folder, raw, _ = _shoot(tmp_path)
     plain = folder / "day1" / "IMG_2.JPG"
     plain.write_bytes(b"jpeg")
+    # not developed/day1/DSC_1.jpg: its record holds its SHA-256
+    assert share.unindexed_images(folder) == [raw, plain]
+
+
+def test_a_jpeg_put_in_place_of_an_edit_by_hand_is_a_photo(tmp_path: Path) -> None:
+    folder, raw, jpg = _shoot(tmp_path)
+    first = hashlib.sha256(jpg.read_bytes()).hexdigest()
+    jpg.write_bytes(b"the photographer's own export, saved over it")
     assert share.unindexed_images(folder) == [
         raw,
-        plain,
-    ]  # not developed/day1/DSC_1.jpg
+        jpg,
+    ]  # the stale record proves nothing
+    # an unfinished re-edit leaves the previous output in place, still fdx-develop's
+    record = jpg.with_name("DSC_1.develop.json")
+    rec = json.loads(record.read_text())
+    rec.update(status="pending", output_sha256="", previous_sha256=first)
+    record.write_text(json.dumps(rec))
+    jpg.write_bytes(b"edited jpeg bytes")  # the bytes `first` was taken from
+    assert share.unindexed_images(folder) == [raw]
 
 
 def test_edit_sends_only_the_shown_raws(tmp_path: Path) -> None:
@@ -187,13 +219,17 @@ class _Done:
 def _fake_develop(
     monkeypatch: pytest.MonkeyPatch, *, dry: _Done, real: _Done
 ) -> list[dict[str, Any]]:
-    """fdx-develop 'on PATH': records each call and the --files-from list it
-    received (read while the call runs: the list is a temp file)."""
+    """fdx-develop 'on PATH': records each call, the --files-from lines it
+    received (read while the call runs: the list is a temp file) and the files
+    they name when read the way fdx-develop reads them (lines stripped, blank
+    and '#' lines skipped, relative to the root)."""
     calls: list[dict[str, Any]] = []
 
     def run(cmd: list[str], **kw: Any) -> _Done:
-        listing = Path(cmd[cmd.index("--files-from") + 1]).read_text()
-        calls.append({"cmd": cmd, "files": listing.splitlines()})
+        lines = Path(cmd[cmd.index("--files-from") + 1]).read_text().splitlines()
+        entries = [ln.strip() for ln in lines]
+        named = [Path(cmd[1]) / e for e in entries if e and not e.startswith("#")]
+        calls.append({"cmd": cmd, "lines": lines, "files": named})
         return dry if "--dry-run" in cmd else real
 
     monkeypatch.setattr(
@@ -215,8 +251,9 @@ def test_fdx_develop_gets_only_the_picks_after_its_estimate(
     )
     style = str(tmp_path / "style")
     assert share._run_develop(tmp_path, picks, style, edit_max=60) == 0
-    # relative to the shoot, one per line
-    assert [c["files"] for c in calls] == [["day1/a.NEF", "d.ARW"]] * 2
+    # relative to the shoot, one per line, naming exactly the picks
+    assert [c["lines"] for c in calls] == [["./day1/a.NEF", "./d.ARW"]] * 2
+    assert [c["files"] for c in calls] == [picks] * 2
     dry, real = (c["cmd"] for c in calls)
     assert dry == [*real, "--dry-run"]
     assert real[:2] == ["/opt/bin/fdx-develop", str(tmp_path)]
@@ -229,6 +266,23 @@ def test_fdx_develop_gets_only_the_picks_after_its_estimate(
     calls = _fake_develop(monkeypatch, dry=_Done(0, done + "\n"), real=_Done(1))
     assert share._run_develop(tmp_path, picks, None, edit_max=60) == 0
     assert len(calls) == 1 and capsys.readouterr().out == f"Editing    {done}\n"
+
+
+def test_odd_file_names_reach_fdx_develop_as_themselves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # unprefixed, '#1.NEF' would be a comment and ' a.NEF' would become 'a.NEF'
+    picks = [tmp_path / "#1.NEF", tmp_path / " a.NEF", tmp_path / "day 2" / "b.NEF"]
+    calls = _fake_develop(
+        monkeypatch, dry=_Done(0, "3 to do; est. $0.75"), real=_Done(0)
+    )
+    assert share._run_develop(tmp_path, picks, None, edit_max=60) == 0
+    assert [c["files"] for c in calls] == [picks] * 2
+
+    for name in ("trailing .NEF ", "line\nbreak.NEF"):  # no line can carry these
+        calls = _fake_develop(monkeypatch, dry=_Done(0), real=_Done(0))
+        assert share._run_develop(tmp_path, [tmp_path / name], None, edit_max=60) == 1
+        assert calls == [] and "rename it or hide it" in capsys.readouterr().err
 
 
 def test_too_many_picks_are_refused_before_anything_runs(
@@ -258,6 +312,14 @@ def test_fdx_develop_failures_are_one_line(
     monkeypatch.setattr("framedex.share.subprocess.run", cannot_start)
     assert share._run_develop(tmp_path, picks, None, edit_max=60) == 1
     assert capsys.readouterr().err.count("\n") == 1  # no traceback
+
+    def no_space(*a: Any, **kw: Any) -> Any:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr("framedex.share.tempfile.TemporaryDirectory", no_space)
+    assert share._run_develop(tmp_path, picks, None, edit_max=60) == 1
+    err = capsys.readouterr().err
+    assert "No space left" in err and err.count("\n") == 1
 
 
 def test_edit_without_fdx_develop_says_how_to_get_it(
@@ -377,7 +439,7 @@ def test_edit_runs_fdx_develop_on_the_picks_and_renders_their_edits(
     with pytest.raises(_Rendered):
         share.main([str(folder), "--edit", "--no-open"])
     calls = [json.loads(line) for line in log.read_text().splitlines()]
-    assert [c["files"] for c in calls] == [["day1/a.NEF", "day2/f.ARW"]] * 2
+    assert [c["files"] for c in calls] == [["./day1/a.NEF", "./day2/f.ARW"]] * 2
     assert ["--dry-run" in c["args"] for c in calls] == [True, False]
     out = capsys.readouterr().out
     est = "5 RAWs, 2 listed, 0 already developed, 2 to do; est. $0.50, ~5 min"

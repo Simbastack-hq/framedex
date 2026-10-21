@@ -107,13 +107,14 @@ With or without `--edit`, a RAW's web copy is made from its edited copy
 whenever fdx-develop left a trustworthy one in its default output folder:
 a `developed/<dir>/*.develop.json` record that names this exact original
 (same file name, size and modification time), says `done`, and whose
-`output` JPEG still has the recorded SHA-256. If an older edit survives under
-a superseded name, the newest record wins. Anything else (a `partial`,
-`failed` or `pending` edit, an original changed since, a file changed after
-fdx-develop wrote it) falls back to the original. fdx share reads those
-files and never imports fdx-develop's code; edited copies with a record never
-show up as photos of their own. The editor shows the edited copy as the
-photo; nothing else changes.
+`output` JPEG still has the recorded SHA-256 (and, symlinks resolved, sits
+inside the shoot). If an older edit survives under a superseded name, the
+newest record wins. Anything else (a `partial`, `failed` or `pending` edit,
+an original changed since, a file changed after fdx-develop wrote it) falls
+back to the original. fdx share reads those files and never imports
+fdx-develop's code. An edited copy whose record holds its SHA-256 never shows
+up as a photo of its own; a JPEG you saved over one by hand does. The editor
+shows the edited copy as the photo; nothing else changes.
 
 ## Passcodes
 

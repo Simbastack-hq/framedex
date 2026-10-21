@@ -980,9 +980,20 @@ def in_date_range(p: Photo, start: date | None, end: date | None) -> bool:
 
 
 def is_develop_output(path: Path) -> bool:
-    """An fdx develop edited copy (it has a .develop.json record beside it):
-    the edit of a photo already in the folder, never a photo of its own."""
-    return path.with_name(path.stem + DEVELOP_RECORD).is_file()
+    """An fdx-develop edited copy: the edit of a photo already in the folder,
+    never a photo of its own. Proven by fdx-develop's own rule: the record
+    beside it holds these exact bytes' SHA-256 (its output, or the one an
+    unfinished later attempt left in place). A JPEG put there by hand is a
+    photo like any other."""
+    try:
+        record = path.with_name(path.stem + DEVELOP_RECORD).read_text(encoding="utf-8")
+        rec = json.loads(record)
+        if not isinstance(rec, dict):
+            return False
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except (OSError, ValueError):
+        return False
+    return digest in (rec.get("output_sha256"), rec.get("previous_sha256"))
 
 
 def developed_copy(original: Path, folder: Path) -> Path | None:
@@ -991,12 +1002,13 @@ def developed_copy(original: Path, folder: Path) -> Path | None:
     the records whose `source` is exactly this original (name, size and
     mtime_ns, so an original changed since is never shown with a stale edit),
     whose status is `done`, and whose `output` JPEG (a file in the same
-    folder) has the recorded SHA-256. When an older edit survives under a
-    superseded name, the newest record wins. None otherwise; the original is
-    used."""
+    folder, inside the shoot once symlinks are resolved) has the recorded
+    SHA-256. When an older edit survives under a superseded name, the newest
+    record wins. None otherwise; the original is used."""
     if original.suffix.lower() not in RAW_EXTENSIONS:
         return None  # fdx-develop only edits RAWs
     try:
+        root = folder.resolve()
         rel = original.relative_to(folder)
         st = original.stat()
         out_dir = folder / DEVELOPED_DIR / rel.parent
@@ -1015,7 +1027,9 @@ def developed_copy(original: Path, folder: Path) -> Path | None:
                 continue
             if not output or Path(output).name != output:
                 continue  # a file in this folder, nothing else
-            jpg = out_dir / output
+            jpg = (out_dir / output).resolve()
+            if root not in jpg.parents:
+                continue  # like resolve_item: never an image from outside the shoot
             if rec.get("output_sha256") != hashlib.sha256(jpg.read_bytes()).hexdigest():
                 continue
             rank = (str(rec.get("created_at") or ""), record.stat().st_mtime_ns)
@@ -1247,16 +1261,22 @@ def _run_develop(
             f"--edit would send {len(picks)} RAWs to fdx-develop, more than --edit-max "
             f"{edit_max}; hide some in the editor or raise --edit-max"
         )
-    with tempfile.TemporaryDirectory(prefix="fdx-share-") as tmp:
-        listing = Path(tmp) / "picks.txt"
-        listing.write_text(
-            "".join(p.relative_to(folder).as_posix() + "\n" for p in picks),
-            encoding="utf-8",
-        )
-        cmd = [exe, str(folder), "--files-from", str(listing)]
-        if examples:
-            cmd += ["--examples", str(Path(examples).expanduser())]
-        try:
+    # fdx-develop strips each line and skips '#' comments: './' keeps a name
+    # that starts with '#' or a space; a line can't carry the rest.
+    entries = ["./" + p.relative_to(folder).as_posix() for p in picks]
+    for entry in entries:
+        if entry.strip() != entry or len(entry.splitlines()) != 1:
+            return _err(
+                f"--edit can't list {entry[2:]!r} for fdx-develop (a line break or "
+                "trailing space in its name); rename it or hide it"
+            )
+    try:
+        with tempfile.TemporaryDirectory(prefix="fdx-share-") as tmp:
+            listing = Path(tmp) / "picks.txt"
+            listing.write_text("".join(e + "\n" for e in entries), encoding="utf-8")
+            cmd = [exe, str(folder), "--files-from", str(listing)]
+            if examples:
+                cmd += ["--examples", str(Path(examples).expanduser())]
             plan = subprocess.run([*cmd, "--dry-run"], capture_output=True, text=True)
             if plan.returncode != 0:
                 return _err(
@@ -1276,8 +1296,8 @@ def _run_develop(
             if todo and not int(todo.group(1)):
                 return 0  # all edited already; a run would still want its engine
             code = subprocess.run(cmd).returncode
-        except OSError as e:
-            return _err(f"fdx-develop could not start ({e})")
+    except OSError as e:  # the temp list, or fdx-develop itself, failed to start
+        return _err(f"fdx-develop could not run ({e})")
     if code != 0:
         return _err(f"fdx-develop stopped (exit {code}); see above")
     return 0

@@ -36,6 +36,13 @@ photos = [
     # missing extra and prints an actionable install hint.
     "osxphotos>=0.69.0; sys_platform == 'darwin'",
 ]
+share = [
+    # fdx share: web copies (Pillow, pillow-heif for HEIC) and passcode
+    # encryption (cryptography's AES-GCM). rsync/ssh are system binaries.
+    "Pillow>=10.0.0",
+    "pillow-heif>=0.16.0",
+    "cryptography>=42.0.0",
+]
 mcp = [
     # fdx-mcp: the official MCP SDK (pulls pydantic, starlette, uvicorn, httpx,
     # jsonschema) plus Pillow for contact sheets. exiftool and ffmpeg are
@@ -47,6 +54,7 @@ all = [
     "whisperx>=3.1.0",
     "Pillow>=10.0.0",
     "pillow-heif>=0.16.0",
+    "cryptography>=42.0.0",
     "osxphotos>=0.69.0; sys_platform == 'darwin'",
     "mcp>=2,<3",
 ]

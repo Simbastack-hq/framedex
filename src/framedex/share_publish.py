@@ -1,33 +1,39 @@
 """
-framedex.share_publish — upload a rendered fdx-share gallery.
+framedex.share_publish — publish a rendered fdx share gallery.
 
-Targets (set in ~/.config/framedex/share.yaml, see docs/share.md):
+Targets (~/.config/framedex/share.yaml, see docs/share.md):
 
-    r2   Cloudflare R2 over its S3 API (the default, and the first supported)
-    s3   any S3-compatible endpoint (AWS S3, Backblaze B2, MinIO, ...)
-    dir  copy into a local folder (a static-site repo, a synced folder, a test)
+    ssh://user@host:/srv/fdx-galleries   rsync over SSH into a folder a web
+                                         server (Caddy) serves as static files
+    r2 / s3                              Cloudflare R2 or any S3-compatible
+                                         bucket, signed with SigV4 below on
+                                         `requests` (no boto3)
+    dir                                  a local folder (a static-site repo,
+                                         a synced folder, tests)
 
-S3/R2 requests are signed with AWS Signature V4 by the ~80 lines below on
-`requests` (already a framedex dependency) instead of pulling boto3.
-
-Each gallery gets one link, `<base_url>/<prefix>/<trip-slug>-<random>`. The
-page is stored twice: as the extensionless object at that key (R2 and S3 do
-not resolve index.html) and as `<key>/index.html` for hosts that do. The
-photos sit under `<key>/photos/` and `<key>/thumbs/`. What was uploaded is
-recorded in `<work>/publish.json`, so a re-publish after an edit uploads only
-what changed, deletes what was dropped, and keeps the same link.
+Every publish uploads one artifact, built here from the gallery's shown
+photos only (`build_artifact`): web copies, or with a passcode their sealed
+versions, then the page last. The link is `<base_url>/<prefix>/<name>-<random>`,
+recorded with what was uploaded in `<work>/publish.json`, so a re-publish
+keeps the link, sends only what changed and deletes what was dropped; a
+gallery published with a passcode stays protected until published open on
+purpose.
 """
 
 from __future__ import annotations
 
+import getpass
 import hashlib
 import hmac
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -45,27 +51,33 @@ STATE_FILE = "publish.json"
 ACCESS_KEY_ENVS = ("FDX_SHARE_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID")
 SECRET_KEY_ENVS = ("FDX_SHARE_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY")
 HTML_TYPE = "text/html; charset=utf-8"
-# Web copies are content-addressed: cache forever. The page revalidates so an
-# edit shows up on the next load.
+# Photos never change under a name (rendered and sealed copies are named by
+# content or at random): cache forever. Pages revalidate so edits show.
 CACHE_IMMUTABLE = "public, max-age=31536000, immutable"
 CACHE_PAGE = "no-cache"
 UPLOAD_TIMEOUT_SEC = 120
 UPLOAD_ATTEMPTS = 3
+RSYNC_TIMEOUT_SEC = 600
 EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
+# Remote paths, hosts and prefixes go into an rsync/ssh command line: only
+# these characters, so nothing in a config can turn into shell syntax.
+_SAFE_PATH = re.compile(r"^/[A-Za-z0-9._/-]+$")
+_SAFE_HOST = re.compile(r"^[A-Za-z0-9._@-]+$")
+_SAFE_PREFIX = re.compile(r"^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$")
 
 CONFIG_TEMPLATE = """\
-# fdx-share publish target. Credentials never go in this file: set
-# FDX_SHARE_ACCESS_KEY_ID / FDX_SHARE_SECRET_ACCESS_KEY (or AWS_*), or point
-# credentials_file at a chmod-600 YAML with access_key_id / secret_access_key.
-target: r2                       # r2 | s3 | dir
-account_id: YOUR_CLOUDFLARE_ACCOUNT_ID   # r2: endpoint is https://<id>.r2.cloudflarestorage.com
-bucket: galleries
-prefix: g                        # key prefix inside the bucket ("" for none)
-base_url: https://photos.example.com    # public URL of the bucket root
-# endpoint: https://s3.eu-central-1.amazonaws.com   # s3 targets: the S3 API endpoint
-# region: auto                   # r2: auto; s3: the bucket's region
-# credentials_file: ~/.config/framedex/share-credentials.yaml
-# path: ~/sites/photos/public    # dir target: copy here instead of uploading
+# fdx share publish target (see docs/share.md). base_url is where the
+# target is served from; fdx.art is the planned domain, not live yet.
+target: ssh://deploy@your-server:/srv/fdx-galleries
+base_url: https://fdx.art
+prefix: g                     # galleries live under <base_url>/g/ ("" for none)
+
+# Cloudflare R2 instead (credentials from FDX_SHARE_ACCESS_KEY_ID and
+# FDX_SHARE_SECRET_ACCESS_KEY, or credentials_file: a chmod-600 YAML with
+# access_key_id / secret_access_key; never in this file):
+# target: r2
+# account_id: YOUR_CLOUDFLARE_ACCOUNT_ID
+# bucket: galleries
 """
 
 
@@ -73,15 +85,20 @@ class ConfigError(ValueError):
     pass
 
 
+class PublishError(RuntimeError):
+    pass
+
+
 @dataclass
 class PublishConfig:
-    target: str
+    target: str  # "ssh" | "r2" | "s3" | "dir"
     base_url: str
     prefix: str = ""
     bucket: str = ""
     endpoint: str = ""
     region: str = "auto"
-    path: Path | None = None
+    path: Path | None = None  # dir: local folder; ssh: remote root (POSIX)
+    host: str = ""  # ssh: user@host (or an ~/.ssh/config alias)
     access_key: str = field(default="", repr=False)
     secret_key: str = field(default="", repr=False)
 
@@ -90,6 +107,8 @@ class PublishConfig:
         """Identity of where links live; a change starts a fresh link."""
         if self.target == "dir":
             return f"dir:{self.path}"
+        if self.target == "ssh":
+            return f"ssh:{self.host}:{self.path}"
         return f"{self.target}:{self.endpoint}/{self.bucket}"
 
 
@@ -133,19 +152,46 @@ def _is_local_http(url: str) -> bool:
     )
 
 
+def parse_ssh_target(url: str) -> tuple[str, PurePosixPath]:
+    """'ssh://deploy@host:/srv/fdx-galleries' (or 'ssh://host/srv/x') ->
+    ('deploy@host', /srv/fdx-galleries). Ports and keys belong in
+    ~/.ssh/config. Refuses anything but plain hosts and absolute paths."""
+    rest = url[len("ssh://") :]
+    if ":/" in rest:
+        host, path = rest.split(":", 1)
+    else:
+        host, slash, path = rest.partition("/")
+        path = slash + path
+    path = path.rstrip("/")
+    if not _SAFE_HOST.match(host):
+        raise ConfigError(
+            f"ssh target host must be user@host or an ssh alias: {host!r}"
+        )
+    if not _SAFE_PATH.match(path) or ".." in path.split("/") or path == "/":
+        raise ConfigError(
+            f"ssh target needs an absolute folder like /srv/fdx-galleries (got {path!r})"
+        )
+    return host, PurePosixPath(path)
+
+
 def parse_config(cfg: Any, env: dict[str, str] | None = None) -> PublishConfig:
     """Validate a loaded config mapping. Pure apart from reading a
     credentials_file when the environment has no keys."""
     env = dict(os.environ) if env is None else env
     if not isinstance(cfg, dict):
         raise ConfigError("the config must be a YAML mapping")
-    target = str(cfg.get("target") or "r2")
+    target = str(cfg.get("target") or "")
     base_url = str(cfg.get("base_url") or "").rstrip("/")
     if not base_url.startswith(("https://", "http://")):
         raise ConfigError(
-            "base_url must be the public http(s) URL your bucket is served from"
+            "base_url must be the public http(s) URL the gallery is served from"
         )
     prefix = str(cfg.get("prefix") or "").strip("/")
+    if prefix and (not _SAFE_PREFIX.match(prefix) or ".." in prefix.split("/")):
+        raise ConfigError(f"prefix may use letters, digits, . _ - and /: {prefix!r}")
+    if target.startswith("ssh://"):
+        host, path = parse_ssh_target(target)
+        return PublishConfig("ssh", base_url, prefix, path=Path(str(path)), host=host)
     if target == "dir":
         if not cfg.get("path"):
             raise ConfigError("a dir target needs path:")
@@ -153,7 +199,9 @@ def parse_config(cfg: Any, env: dict[str, str] | None = None) -> PublishConfig:
             "dir", base_url, prefix, path=Path(str(cfg["path"])).expanduser()
         )
     if target not in ("r2", "s3"):
-        raise ConfigError(f"unknown target {target!r} (r2, s3, or dir)")
+        raise ConfigError(
+            f"unknown target {target!r}: use ssh://user@host:/folder, r2, s3, or dir"
+        )
     bucket = str(cfg.get("bucket") or "")
     if not bucket:
         raise ConfigError("bucket: is required")
@@ -363,6 +411,82 @@ class DirUploader:
         self._path(key).unlink(missing_ok=True)
 
 
+class SshTarget:
+    """rsync into exactly one gallery folder, <root>/<prefix>/<slug>/, and
+    nowhere else: the destination is a validated absolute path built from
+    config + our own slug, `--delete` runs against that folder alone (no
+    include/exclude filters decide what may be deleted), and the folder is
+    created with `mkdir -p` of that same path. Two passes so visitors never
+    see a page whose photos are not there yet: everything but index.html
+    (no deletes), then index.html and the deletions. With `host=None` the
+    destination is a local folder (tests, a mounted share)."""
+
+    def __init__(self, host: str | None, root: PurePosixPath) -> None:
+        self.host = host
+        self.root = root
+
+    def dest(self, gallery_key: str) -> str:
+        if not _SAFE_PREFIX.match(gallery_key) or ".." in gallery_key.split("/"):
+            raise PublishError(f"refusing an unsafe gallery path: {gallery_key!r}")
+        return str(self.root / gallery_key)
+
+    def commands(self, stage: Path, gallery_key: str) -> list[list[str]]:
+        dest = self.dest(gallery_key)
+        remote = []
+        if self.host:
+            remote = [
+                "-e",
+                "ssh -o BatchMode=yes",
+                f"--rsync-path=mkdir -p {dest} && rsync",
+            ]
+        target = f"{self.host}:{dest}/" if self.host else f"{dest}/"
+        src = f"{stage}/"
+        return [
+            ["rsync", "-rt", *remote, "--exclude=/index.html", src, target],
+            ["rsync", "-rt", "--delete", *remote, src, target],
+        ]
+
+    def _run(self, stage: Path, gallery_key: str) -> None:
+        if not self.host:
+            local = Path(self.dest(gallery_key))
+            local.mkdir(parents=True, exist_ok=True)
+            root = Path(str(self.root)).resolve()
+            if root not in local.resolve().parents:
+                raise PublishError(f"{local} resolves outside {root}; refusing to sync")
+        for cmd in self.commands(stage, gallery_key):
+            try:
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=RSYNC_TIMEOUT_SEC
+                )
+            except FileNotFoundError as e:
+                raise PublishError("rsync is not installed") from e
+            except subprocess.TimeoutExpired as e:
+                raise PublishError("rsync timed out") from e
+            if result.returncode != 0:
+                raise PublishError(
+                    f"rsync failed (exit {result.returncode}): {result.stderr.strip()[-400:]}"
+                )
+
+    def sync(self, objects: list[Obj], gallery_key: str) -> None:
+        with tempfile.TemporaryDirectory(prefix="fdx-share-") as tmp:
+            stage = Path(tmp)
+            for o in objects:
+                f = stage / o.path
+                f.parent.mkdir(parents=True, exist_ok=True)
+                f.write_bytes(o.data)
+            self._run(stage, gallery_key)
+
+    def remove(self, gallery_key: str) -> None:
+        """Empty the gallery folder (the empty folder stays; it serves 404)."""
+        with tempfile.TemporaryDirectory(prefix="fdx-share-") as tmp:
+            for cmd in self.commands(Path(tmp), gallery_key)[1:]:
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=RSYNC_TIMEOUT_SEC
+                )
+                if result.returncode != 0:
+                    raise PublishError(f"rsync failed: {result.stderr.strip()[-400:]}")
+
+
 def make_uploader(cfg: PublishConfig) -> Uploader:
     if cfg.target == "dir":
         assert cfg.path is not None
@@ -371,13 +495,13 @@ def make_uploader(cfg: PublishConfig) -> Uploader:
 
 
 # ---------------------------------------------------------------------------
-# What to upload
+# The artifact
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class Obj:
-    key: str
+    path: str  # relative to the gallery folder; "" = the page object at the gallery key (S3/R2)
     data: bytes
     content_type: str
     cache_control: str
@@ -392,56 +516,68 @@ def link_key(prefix: str, slug: str) -> str:
 
 
 def link_url(cfg: PublishConfig, slug: str) -> str:
-    """The URL to share. A dir target's static host resolves index.html, so
-    its link is the folder; S3/R2 serve the extensionless page object."""
+    """The URL to share. A web server (ssh, dir) resolves index.html, so the
+    link is the folder; S3/R2 serve the extensionless page object."""
     url = f"{cfg.base_url}/{link_key(cfg.prefix, slug)}"
-    return url + "/" if cfg.target == "dir" else url
+    return url if cfg.target in ("r2", "s3") else url + "/"
 
 
-def build_objects(
-    site: Site, gallery: Gallery, cfg: PublishConfig, slug: str
+def build_artifact(
+    site: Site,
+    gallery: Gallery,
+    *,
+    slug: str,
+    page_url: str,
+    passcode: str | None = None,
+    page_object: bool = False,
 ) -> list[Obj]:
-    key = link_key(cfg.prefix, slug)
-    page_url = f"{cfg.base_url}/{key}"
-    objs = [
-        Obj(
-            f"{key}/index.html",
-            page_html(gallery, site.photos, page_url=page_url).encode("utf-8"),
-            HTML_TYPE,
-            CACHE_PAGE,
-        )
+    """Everything one publish uploads, assets first and pages last: web
+    copies of the shown photos only (hidden ones never leave the machine),
+    or with a passcode their sealed copies under fresh random names and the
+    unlock page. `page_object` adds the extensionless page S3/R2 serve at
+    the gallery key itself; it resolves assets from '<slug>/'."""
+    shown = [i for i in gallery.items if i.rel in site.photos]
+    objs: list[Obj] = []
+    if passcode:
+        from framedex.share_lock import lock_gallery, locked_html
+
+        locked = lock_gallery(gallery, site.photos, site.root, passcode)
+        objs += [
+            Obj(path, data, "application/octet-stream", CACHE_IMMUTABLE)
+            for path, data in locked.files.items()
+        ]
+        pages = {"index.html": locked_html(gallery.title, locked)}
+        if page_object:
+            pages[""] = locked_html(gallery.title, locked, asset_prefix=f"{slug}/")
+    else:
+        for item in shown:
+            name = site.photos[item.rel].name
+            for kind in ("photos", "thumbs"):
+                data = (site.root / kind / name).read_bytes()
+                objs.append(Obj(f"{kind}/{name}", data, "image/jpeg", CACHE_IMMUTABLE))
+        pages = {"index.html": page_html(gallery, site.photos, page_url=page_url)}
+        if page_object:
+            pages[""] = page_html(
+                gallery, site.photos, asset_prefix=f"{slug}/", page_url=page_url
+            )
+    objs += [
+        Obj(p, html.encode("utf-8"), HTML_TYPE, CACHE_PAGE) for p, html in pages.items()
     ]
-    if cfg.target != "dir":
-        # The page at '<base>/<key>' resolves relative URLs against '<base>/',
-        # so its assets are referenced as '<slug>/photos/...'.
-        page = page_html(
-            gallery,
-            site.photos,
-            asset_prefix=f"{PurePosixPath(key).name}/",
-            page_url=page_url,
-        )
-        objs.append(Obj(key, page.encode("utf-8"), HTML_TYPE, CACHE_PAGE))
-    for kind in ("photos", "thumbs"):
-        for f in sorted((site.root / kind).glob("*.jpg")):
-            if not f.name.startswith("."):
-                objs.append(
-                    Obj(
-                        f"{key}/{kind}/{f.name}",
-                        f.read_bytes(),
-                        "image/jpeg",
-                        CACHE_IMMUTABLE,
-                    )
-                )
     return objs
 
 
 def plan_sync(
-    objects: list[Obj], uploaded: dict[str, str]
-) -> tuple[list[Obj], list[str]]:
-    """(objects to upload: new or changed, keys to delete: uploaded before
-    but no longer part of the gallery)."""
-    wanted = {o.key for o in objects}
-    puts = [o for o in objects if uploaded.get(o.key) != o.sha256]
+    objects: list[Obj], keys: list[str], uploaded: dict[str, str]
+) -> tuple[list[tuple[str, Obj]], list[str]]:
+    """(key, object) pairs to upload (new or changed, in artifact order:
+    assets before pages) and keys to delete afterwards (uploaded before, no
+    longer in the artifact)."""
+    wanted = set(keys)
+    puts = [
+        (k, o)
+        for k, o in zip(keys, objects, strict=True)
+        if uploaded.get(k) != o.sha256
+    ]
     deletes = sorted(k for k in uploaded if k not in wanted)
     return puts, deletes
 
@@ -478,6 +614,11 @@ def current_link(state: dict[str, Any], target_id: str) -> dict[str, Any] | None
     return None
 
 
+def is_protected(work: Path, cfg: PublishConfig) -> bool:
+    link = current_link(read_state(work), cfg.target_id)
+    return bool(link and link.get("protected"))
+
+
 def copy_to_clipboard(text: str) -> bool:
     for cmd in (
         ["pbcopy"],
@@ -494,30 +635,173 @@ def copy_to_clipboard(text: str) -> bool:
     return False
 
 
-def _confirm(prompt: str, assume_yes: bool) -> bool:
-    if assume_yes:
-        return True
+# ---------------------------------------------------------------------------
+# Publish / unpublish (shared by the CLI and the editor)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Published:
+    url: str
+    protected: bool
+    sent: int  # files uploaded (or synced)
+    removed: int  # files deleted
+
+
+def publish(
+    site: Site,
+    gallery: Gallery,
+    work: Path,
+    *,
+    name: str,
+    cfg: PublishConfig,
+    passcode: str | None,
+    open_ok: bool = False,
+    new_link: bool = False,
+    confirm: Callable[[str], bool] | None = None,
+) -> Published:
+    """Publish the gallery to its link (created on first publish). A link
+    published with a passcode refuses to go out open unless `open_ok` (the
+    explicit --no-passcode / toggle-off), so protection never lapses
+    because a passcode was not typed again. `confirm` sees a one-paragraph
+    summary and may cancel (PublishError)."""
+    state = read_state(work)
+    link = None if new_link else current_link(state, cfg.target_id)
+    if link and link.get("protected") and not passcode and not open_ok:
+        raise PublishError(
+            "this gallery is protected with a passcode: give it again to publish, "
+            "or publish it open on purpose (--no-passcode)"
+        )
+    fresh = link is None
+    if link is None:
+        link = {
+            "target": cfg.target_id,
+            "slug": link_slug(name),
+            "uploaded": {},
+            "live": True,
+        }
+    slug = str(link["slug"])
+    url = link_url(cfg, slug)
+    key = link_key(cfg.prefix, slug)
+    objects = build_artifact(
+        site,
+        gallery,
+        slug=slug,
+        page_url=f"{cfg.base_url}/{key}",
+        passcode=passcode,
+        page_object=cfg.target in ("r2", "s3"),
+    )
+    keys = [f"{key}/{o.path}" if o.path else key for o in objects]
+    uploaded: dict[str, str] = dict(link.get("uploaded") or {})
+    puts, deletes = plan_sync(objects, keys, uploaded)
+    if cfg.target == "ssh":
+        puts, deletes = list(zip(keys, objects, strict=True)), []
+    size = sum(len(o.data) for _, o in puts)
+    if confirm is not None:
+        where = cfg.target if cfg.target != "ssh" else f"{cfg.host}:{cfg.path}"
+        summary = (
+            f"{len(gallery.items)} photos{', passcode-protected' if passcode else ''} -> {where}\n"
+            f"  send {len(puts)} files ({size / 1e6:.1f} MB), delete {len(deletes)}\n"
+            f"  link: {url}\n"
+            "  anyone with the link"
+            + (" and the passcode" if passcode else "")
+            + " can view it; it is not listed or indexed."
+        )
+        if not confirm(summary):
+            raise PublishError("not published")
+    if fresh:
+        state["links"].append(link)
+    link["url"] = url
+    try:
+        if cfg.target == "ssh":
+            assert cfg.path is not None
+            SshTarget(cfg.host, PurePosixPath(str(cfg.path))).sync(objects, key)
+            uploaded = {k: o.sha256 for k, o in zip(keys, objects, strict=True)}
+        else:
+            uploader = make_uploader(cfg)
+            for k, o in puts:
+                uploader.put(k, o.data, o.content_type, o.cache_control)
+                uploaded[k] = o.sha256
+            for k in deletes:
+                uploader.delete(k)
+                uploaded.pop(k, None)
+        link["protected"] = bool(passcode)
+    except (RuntimeError, OSError, ValueError) as e:
+        raise PublishError(
+            f"{e} (what did upload is recorded; publish again to finish)"
+        ) from e
+    finally:
+        link["uploaded"] = uploaded
+        write_state(work, state)
+    return Published(url, bool(passcode), len(puts), len(deletes))
+
+
+def unpublish(work: Path, cfg: PublishConfig) -> list[str]:
+    """Delete every file of every link published from this gallery to the
+    configured target; returns the links that stopped working."""
+    state = read_state(work)
+    links = [
+        lk
+        for lk in state["links"]
+        if isinstance(lk, dict)
+        and lk.get("target") == cfg.target_id
+        and lk.get("live", True)
+    ]
+    gone: list[str] = []
+    try:
+        for lk in links:
+            key = link_key(cfg.prefix, str(lk["slug"]))
+            if cfg.target == "ssh":
+                assert cfg.path is not None
+                SshTarget(cfg.host, PurePosixPath(str(cfg.path))).remove(key)
+                lk["uploaded"] = {}
+            else:
+                uploader = make_uploader(cfg)
+                for k in sorted(lk.get("uploaded") or {}):
+                    uploader.delete(k)
+                    del lk["uploaded"][k]
+            lk["live"] = False
+            gone.append(str(lk.get("url")))
+    finally:
+        write_state(work, state)
+    return gone
+
+
+def _confirm_tty(summary: str) -> bool:
+    print(summary)
     if not sys.stdin.isatty():
         print(
             "refusing to publish without a terminal to confirm; pass --yes",
             file=sys.stderr,
         )
         return False
-    return input(f"{prompt} [y/N] ").strip().lower() in ("y", "yes")
+    return input("publish? [y/N] ").strip().lower() in ("y", "yes")
 
 
-def _config_or_help(config: str | None) -> PublishConfig | None:
+def load_config_or_explain(config: str | None) -> PublishConfig:
     path = config_path(config)
     try:
         return load_config(path)
     except ConfigError as e:
-        print(f"error: {e}", file=sys.stderr)
-        if not path.exists():
-            print(
-                f"\nCreate {path} (see docs/share.md). A starting point:\n\n{CONFIG_TEMPLATE}",
-                file=sys.stderr,
-            )
-        return None
+        hint = (
+            f"\nCreate {path} (see docs/share.md). A starting point:\n\n{CONFIG_TEMPLATE}"
+            if not path.exists()
+            else ""
+        )
+        raise PublishError(f"{e}{hint}") from e
+
+
+def ask_passcode() -> str:
+    """Prompt twice without echo; never from argv (it would sit in shell
+    history and `ps`)."""
+    from framedex.share_lock import MIN_PASSCODE_LEN
+
+    first = getpass.getpass("passcode: ")
+    if len(first) < MIN_PASSCODE_LEN:
+        raise PublishError(f"a passcode needs at least {MIN_PASSCODE_LEN} characters")
+    if getpass.getpass("again: ") != first:
+        raise PublishError("the passcodes did not match")
+    return first
 
 
 def publish_cli(
@@ -526,98 +810,58 @@ def publish_cli(
     work: Path,
     *,
     name: str,
-    config_path: str | None,
+    config: str | None,
+    want_passcode: bool,
+    no_passcode: bool,
     new_link: bool,
     assume_yes: bool,
 ) -> int:
-    cfg = _config_or_help(config_path)
-    if cfg is None:
-        return 2
-    state = read_state(work)
-    link = None if new_link else current_link(state, cfg.target_id)
-    if link is None:
-        link = {
-            "target": cfg.target_id,
-            "slug": link_slug(name),
-            "uploaded": {},
-            "live": True,
-        }
-        state["links"].append(link)
-    slug = str(link["slug"])
-    url = link_url(cfg, slug)
-    link["url"] = url
-    uploaded: dict[str, str] = link.setdefault("uploaded", {})
-
-    objects = build_objects(site, gallery, cfg, slug)
-    puts, deletes = plan_sync(objects, uploaded)
-    size = sum(len(o.data) for o in puts)
-    where = (
-        str(cfg.path) if cfg.target == "dir" else f"{cfg.target} bucket {cfg.bucket}"
-    )
-    print(
-        f"\n{len(site.photos)} photos, {len(objects)} files -> {where}\n"
-        f"  upload {len(puts)} new/changed ({size / 1e6:.1f} MB), delete {len(deletes)}\n"
-        f"  link: {url}\n"
-        "  anyone with the link can view it; it is not listed or indexed."
-    )
-    if not puts and not deletes:
-        print("already up to date.")
-    elif not _confirm("publish?", assume_yes):
-        print("not published.")
+    try:
+        cfg = load_config_or_explain(config)
+        passcode = ask_passcode() if want_passcode else None
+        result = publish(
+            site,
+            gallery,
+            work,
+            name=name,
+            cfg=cfg,
+            passcode=passcode,
+            open_ok=no_passcode,
+            new_link=new_link,
+            confirm=None if assume_yes else _confirm_tty,
+        )
+    except PublishError as e:
+        print(f"error: {e}", file=sys.stderr)
         return 1
-    else:
-        uploader = make_uploader(cfg)
-        try:
-            for n, o in enumerate(puts, 1):
-                print(f"  [{n}/{len(puts)}] {o.key}")
-                uploader.put(o.key, o.data, o.content_type, o.cache_control)
-                uploaded[o.key] = o.sha256
-            for k in deletes:
-                uploader.delete(k)
-                uploaded.pop(k, None)
-        except (RuntimeError, OSError, ValueError) as e:
-            print(
-                f"error: {e}\n(what did upload is recorded; re-run to finish)",
-                file=sys.stderr,
-            )
-            return 1
-        finally:
-            write_state(work, state)
-    write_state(work, state)
-    copied = copy_to_clipboard(url)
-    print(f"\n{url}" + ("\n(copied to the clipboard)" if copied else ""))
+    copied = copy_to_clipboard(result.url)
+    print(f"Published  {result.url}" + ("  (copied)" if copied else ""))
     return 0
 
 
-def unpublish_cli(work: Path, *, config_path: str | None, assume_yes: bool) -> int:
-    """Delete every object of every link recorded for the configured target."""
-    cfg = _config_or_help(config_path)
-    if cfg is None:
+def unpublish_cli(work: Path, *, config: str | None, assume_yes: bool) -> int:
+    try:
+        cfg = load_config_or_explain(config)
+    except PublishError as e:
+        print(f"error: {e}", file=sys.stderr)
         return 2
     state = read_state(work)
-    links = [
+    live = [
         lk
         for lk in state["links"]
         if isinstance(lk, dict)
         and lk.get("target") == cfg.target_id
-        and lk.get("uploaded")
+        and lk.get("live", True)
     ]
-    keys = sorted({k for lk in links for k in lk["uploaded"]})
-    if not keys:
-        print("nothing published from here for this target.")
+    if not live:
+        print("nothing published from here to this target.")
         return 0
-    for lk in links:
-        print(f"  {lk.get('url')}")
-    if not _confirm(f"delete {len(keys)} files and break these links?", assume_yes):
+    summary = "will stop working:\n" + "\n".join(f"  {lk.get('url')}" for lk in live)
+    if not assume_yes and not _confirm_tty(summary):
         return 1
-    uploader = make_uploader(cfg)
     try:
-        for lk in links:
-            for k in sorted(lk["uploaded"]):
-                uploader.delete(k)
-                del lk["uploaded"][k]
-            lk["live"] = False
-    finally:
-        write_state(work, state)
-    print("unpublished.")
+        unpublish(work, cfg)
+    except (PublishError, RuntimeError, OSError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print("Unpublished.")
     return 0

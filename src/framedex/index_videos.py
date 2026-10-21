@@ -1194,9 +1194,31 @@ def setup_whisper(
 # ---------------------------------------------------------------------------
 
 
+SUBCOMMANDS = ("share", "trips")
+
+
+def subcommand(argv: list[str]) -> str | None:
+    """`fdx share ...` / `fdx trips ...` hand off to fdx-share / fdx-trips,
+    unless a folder of that name exists here (then it is the folder to
+    index, as it always was)."""
+    if argv and argv[0] in SUBCOMMANDS and not Path(argv[0]).is_dir():
+        return argv[0]
+    return None
+
+
 def main() -> int:
+    sub = subcommand(sys.argv[1:])
+    if sub == "share":
+        from framedex import share
+
+        return share.main(sys.argv[2:])
+    if sub == "trips":
+        from framedex import trips
+
+        return trips.main(sys.argv[2:])
     parser = argparse.ArgumentParser(
-        description="Index videos and photos in a folder tree."
+        description="Index videos and photos in a folder tree "
+        "(and: fdx share <folder>, fdx trips <root>)."
     )
     parser.add_argument("root", help="Root folder to scan recursively")
     parser.add_argument(

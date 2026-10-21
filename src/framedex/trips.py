@@ -132,7 +132,7 @@ def summarize(trip: list[Photo], all_photos: list[Photo]) -> Trip:
         draft=len(plan.photos),
         region=region,
         folder=folder,
-        name=f"{slugify(name_base)}-{start:%Y-%m}",
+        name=f"{slugify(name_base)}-{start:%Y-%m-%d}",
         folder_is_trip=bool(folder) and all(id(p) in trip_ids for p in in_folder),
     )
 

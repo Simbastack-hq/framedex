@@ -66,6 +66,9 @@ CAPTION_MAX_CHARS = 110
 # The opening photo is cropped to 21:9; only a photo at least this wide
 # (width / height) is picked for it automatically.
 COVER_MIN_RATIO = 1.2
+# A trip is titled after the region (or country) this share of its geotagged
+# photos have in common.
+TITLE_PLACE_SHARE = 0.8
 # Quality points from the sidecar's technical block, used to rank candidates
 # when the cap bites. A human keep outranks any model assessment.
 FOCUS_POINTS = {"sharp": 3, "acceptable": 1}
@@ -406,6 +409,18 @@ def pick_spread(
     return sorted(chosen, key=time_order)
 
 
+def pick_with_closer(photos: list[Photo], k: int) -> list[Photo]:
+    """`pick_spread`, but when the cap bites the best frame of the section's
+    last quarter (by time) always makes it: the gallery ends on a strong
+    frame from the end of the trip, not on whatever the spacing rule left."""
+    dated = sorted((p for p in photos if p.taken is not None), key=time_order)
+    if k < 2 or k >= len(photos) or not dated:
+        return pick_spread(photos, k)
+    closer = _best(dated[int(len(dated) * 0.75) :] or dated[-1:])
+    rest = pick_spread([p for p in photos if p is not closer], k - 1)
+    return sorted([*rest, closer], key=time_order)
+
+
 @dataclass
 class Section:
     heading: str
@@ -446,8 +461,13 @@ def plan_gallery(
     sections = make_sections(candidates)
     quotas = allocate([len(s.photos) for s in sections], max_photos)
     picked_sections: list[Section] = []
-    for section, quota in zip(sections, quotas, strict=True):
-        chosen = pick_spread(section.photos, quota)
+    for n, (section, quota) in enumerate(zip(sections, quotas, strict=True)):
+        last = n == len(sections) - 1
+        chosen = (
+            pick_with_closer(section.photos, quota)
+            if last
+            else pick_spread(section.photos, quota)
+        )
         chosen_ids = {id(p) for p in chosen}
         not_picked += [
             (p, f"over the {max_photos}-photo cap")
@@ -625,6 +645,59 @@ def region_label(photos: list[Photo]) -> str:
     return _most_common(", ".join(place_parts(p.place)[-2:]) for p in photos)
 
 
+def trip_place(photos: list[Photo]) -> str:
+    """The place a trip is about: the region (second-to-last name part) when
+    >= 80% of geotagged photos share it, else the country when they share
+    that ('Narok'; 'Portugal' for Lisbon + the Algarve); '' otherwise."""
+    geo = [place_parts(p.place) for p in photos if p.place]
+    geo = [parts for parts in geo if parts]
+    for depth in (2, 1):
+        names = [parts[-depth] for parts in geo if len(parts) >= depth]
+        common = _most_common(names)
+        if common and names.count(common) >= TITLE_PLACE_SHARE * len(geo):
+            return common
+    return ""
+
+
+def month_label(days: list[date]) -> str:
+    """'November 2025', 'October - November 2025', 'December 2025 - January
+    2026' (with en dashes); '' without dates."""
+    if not days:
+        return ""
+    a, b = min(days), max(days)
+    if (a.year, a.month) == (b.year, b.month):
+        return f"{a:%B %Y}"
+    if a.year == b.year:
+        return f"{a:%B} {EN_DASH} {b:%B %Y}"
+    return f"{a:%B %Y} {EN_DASH} {b:%B %Y}"
+
+
+def day_range_label(days: list[date]) -> str:
+    """The subtitle under a 'Place · Month Year' title: the days without the
+    year ('8-9 November', '30 October - 2 November'), the year only when the
+    trip crosses one."""
+    if not days:
+        return ""
+    a, b = min(days), max(days)
+    if a.year != b.year:
+        return date_range_label(days)
+    if a == b:
+        return f"{a:%A} {a.day} {a:%B}"
+    if a.month == b.month:
+        return f"{a.day}{EN_DASH}{b.day} {b:%B}"
+    return f"{a.day} {a:%B} {EN_DASH} {b.day} {b:%B}"
+
+
+def auto_title(photos: list[Photo], fallback: str) -> str:
+    """'Narok · November 2025' from the photos' places and dates; the place
+    alone, or the folder-name fallback, when one half is missing."""
+    place = trip_place(photos)
+    when = month_label([trip_day(p.taken) for p in photos if p.taken])
+    if place and when:
+        return f"{place} · {when}"
+    return place or (f"{fallback} · {when}" if when else fallback)
+
+
 def title_from_name(name: str) -> str:
     words = [w for w in re.split(r"[-_\s]+", name) if w]
     return " ".join(w if any(c.isupper() for c in w) else w.capitalize() for w in words)
@@ -638,7 +711,8 @@ def title_from_name(name: str) -> str:
 @dataclass
 class Item:
     rel: str
-    caption: str = ""
+    caption: str = ""  # alt text always; shown on the page only with captions: on
+    hidden: bool = False  # kept in place (the editor can restore it), not shown
 
 
 @dataclass
@@ -651,105 +725,163 @@ class GallerySection:
 class Gallery:
     title: str
     subtitle: str = ""
-    cover: str = ""  # rel of the opening photo; "" = first landscape, "none" = no cover
+    cover: str = ""  # rel of the opening photo; "" = first wide one, "none" = no cover
+    captions: bool = False
     sections: list[GallerySection] = field(default_factory=list)
+    pool: list[tuple[Item, str]] = field(default_factory=list)  # not picked, why
 
     @property
     def items(self) -> list[Item]:
+        """The photos on the page, in order."""
+        return [i for s in self.sections for i in s.items if not i.hidden]
+
+    @property
+    def all_items(self) -> list[Item]:
+        """Shown and hidden photos, in order."""
         return [i for s in self.sections for i in s.items]
 
 
 SELECTION_HELP = """\
-# fdx-share selection. Edit it, then re-run fdx-share on the folder to re-render.
+# fdx share selection. Edit it (or use the browser editor), then re-run
+# fdx share on the folder to see it.
 #   drop a photo     delete its line, or put "# " in front of it
 #   reorder          move lines; a "## " line starts a section
 #   add one back     remove the "# " from a line under "Not picked"
-#   caption          the text after " | " (leave it empty for none)
-#   headings, title  edit any "## " line and the title:/subtitle:/cover: lines
-#                    (cover: none drops the opening photo)
+#   caption          the text after " | ": alt text, and shown under the photo
+#                    when captions: on
+#   title, cover     edit the title:/subtitle:/cover: lines (cover: none for
+#                    no opening photo)
 # Text after two spaces and "#" on a photo line is a note, never shown.
 """
+POOL_MARKER = "# ---- Not picked (remove the leading '# ' to add one) ----"
+HIDDEN_NOTE = "hidden"
 
 
-def gallery_from_plan(
-    plan: Plan, *, title: str, captions: bool = True
-) -> tuple[Gallery, list[tuple[Item, str]]]:
-    """The plan as an editable Gallery plus the not-picked pool as items."""
+def gallery_from_plan(plan: Plan, *, title: str, captions: bool = False) -> Gallery:
+    """The plan as an editable Gallery: the pick in sections, the
+    not-picked candidates in its pool, every photo with its one-line
+    caption (alt text even when captions are off)."""
     photos = plan.photos
-    days = [trip_day(p.taken) for p in photos if p.taken]
-    subtitle = " · ".join(
-        x for x in (date_range_label(days), region_label(photos)) if x
-    )
+    subtitle = day_range_label([trip_day(p.taken) for p in photos if p.taken])
 
     def item(p: Photo) -> Item:
-        return Item(p.rel, caption_for(p.scene, p.subjects) if captions else "")
+        return Item(p.rel, caption_for(p.scene, p.subjects))
 
     sections = [
         GallerySection(s.heading, [item(p) for p in s.photos]) for s in plan.sections
     ]
     pool = [(item(p), why) for p, why in plan.not_picked]
-    return Gallery(title, subtitle, pick_cover(plan), sections), pool
+    return Gallery(title, subtitle, pick_cover(plan), captions, sections, pool)
 
 
 def pick_cover(plan: Plan) -> str:
-    """The opening photo: the best-assessed wide photo of the biggest
-    section (where most of the trip's frames went), trying smaller sections
-    when it has none wide enough; "" when no photo is."""
-    for section in sorted(plan.sections, key=lambda sec: -len(sec.photos)):
-        wide = [p for p in section.photos if (p.aspect or 0.0) >= COVER_MIN_RATIO]
-        if wide:
-            return _best(wide).rel
-    return ""
+    """The opening photo: the strongest wide frame of the whole pick (ties
+    go to the bigger section, then the earlier frame); "" when none is wide
+    enough to open on."""
+    size = {id(p): len(s.photos) for s in plan.sections for p in s.photos}
+    wide = [p for p in plan.photos if (p.aspect or 0.0) >= COVER_MIN_RATIO]
+    if not wide:
+        return ""
+    return min(
+        wide, key=lambda p: (-p.score, -size[id(p)], p.seconds or 0.0, p.rel)
+    ).rel
 
 
 def _photo_line(item: Item) -> str:
     return f"{item.rel} | {item.caption}" if item.caption else item.rel
 
 
-def write_selection(
-    gallery: Gallery, pool: list[tuple[Item, str]] | None = None
-) -> str:
+def write_selection(gallery: Gallery) -> str:
     lines = [
         SELECTION_HELP,
         f"title: {gallery.title}",
         f"subtitle: {gallery.subtitle}",
         f"cover: {gallery.cover}",
+        f"captions: {'on' if gallery.captions else 'off'}",
     ]
     for s in gallery.sections:
         lines += ["", f"## {s.heading}"] if s.heading else [""]
-        lines += [_photo_line(i) for i in s.items]
-    if pool:
-        lines += ["", "# ---- Not picked (remove the leading '# ' to add one) ----"]
-        lines += [f"# {_photo_line(i)}{_INLINE_COMMENT} {why}" for i, why in pool]
+        lines += [
+            f"# {_photo_line(i)}{_INLINE_COMMENT} {HIDDEN_NOTE}"
+            if i.hidden
+            else _photo_line(i)
+            for i in s.items
+        ]
+    if gallery.pool:
+        lines += ["", POOL_MARKER]
+        lines += [
+            f"# {_photo_line(i)}{_INLINE_COMMENT} {why}" for i, why in gallery.pool
+        ]
     return "\n".join(lines) + "\n"
 
 
+def write_selection_file(path: Path, gallery: Gallery) -> None:
+    """Write selection.txt atomically (an interrupted save never leaves half
+    a file where the whole pick used to be)."""
+    from framedex.pipeline import atomic_write_text
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, write_selection(gallery))
+
+
+def _parse_photo(body: str) -> tuple[str, str, str]:
+    """'rel | caption  # note' -> (rel, caption, note)."""
+    text, _, note = body.partition(_INLINE_COMMENT)
+    rel, _, caption = text.strip().partition(" | ")
+    return rel.strip().removesuffix(" |").strip(), caption.strip(), note.strip()
+
+
 def parse_selection(text: str) -> tuple[Gallery, list[str]]:
-    """Parse selection.txt back into a Gallery. Returns (gallery, warnings);
-    a repeated photo keeps its first position and is reported."""
+    """Parse selection.txt back into a Gallery, losing nothing write_selection
+    wrote: hidden photos keep their place, the Not picked pool keeps its
+    reasons. Returns (gallery, warnings); a repeated photo keeps its first
+    position and is reported."""
     gallery = Gallery(title="")
     warnings: list[str] = []
     seen: set[str] = set()
+    in_pool = False
+
+    def add(n: int, item: Item) -> bool:
+        if item.rel in seen:
+            warnings.append(f"line {n}: {item.rel} is listed twice; keeping the first")
+            return False
+        seen.add(item.rel)
+        return True
+
     for n, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
-        if not line or (line.startswith("#") and not line.startswith("## ")):
+        if not line:
+            continue
+        if line.startswith("# ----"):
+            in_pool = True
             continue
         if line.startswith("## "):
             gallery.sections.append(GallerySection(line[3:].strip()))
+            continue
+        if line.startswith("#"):
+            # A commented photo line is either in the pool (after the marker)
+            # or hidden in place (its note says so); any other comment, or a
+            # line a person commented out to drop the photo, is skipped.
+            rel, caption, note = _parse_photo(line[1:])
+            if Path(rel).suffix.lower() not in IMAGE_EXTENSIONS:
+                continue
+            hidden = not in_pool and note == HIDDEN_NOTE and bool(gallery.sections)
+            if (in_pool or hidden) and add(n, Item(rel, caption, hidden)):
+                if hidden:
+                    gallery.sections[-1].items.append(Item(rel, caption, hidden=True))
+                else:
+                    gallery.pool.append((Item(rel, caption), note))
             continue
         if not gallery.sections and line.startswith(("title:", "subtitle:", "cover:")):
             key, _, value = line.partition(":")
             setattr(gallery, key, value.strip())
             continue
-        body = raw.split(_INLINE_COMMENT, 1)[0].strip()
-        rel, _, caption = body.partition(" | ")
-        rel, caption = rel.strip().removesuffix(" |").strip(), caption.strip()
-        if not rel:
+        if not gallery.sections and line.startswith("captions:"):
+            gallery.captions = line.partition(":")[2].strip().lower() == "on"
             continue
-        if rel in seen:
-            warnings.append(f"line {n}: {rel} is listed twice; keeping the first")
+        rel, caption, _ = _parse_photo(raw)
+        if not rel or not add(n, Item(rel, caption)):
             continue
-        seen.add(rel)
         if not gallery.sections:
             gallery.sections.append(GallerySection(""))
         gallery.sections[-1].items.append(Item(rel, caption))
@@ -851,56 +983,53 @@ def _date_arg(text: str) -> date:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="fdx-share",
+        prog="fdx share",
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "folder", help="An indexed folder of photos (one shoot or trip)"
     )
-    parser.add_argument(
+    pick = parser.add_argument_group("the pick (first run, or with --reselect)")
+    pick.add_argument(
         "--max",
         type=int,
         default=DEFAULT_MAX_PHOTOS,
         dest="max_photos",
         help=f"Most photos in the gallery (default {DEFAULT_MAX_PHOTOS}).",
     )
-    parser.add_argument(
+    pick.add_argument(
         "--include-review",
         action="store_true",
         help="Let review-rated photos compete too (default: keep only).",
     )
-    parser.add_argument(
-        "--title", help="Gallery title (default: from the folder name)."
-    )
-    parser.add_argument(
-        "--name",
-        help="Gallery name: its work folder under _share/ and the readable part "
-        "of the link (default: the folder name).",
-    )
-    parser.add_argument(
+    pick.add_argument("--title", help="Gallery title (default: place and month).")
+    pick.add_argument(
         "--from",
         type=_date_arg,
         dest="date_from",
-        help="Only photos from this trip day on (YYYY-MM-DD).",
+        help="Only photos from this day (YYYY-MM-DD).",
     )
-    parser.add_argument(
-        "--to", type=_date_arg, dest="date_to", help="Only photos up to this trip day."
+    pick.add_argument(
+        "--to", type=_date_arg, dest="date_to", help="Only photos up to this day."
     )
-    parser.add_argument(
-        "--out",
-        help="Work folder for selection.txt and the rendered site "
-        "(default: FOLDER/_share/NAME).",
+    pick.add_argument(
+        "--captions",
+        action="store_true",
+        help="Show the one-line captions under photos.",
     )
-    parser.add_argument(
+    pick.add_argument(
         "--reselect",
         action="store_true",
-        help="Pick again from the sidecars, replacing selection.txt "
-        "(your edits there are lost; the old file is kept as selection.txt.bak).",
+        help="Pick again from the sidecars, replacing selection.txt (the old one "
+        "is kept as selection.txt.bak).",
     )
     parser.add_argument(
-        "--no-captions", action="store_true", help="Pick without captions."
+        "--name",
+        help="Gallery name: its work folder under _share/ and the readable part of "
+        "the link (default: the folder name).",
     )
+    parser.add_argument("--out", help="Work folder (default: FOLDER/_share/NAME).")
     parser.add_argument(
         "--keep-gps",
         action="store_true",
@@ -912,36 +1041,41 @@ def build_parser() -> argparse.ArgumentParser:
         help="Index unindexed photos first (runs fdx --media images on FOLDER).",
     )
     parser.add_argument(
-        "--backend",
-        choices=["cli", "api", "local"],
-        help="Vision backend for --index (fdx's default when omitted).",
+        "--backend", choices=["cli", "api", "local"], help="Vision backend for --index."
     )
     parser.add_argument(
-        "--no-open", action="store_true", help="Do not open the preview."
+        "--no-open", action="store_true", help="Don't open the browser."
     )
-    parser.add_argument(
+    pub = parser.add_argument_group("publishing without the editor")
+    pub.add_argument(
         "--publish",
         action="store_true",
-        help="Upload the rendered gallery to the configured target and print its URL.",
+        help="Publish the current selection and print the link.",
     )
-    parser.add_argument(
-        "--config",
-        help="Publish config (default: $FDX_SHARE_CONFIG or "
-        "~/.config/framedex/share.yaml).",
-    )
-    parser.add_argument(
-        "--new-link",
+    pub.add_argument(
+        "--passcode",
         action="store_true",
-        help="Publish under a fresh random link (the old one keeps working "
-        "until you delete it).",
+        help="Protect the gallery with a passcode (asked for, never taken from the command line).",
     )
-    parser.add_argument(
+    pub.add_argument(
+        "--no-passcode",
+        action="store_true",
+        help="Publish a protected gallery open, on purpose.",
+    )
+    pub.add_argument(
+        "--new-link", action="store_true", help="Publish under a fresh random link."
+    )
+    pub.add_argument("--yes", action="store_true", help="Don't ask before publishing.")
+    pub.add_argument(
         "--unpublish",
         action="store_true",
-        help="Delete everything published from this gallery (every link) on the "
-        "configured target.",
+        help="Delete everything this gallery published to the configured target.",
     )
-    parser.add_argument("--yes", action="store_true", help="Publish without asking.")
+    pub.add_argument(
+        "--config",
+        help="Publish config (default: $FDX_SHARE_CONFIG or ~/.config/framedex/share.yaml).",
+    )
+    parser.add_argument("-v", "--verbose", action="store_true", help="Say more.")
     return parser
 
 
@@ -950,25 +1084,28 @@ def _run_indexer(folder: Path, backend: str | None) -> int:
     if backend:
         cmd += ["--backend", backend]
     cmd.append(str(folder))
-    print("indexing first: " + " ".join(cmd[2:]))
+    print("Indexing   " + " ".join(cmd[2:]))
     return subprocess.run(cmd).returncode
+
+
+def _err(msg: str) -> int:
+    print(f"error: {msg}", file=sys.stderr)
+    return 1
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     folder = Path(args.folder).expanduser().resolve()
     if not folder.is_dir():
-        print(f"error: not a directory: {folder}", file=sys.stderr)
-        return 2
+        return _err(f"not a directory: {folder}")
     if args.max_photos < 1:
-        print("error: --max must be at least 1", file=sys.stderr)
-        return 2
-
+        return _err("--max must be at least 1")
+    if args.passcode and args.no_passcode:
+        return _err("--passcode and --no-passcode contradict each other")
     try:
         from framedex import share_site
-    except ImportError as e:  # pragma: no cover - needs the [images] extra
-        print(f"error: {e}", file=sys.stderr)
-        return 2
+    except ImportError as e:  # pragma: no cover - needs the [share] extra
+        return _err(str(e))
 
     name = args.name or folder.name
     work = (
@@ -982,14 +1119,15 @@ def main(argv: list[str] | None = None) -> int:
         from framedex import share_publish
 
         return share_publish.unpublish_cli(
-            work, config_path=args.config, assume_yes=args.yes
+            work, config=args.config, assume_yes=args.yes
         )
 
-    if args.index:
-        missing = unindexed_images(folder)
-        if missing and _run_indexer(folder, args.backend) != 0:
-            print("error: indexing failed; see above", file=sys.stderr)
-            return 1
+    if (
+        args.index
+        and unindexed_images(folder)
+        and _run_indexer(folder, args.backend) != 0
+    ):
+        return _err("indexing failed; see above")
 
     if args.reselect or not selection.exists():
         missing = unindexed_images(folder)
@@ -999,18 +1137,14 @@ def main(argv: list[str] | None = None) -> int:
             if in_date_range(p, args.date_from, args.date_to)
         ]
         if not photos:
-            print(
-                f"error: no indexed photos under {folder}. Index them first:\n"
-                f"  fdx --media images {folder}\n(or re-run with --index)",
-                file=sys.stderr,
+            return _err(
+                f"no indexed photos under {folder}. Index them first: "
+                f"fdx --media images {folder} (or add --index)"
             )
-            return 1
         if missing:
             print(
-                f"note: {len(missing)} photo(s) here have no sidecar yet and are left "
-                f"out. Index them with `fdx --media images {folder}` or --index."
+                f"Note       {len(missing)} photo(s) aren't indexed yet and are left out (--index)"
             )
-        print(f"picking from {len(photos)} indexed photos ...")
         plan = plan_gallery(
             photos,
             max_photos=args.max_photos,
@@ -1018,25 +1152,20 @@ def main(argv: list[str] | None = None) -> int:
             signer=share_site.signatures,
         )
         if not plan.photos:
-            wanted = "keep/review" if args.include_review else "keep"
-            print(
-                f"error: none of the {len(photos)} photos is rated {wanted}. "
-                "Try --include-review, or rate some keep (fdx-mcp set_user_rating).",
-                file=sys.stderr,
+            wanted = "keep or review" if args.include_review else "keep"
+            return _err(
+                f"none of the {len(photos)} photos is rated {wanted}; try --include-review"
             )
-            return 1
-        gallery, pool = gallery_from_plan(
+        gallery = gallery_from_plan(
             plan,
-            title=args.title or title_from_name(name),
-            captions=not args.no_captions,
+            title=args.title or auto_title(plan.photos, title_from_name(name)),
+            captions=args.captions,
         )
-        work.mkdir(parents=True, exist_ok=True)
         if selection.exists():
             selection.replace(selection.with_suffix(".txt.bak"))
-        selection.write_text(write_selection(gallery, pool), encoding="utf-8")
+        write_selection_file(selection, gallery)
         print(
-            f"picked {len(gallery.items)} of {len(photos)} "
-            f"({len(plan.not_picked)} more listed as not picked) -> {selection}"
+            f"Picked     {len(gallery.items)} of {len(photos)} photos  ·  {gallery.title}"
         )
     else:
         pick_flags = {
@@ -1045,20 +1174,20 @@ def main(argv: list[str] | None = None) -> int:
             "--to": args.date_to,
             "--max": args.max_photos != DEFAULT_MAX_PHOTOS,
             "--include-review": args.include_review,
-            "--no-captions": args.no_captions,
+            "--captions": args.captions,
         }
         ignored = [flag for flag, given in pick_flags.items() if given]
         if ignored:
             print(
-                f"note: {', '.join(ignored)} only shape a new pick; {selection.name} "
-                "already exists, so it is used as is (add --reselect to pick again)"
+                f"Note       {', '.join(ignored)} only shape a new pick; using the existing "
+                f"{selection.name} (add --reselect to pick again)"
             )
 
     gallery, warnings = parse_selection(selection.read_text(encoding="utf-8"))
     for w in warnings:
         print(f"warning: {selection.name} {w}", file=sys.stderr)
-    resolved: dict[str, Path] = {}
-    for item in gallery.items:
+    originals: dict[str, Path] = {}
+    for item in gallery.all_items:
         path = resolve_item(folder, item.rel)
         if path is None:
             print(
@@ -1066,18 +1195,28 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
         else:
-            resolved[item.rel] = path
+            originals[item.rel] = path
     for s in gallery.sections:
-        s.items = [i for i in s.items if i.rel in resolved]
+        s.items = [i for i in s.items if i.rel in originals]
     gallery.sections = [s for s in gallery.sections if s.items]
-    if not gallery.sections:
-        print(f"error: {selection} lists no usable photos", file=sys.stderr)
-        return 1
+    if not gallery.items:
+        return _err(f"{selection} lists no photos to show")
 
-    site = share_site.render_site(gallery, resolved, work, keep_gps=args.keep_gps)
-    print(
-        f"rendered {len(site.photos)} photos ({site.total_bytes / 1e6:.1f} MB) -> {site.root}"
+    tty = sys.stdout.isatty()
+
+    def progress(n: int, total: int) -> None:
+        if tty:
+            print(
+                f"\rRendering  {n}/{total}", end="\n" if n == total else "", flush=True
+            )
+        elif n == total:
+            print(f"Rendered   {total} photos", flush=True)
+
+    site = share_site.render_site(
+        gallery, originals, work, keep_gps=args.keep_gps, progress=progress
     )
+    if args.verbose:
+        print(f"Work       {work}  ({site.total_bytes / 1e6:.1f} MB rendered)")
 
     if args.publish:
         from framedex import share_publish
@@ -1087,19 +1226,19 @@ def main(argv: list[str] | None = None) -> int:
             gallery,
             work,
             name=name,
-            config_path=args.config,
+            config=args.config,
+            want_passcode=args.passcode,
+            no_passcode=args.no_passcode,
             new_link=args.new_link,
             assume_yes=args.yes,
         )
 
-    print(f"preview: {site.preview}")
-    print(f"edit:    {selection}  (then re-run to re-render)")
-    print(f"publish: fdx-share {folder} --publish")
-    if not args.no_open:
-        import webbrowser
+    from framedex import share_edit
 
-        webbrowser.open(site.preview.as_uri())
-    return 0
+    return share_edit.serve(
+        share_edit.Editor(folder, work, name, gallery, site, args.config),
+        open_browser=not args.no_open,
+    )
 
 
 if __name__ == "__main__":

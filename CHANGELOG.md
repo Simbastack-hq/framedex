@@ -6,7 +6,22 @@ public surface (CLI flags, sidecar schema) can still shift between minor version
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **`fdx-develop` (experimental, opt-in): the model is the editor.** A vision
+  model looks at each RAW, picks slider values, the user's installed RapidRAW
+  (1.6+, run headless as a separate program, never vendored) renders them, and
+  the model looks again and revises for a fixed number of rounds (default 3,
+  max 4). Shows the model a per-photo calibration sheet of single-slider
+  probes, and optionally the photographer's own before/after pairs
+  (`--examples`) as the style target. Honors Lightroom crops from `.xmp`
+  sidecars, uses framedex `.description.md` context when present. Writes
+  `<out>/<name>.jpg` + a plain-text `<name>.develop.json` record (every round's
+  values, the final engine adjustments, cost) and, only if absent, a RapidRAW
+  `.rrdata` next to the RAW so the edit re-opens in RapidRAW. Backends: api,
+  local (OpenAI-compatible), cli. `--files-from` develops only a listed
+  subset (e.g. a gallery's picks) with the same output names as a full run.
+  Needs the `[images]` extra (Pillow).
 
 ## [0.2.0] - 2026-09-09
 

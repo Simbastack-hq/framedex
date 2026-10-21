@@ -103,6 +103,8 @@ Skip with `--no-faces` if you don't want face data.
 | `fdx-query` | `framedex.query` | Filter sidecars by metadata (rating, lighting, person, keyword, etc.) |
 | `fdx-xmp` | `framedex.xmp_export` | Export ratings/keywords to Lightroom via `.xmp` sidecars (proprietary RAW; regenerable, non-destructive) |
 | `fdx-mcp` | `framedex.mcp_server` | Serve indexed roots as MCP tools over stdio (`[mcp]` extra): query_media, read_sidecar, archive_overview, contact_sheet, set_user_rating |
+| `fdx share` (`fdx-share`) | `framedex.share` | Curate an indexed shoot into a gallery (keep-rated, one per burst, no near-duplicates, sections by day/place), browser editor (hide/reorder/rename/cover/passcode/Publish), publish over rsync/SSH (Caddy), R2/S3 or a folder at an unlisted link; optional AES-GCM passcode (`[share]` extra; docs/share.md) |
+| `fdx trips` (`fdx-trips`) | `framedex.trips` | List trips in an indexed archive by time/GPS gaps, with a draft gallery size and the fdx share command per trip |
 
 ## Set up once
 

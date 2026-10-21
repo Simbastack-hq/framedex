@@ -39,6 +39,7 @@ The README covers the core workflow. Deeper or edge-case topics live in `docs/`:
 - **[Tuning and advanced config](docs/tuning.md)**: folder-context priors, proper-noun biasing, languages, speaker-diarization setup.
 - **[Troubleshooting](docs/troubleshooting.md)**: common errors and their fixes.
 - **[fdx-mcp](docs/mcp.md)**: serve an indexed archive to Claude Desktop, LM Studio, or any MCP host; the tool contract, host setup, what leaves the machine.
+- **[fdx share](docs/share.md)**: turn an indexed shoot into a curated gallery link for family and friends: the browser editor, passcodes, publishing to your own server, R2 or S3, what leaves the machine. Server setup: [docs/hosting](docs/hosting/README.md).
 
 ## Install
 
@@ -234,6 +235,18 @@ Six tools: `list_roots`; `query_media` (a subset of `fdx-query`'s metadata filte
 
 fdx-mcp makes no model calls; host inference may incur token or image charges, and each `contact_sheet` call is one bounded image (at most 20 thumbnails, about 1600 px wide). Tool results can include thumbnails, paths, GPS, names, notes, and transcripts, and the host may forward them to its model provider; keeping them local requires a host configured for local inference that does not forward results (LM Studio with a local vision model). Host setup and the full tool contract: [docs/mcp.md](docs/mcp.md).
 
+## Share a shoot as a gallery link (`fdx share`)
+
+The sidecars already know which frames are keepers, which ones are a burst, and when and where each was taken. `fdx share` uses that to curate a trip into one quiet web page: keep-rated photos, one frame per burst, near-duplicates dropped, about 40 at most with every day and place represented, the strongest frame opening it. It opens the gallery in your browser as an editor (click to view, hide what you don't want, drag to reorder, rename, choose the cover, optional passcode) and publishes it to your own server or bucket at an unlisted link.
+
+```bash
+uv pip install -e '.[share]'
+fdx share ~/Pictures/2025-11-mara     # pick, render, edit in the browser, Publish
+fdx trips /Volumes/SSD-2025           # the trips in an archive, with a draft per trip
+```
+
+Only web copies leave the machine, never originals, with GPS stripped. The link is unlisted (`<name>-<12 random chars>`, `noindex`, no third-party requests). With a passcode, every photo and the page are encrypted before upload (PBKDF2 + AES-GCM) and decrypted in the visitor's browser, so the server only holds ciphertext. Targets: rsync over SSH into a folder Caddy serves (snippet in [docs/hosting](docs/hosting/README.md)), Cloudflare R2 or any S3 bucket, or a local folder. fdx share makes no model call. Details: [docs/share.md](docs/share.md).
+
 ## Apple Photos library (macOS)
 
 `fdx-photos` indexes videos **and** stills straight from an Apple Photos library: no export, no metadata loss. The common case is one command:
@@ -308,6 +321,8 @@ A burst or RAW+JPEG pair is done only when every member's sidecar belongs to tha
 | `fdx-query` | `query.py` | Filter sidecars by rating, lighting, person, keyword, location, language; `--folder`, `--offset`/`--limit` |
 | `fdx-xmp` | `xmp_export.py` | Export ratings/keywords/caption to `.xmp` sidecars for Lightroom (RAW) |
 | `fdx-mcp` | `mcp_server.py` | Serve the archive as MCP tools over stdio (query, read, overview, contact sheet, user rating); `[mcp]` extra |
+| `fdx share` / `fdx-share` | `share.py` | Curate an indexed shoot into a gallery page, edit it in the browser, publish it (SSH/Caddy, R2/S3) at an unlisted link, optionally passcode-encrypted; `[share]` extra. See [docs/share.md](docs/share.md) |
+| `fdx trips` / `fdx-trips` | `trips.py` | List the trips in an indexed archive (time and GPS gaps) with a draft gallery and the `fdx share` command for each |
 
 ```bash
 fdx-query /Volumes/SSD-2024 --rating keep --time-of-day golden_hour

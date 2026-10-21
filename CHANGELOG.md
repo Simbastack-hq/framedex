@@ -6,7 +6,31 @@ public surface (CLI flags, sidecar schema) can still shift between minor version
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **`fdx share`: a gallery link from an indexed shoot.** One command curates
+  a folder from its sidecars (keep-rated by effective rating, one frame per
+  burst/RAW+JPEG group, near-duplicates dropped by a thumbnail-correlation
+  check, a `--max` cap spread so every day/place shows up and the last day
+  keeps its best late frame), titles it from place and month, and opens it
+  in the browser as an editor: click to view, hide what you don't want,
+  drag to reorder, rename, choose the cover, Publish. Every edit is saved to a plain-text `selection.txt`.
+  The page is one static file (system fonts, no external requests,
+  `noindex`), with 2048 px web copies and GPS stripped unless
+  `--keep-gps`; originals are only read. Publish targets: rsync over SSH into
+  one gallery folder served by Caddy (site block and deploy note in
+  `docs/hosting/`), Cloudflare R2 or any S3 bucket (SigV4 on `requests`, no
+  new dependency), or a local folder; same link across re-publishes,
+  `--unpublish` to take it down. Optional passcode: PBKDF2-HMAC-SHA256
+  (600k rounds) + AES-256-GCM over every photo and the page, decrypted in
+  the visitor's browser with WebCrypto; a protected gallery never goes out
+  open by accident. New `[share]` extra (Pillow, pillow-heif, cryptography).
+  See `docs/share.md`.
+- **`fdx trips`**: lists the trips in an indexed archive (split on time gaps
+  and long GPS jumps) with a draft gallery size and the `fdx share` command
+  for each.
+- `fdx share` / `fdx trips` dispatch from `fdx` (unless a folder of that
+  name exists, which `fdx` still indexes).
 
 ## [0.2.0] - 2026-09-09
 

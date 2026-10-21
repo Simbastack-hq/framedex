@@ -1,0 +1,96 @@
+:root {
+  --bg: #ffffff;
+  --ink: #1d1d1f;
+  --muted: #6e6e73;
+  --fill: #f5f5f7;
+  --focus: #0066cc;
+  --sf: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", system-ui,
+    "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --wide: min(1440px, calc(100% - 96px));
+  --hero-w: 1200px;
+  --solo-w: 960px;
+  --tall: min(880px, 80vh);
+  --row: 64px;
+  --pair-gap: 24px;
+  color-scheme: light dark;
+}
+@supports (height: 1svh) { :root { --tall: min(880px, 80svh); } }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #000000; --ink: #f5f5f7; --muted: #a1a1a6; --fill: #1c1c1e; --focus: #64d2ff; }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 400 17px/1.47 var(--sf); -webkit-font-smoothing: antialiased;
+}
+a { color: inherit; }
+img { display: block; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+
+.top { padding: 72px 24px 40px; text-align: center; }
+.top h1 {
+  margin: 0 auto; max-width: 20ch; font-weight: 600;
+  font-size: 48px; line-height: 52px; letter-spacing: -0.026em; text-wrap: balance;
+}
+.top p { margin: 12px 0 0; color: var(--muted); font-size: 15px; line-height: 20px; }
+
+main, .hero { width: var(--wide); margin: 0 auto; }
+.ph { position: relative; margin: 0 auto; }
+.ph a { display: block; cursor: zoom-in; -webkit-tap-highlight-color: transparent; }
+.ph img {
+  width: 100%; height: auto; aspect-ratio: var(--ar); background: var(--c);
+  opacity: 0; transition: opacity 0.22s ease-out;
+}
+.ph img.in, .no-js .ph img { opacity: 1; }
+.solo { width: min(100%, var(--solo-w), calc(var(--tall) * var(--ar))); margin-bottom: var(--row); }
+.hero .solo { width: min(100%, var(--hero-w), calc(var(--tall) * var(--ar))); }
+.pair {
+  display: flex; gap: var(--pair-gap); margin: 0 auto var(--row);
+  width: min(100%, var(--hero-w), calc(var(--tall) * var(--sum) + var(--pair-gap)));
+}
+.pair .ph { flex: var(--ar) 1 0; min-width: 0; margin: 0; }
+figcaption { margin: 12px 0 0; color: var(--muted); font-size: 13px; line-height: 1.38; }
+
+.day { margin: 96px 0 16px; text-align: center; }
+.day h2 { margin: 0; font-size: 13px; line-height: 18px; font-weight: 500; letter-spacing: 0; }
+.day h2 span { color: var(--muted); font-weight: 400; }
+main > section:first-child .day { margin-top: 8px; }
+
+.foot { padding: 32px 24px 56px; text-align: center; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.foot a { text-decoration: none; }
+.foot a:hover { text-decoration: underline; }
+
+.lb {
+  position: fixed; inset: 0; z-index: 50; background: #000; display: grid; place-items: center;
+  opacity: 0; visibility: hidden; transition: opacity 0.18s ease, visibility 0.18s;
+  touch-action: pan-y; user-select: none; -webkit-user-select: none;
+}
+.lb.open { opacity: 1; visibility: visible; }
+.lb > img { max-width: 100vw; max-height: 100vh; max-height: 100dvh; object-fit: contain; }
+.lb button {
+  position: absolute; width: 44px; height: 44px; border: 0; border-radius: 50%; padding: 0;
+  background: rgba(255, 255, 255, 0.1); color: rgba(255, 255, 255, 0.86); cursor: pointer;
+  font: 300 26px/44px var(--sf); opacity: 0.55; transition: opacity 0.12s ease, background 0.12s ease;
+}
+.lb button:hover { opacity: 1; background: rgba(255, 255, 255, 0.18); }
+.lb .x { top: max(16px, env(safe-area-inset-top)); right: 16px; font-size: 22px; }
+.lb .prev { left: 16px; top: calc(50% - 22px); }
+.lb .next { right: 16px; top: calc(50% - 22px); }
+@media (hover: none) { .lb .prev, .lb .next { display: none; } }
+
+@media (max-width: 600px) {
+  :root { --wide: 100%; --row: 24px; }
+  .top { padding: 40px 24px 28px; }
+  .top h1 { font-size: 28px; line-height: 34px; letter-spacing: -0.02em; }
+  .solo, .pair { width: 100%; }
+  .pair { display: block; }
+  .pair .ph + .ph { margin-top: var(--row); }
+  figcaption, .day { padding: 0 24px; }
+  .day { margin: 48px 0 16px; }
+  main > section:first-child .day { margin-top: 24px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ph img, .lb, .lb button { transition: none; }
+}

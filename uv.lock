@@ -1255,6 +1255,7 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
+    { name = "cryptography" },
     { name = "mcp" },
     { name = "osxphotos", marker = "sys_platform == 'darwin'" },
     { name = "pillow" },
@@ -1271,6 +1272,11 @@ mcp = [
 ]
 photos = [
     { name = "osxphotos", marker = "sys_platform == 'darwin'" },
+]
+share = [
+    { name = "cryptography" },
+    { name = "pillow" },
+    { name = "pillow-heif" },
 ]
 video = [
     { name = "whisperx" },
@@ -1292,6 +1298,8 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic", specifier = ">=0.40.0" },
+    { name = "cryptography", marker = "extra == 'all'", specifier = ">=42.0.0" },
+    { name = "cryptography", marker = "extra == 'share'", specifier = ">=42.0.0" },
     { name = "insightface", specifier = ">=0.7.3" },
     { name = "mcp", marker = "extra == 'all'", specifier = ">=2,<3" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2,<3" },
@@ -1302,14 +1310,16 @@ requires-dist = [
     { name = "pillow", marker = "extra == 'all'", specifier = ">=10.0.0" },
     { name = "pillow", marker = "extra == 'images'", specifier = ">=10.0.0" },
     { name = "pillow", marker = "extra == 'mcp'", specifier = ">=10.0.0" },
+    { name = "pillow", marker = "extra == 'share'", specifier = ">=10.0.0" },
     { name = "pillow-heif", marker = "extra == 'all'", specifier = ">=0.16.0" },
     { name = "pillow-heif", marker = "extra == 'images'", specifier = ">=0.16.0" },
+    { name = "pillow-heif", marker = "extra == 'share'", specifier = ">=0.16.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.31.0" },
     { name = "whisperx", marker = "extra == 'all'", specifier = ">=3.1.0" },
     { name = "whisperx", marker = "extra == 'video'", specifier = ">=3.1.0" },
 ]
-provides-extras = ["video", "images", "photos", "mcp", "all"]
+provides-extras = ["video", "images", "photos", "share", "mcp", "all"]
 
 [package.metadata.requires-dev]
 dev = [

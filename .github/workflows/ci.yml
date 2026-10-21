@@ -51,3 +51,24 @@ jobs:
 
       - name: pytest (mcp integration)
         run: uv run --no-sync pytest tests/test_mcp_integration.py tests/test_mcp_tools.py
+
+  # fdx share's passcode crypto and pixel-level checks (GPS stripped, originals
+  # untouched) need the [share] extra (Pillow, pillow-heif, cryptography).
+  share-extra:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          version: "0.11.16"
+          python-version: "3.12"
+
+      - name: Install dev + test deps + the share extra
+        run: uv sync --locked --group dev --group test --extra share
+
+      - name: mypy (with Pillow and cryptography installed)
+        run: uv run --no-sync mypy src/framedex tests --ignore-missing-imports
+
+      - name: pytest (fdx share)
+        run: uv run --no-sync pytest tests/test_share.py tests/test_share_site.py tests/test_share_lock.py tests/test_share_publish.py tests/test_share_edit.py tests/test_trips.py

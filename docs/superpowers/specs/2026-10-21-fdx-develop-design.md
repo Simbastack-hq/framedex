@@ -138,8 +138,9 @@ Fixed per photo: ≤ `--rounds` (default 3, max 4) vision calls, each with ≤ 2
 photos at 1600 px, the calibration sheet, and up to 3 example pairs at
 1024 px; output is capped at 16k tokens per call and SDK retries at 2. This is
 framedex's one deliberate exception to "one call per file": the bound is the
-round count. Measured on Claude Opus 5.5 at effort `high`: ≈ $0.17 per photo
-without examples, ≈ $0.33 with two example pairs and 4 rounds. The run prints
+round count. Measured on Claude Opus 5.5 at effort `high` on 10 real RAWs: $0.19–0.28
+per photo ($0.23 average) with two example pairs, calibration and 3 rounds;
+≈ $0.30 with 4 rounds. The run prints
 an estimate up front and the actual at the end from API usage; the CLI
 backend reports cost as unknown. `--max-files` caps a run. Local: $0.
 

@@ -102,8 +102,10 @@ white conversion unless the photo calls for it.
 
 Fixed per photo: at most `--rounds` model calls, each with at most two 1600 px
 images, the calibration sheet, and up to three 1024 px example pairs.
-Measured on Claude Opus 5.5 (effort `high`, adaptive thinking): about $0.17 per
-photo with no examples and $0.30-0.35 with two example pairs and 4 rounds. The
+Measured on 10 real RAWs with Claude Opus 5.5 (effort `high`, adaptive
+thinking), two example pairs, the calibration sheet and the default 3 rounds:
+$0.19-0.28 per photo, $0.23 on average, about 2.5 minutes each. Four rounds
+cost about $0.30. The
 run prints an estimate before it starts and the actual cost at the end
 (marked `+ unknown` for the CLI backend, which doesn't report usage, and
 for any call that failed mid-flight, which may still have been billed). `--backend local`

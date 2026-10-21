@@ -72,7 +72,9 @@ RECORD_SUFFIX = ".develop.json"
 # $/MTok (input, output, cache write, cache read). Unknown models report cost
 # as unknown rather than a guess.
 PRICES_USD_PER_MTOK = {"claude-opus-5-5": (4.0, 20.0, 5.0, 0.20)}
-EST_USD_PER_PHOTO = 0.25  # measured ≈$0.17-0.25 on Opus 5.5 at effort high, 3-4 rounds
+EST_USD_PER_PHOTO = (
+    0.25  # measured $0.19-0.28 (avg $0.23) on Opus 5.5, effort high, 3 rounds
+)
 # One-slider probes rendered once per photo so the model sees what the engine's
 # numbers do to *this* image before it picks any.
 CALIBRATION_PROBES: tuple[tuple[str, dict[str, Any]], ...] = (

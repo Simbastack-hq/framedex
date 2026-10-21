@@ -244,7 +244,7 @@ fdx-develop ~/shoots/mara-2026-07 --examples ~/shoots/mara-2026-07/my-edits   # 
 fdx-develop ~/shoots/mara-2026-07 --dry-run                                   # list + cost estimate, no calls
 ```
 
-The engine is [RapidRAW](https://github.com/CyberTimon/RapidRAW) 1.6+, installed separately and run headless as its own program (framedex never bundles or links it). Output: `<root>/developed/<name>.jpg` plus a plain-text `<name>.develop.json` with every round's values and the final engine adjustments, and (only if none exists) a RapidRAW `.rrdata` next to the RAW so the edit re-opens in RapidRAW. Originals are never modified. Lightroom crops in `.xmp` sidecars are honored. Cost is fixed per photo (≤ rounds calls; about $0.20-0.35 on Claude Opus 5.5 with examples), and `--backend local` runs it on your own model. Details, limits, and what leaves the machine: [docs/develop.md](docs/develop.md).
+The engine is [RapidRAW](https://github.com/CyberTimon/RapidRAW) 1.6+, installed separately and run headless as its own program (framedex never bundles or links it). Output: `<root>/developed/<name>.jpg` plus a plain-text `<name>.develop.json` with every round's values and the final engine adjustments, and (only if none exists) a RapidRAW `.rrdata` next to the RAW so the edit re-opens in RapidRAW. Originals are never modified. Lightroom crops in `.xmp` sidecars are honored. Cost is fixed per photo (≤ rounds calls; about $0.19-0.28 on Claude Opus 5.5 with examples, measured), and `--backend local` runs it on your own model. Details, limits, and what leaves the machine: [docs/develop.md](docs/develop.md).
 
 ## Apple Photos library (macOS)
 

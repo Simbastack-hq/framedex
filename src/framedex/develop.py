@@ -600,15 +600,31 @@ class PhotoResult:
     message: str = ""
 
 
-def output_paths(
-    raw: Path, root: Path, out_dir: Path, colliding: bool
-) -> tuple[Path, Path]:
-    """<out>/<subdir>/<stem>.jpg, or <out>/<subdir>/<file name>.jpg when another
-    RAW in the same folder shares the stem (file names are unique per folder)."""
-    rel = raw.relative_to(root)
-    name = raw.name if colliding else raw.stem
-    base = out_dir / rel.parent / name
-    return base.with_name(base.name + ".jpg"), base.with_name(base.name + RECORD_SUFFIX)
+def plan_outputs(
+    raws: Sequence[Path], root: Path, out_dir: Path
+) -> dict[Path, tuple[Path, Path]]:
+    """(jpg, record) for every RAW: <out>/<subdir>/<stem>.jpg, switching to the
+    full file name (<file name>.jpg) for every RAW whose name would clash with
+    another output in the same folder. Full file names are unique per folder,
+    so repeating until nothing clashes always terminates."""
+    names = {r: r.stem for r in raws}
+    while True:
+        seen: dict[tuple[Path, str], list[Path]] = {}
+        for r in raws:
+            seen.setdefault((r.parent, names[r].lower()), []).append(r)
+        clashes = [r for group in seen.values() if len(group) > 1 for r in group]
+        if not clashes:
+            break
+        for r in clashes:
+            names[r] = r.name
+    out: dict[Path, tuple[Path, Path]] = {}
+    for r in raws:
+        base = out_dir / r.relative_to(root).parent / names[r]
+        out[r] = (
+            base.with_name(base.name + ".jpg"),
+            base.with_name(base.name + RECORD_SUFFIX),
+        )
+    return out
 
 
 def _fingerprint(raw: Path) -> dict[str, Any]:
@@ -639,19 +655,28 @@ def is_complete(raw: Path, jpg: Path, record: Path) -> bool:
     )
 
 
-def owns_output(raw: Path, jpg: Path, record: Path) -> bool:
-    """May framedex (re)write `jpg` for `raw`? Only if nothing is there, or the
-    record proves framedex wrote exactly what is there for this RAW: a
-    `pending` record (interrupted between publish and finalize) or a matching
-    content digest. A user's own export at that path is never touched."""
-    if not jpg.exists():
-        return True
+def _owned_digests(rec: dict[str, Any]) -> set[str]:
+    return {d for d in (rec.get("output_sha256"), rec.get("previous_sha256")) if d}
+
+
+def owned_digest(raw: Path, jpg: Path, record: Path) -> str:
+    """Digest of the JPEG at `jpg` if framedex's record for this RAW proves it
+    wrote exactly those bytes (this run's output, or the previous output a
+    pending/failed attempt left in place); '' otherwise."""
+    if not jpg.is_file():
+        return ""
     rec = _load_record(record)
     if rec is None or (rec.get("source") or {}).get("name") != raw.name:
-        return False
-    if rec.get("status") == "pending":
-        return True
-    return bool(rec.get("output_sha256")) and rec.get("output_sha256") == _sha256(jpg)
+        return ""
+    digest = _sha256(jpg)
+    return digest if digest in _owned_digests(rec) else ""
+
+
+def owns_output(raw: Path, jpg: Path, record: Path) -> bool:
+    """May framedex (re)write `jpg` for `raw`? Only if nothing is there or the
+    record proves framedex wrote exactly what is there. A user's own export, or
+    a file the user replaced, is never touched."""
+    return not jpg.exists() or bool(owned_digest(raw, jpg, record))
 
 
 def write_rrdata(raw: Path, adjustments: dict[str, Any]) -> bool:
@@ -700,6 +725,7 @@ class _Run:
     history: list[RoundLog] = field(default_factory=list)
     cost: float = 0.0
     cost_complete: bool = True
+    previous_sha256: str = ""  # the owned JPEG already at the output path, if any
 
     def write(
         self,
@@ -719,6 +745,7 @@ class _Run:
             "source": _fingerprint(self.raw),
             "output": output.name if output else "",
             "output_sha256": output_sha256,
+            "previous_sha256": self.previous_sha256,
             "engine": self.engine_info,
             "backend": self.backend.name,
             "model": self.backend.model,
@@ -759,6 +786,9 @@ def develop_photo(
     context, orientation = photo_context(raw)
     crop = read_crop(raw)
     run = _Run(raw, record, backend, engine_info, crop)
+    # Keep proof of ownership of an earlier output across a failed or
+    # interrupted redo, so it stays replaceable instead of turning "foreign".
+    run.previous_sha256 = owned_digest(raw, jpg, record)
     fixed: list[Img] = _example_images(examples)
     try:
         neutral = renderer.render(
@@ -842,7 +872,10 @@ def develop_photo(
     adjustments = eng.to_rapidraw(best_round.edit, full_size, crop, orientation)
     # Claim the path before publishing, so an interrupt between the two leaves
     # a JPEG framedex can prove it owns (status pending), not an orphan.
-    run.write("pending", final_round=best_round.round, output=jpg)
+    new_sha256 = hashlib.sha256(best.deliverable).hexdigest()
+    run.write(
+        "pending", final_round=best_round.round, output=jpg, output_sha256=new_sha256
+    )
     jpg.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_bytes(jpg, best.deliverable)
     rr = write_engine_sidecar and write_rrdata(
@@ -851,13 +884,14 @@ def develop_photo(
     # A round that failed after a good render still ships that render, but the
     # photo stays retryable ("partial") rather than silently "done".
     status = "partial" if errors else "done"
+    run.previous_sha256 = ""
     run.write(
         status,
         errors[0] if errors else "",
         final_round=best_round.round,
         adjustments=adjustments,
         output=jpg,
-        output_sha256=hashlib.sha256(best.deliverable).hexdigest(),
+        output_sha256=new_sha256,
         rrdata_written=rr,
     )
     return run.result(status, jpg, errors[0] if errors else "")
@@ -947,13 +981,8 @@ def main(argv: list[str] | None = None) -> int:
         sys.exit(f"--rounds must be 1-{MAX_ROUNDS}")
     out_dir = Path(args.out).expanduser().resolve() if args.out else root / OUT_DIRNAME
     raws = discover(root, out_dir)
-    stems: dict[tuple[Path, str], int] = {}
-    for r in raws:
-        stems[(r.parent, r.stem.lower())] = stems.get((r.parent, r.stem.lower()), 0) + 1
-    plan = []
-    for r in raws:
-        jpg, rec = output_paths(r, root, out_dir, stems[(r.parent, r.stem.lower())] > 1)
-        plan.append((r, jpg, rec))
+    outputs = plan_outputs(raws, root, out_dir)
+    plan = [(r, *outputs[r]) for r in raws]
     todo = [(r, j, c) for r, j, c in plan if args.force or not is_complete(r, j, c)]
     if args.max_files is not None:
         todo = todo[: args.max_files]

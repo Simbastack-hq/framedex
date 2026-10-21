@@ -269,17 +269,24 @@ def test_is_complete_requires_matching_source(raw: Path) -> None:
     assert not D.is_complete(raw, jpg, rec)
 
 
-def test_output_paths_disambiguate_stem_collisions(tmp_path: Path) -> None:
+def test_plan_outputs_resolves_every_clash(tmp_path: Path) -> None:
     root, out = tmp_path, tmp_path / "developed"
-    raw = root / "day1" / "A.NEF"
-    assert D.output_paths(raw, root, out, False) == (
-        out / "day1" / "A.jpg",
-        out / "day1" / "A.develop.json",
-    )
-    assert D.output_paths(raw, root, out, True)[0] == out / "day1" / "A.NEF.jpg"
-    # file names are unique per folder, so colliding outputs can't clash
-    other = root / "day1" / "A.nef.DNG"
-    assert D.output_paths(other, root, out, True)[0] == out / "day1" / "A.nef.DNG.jpg"
+    d = root / "day1"
+    raws = [d / "A.ARW", d / "A.NEF", d / "A.NEF.DNG", d / "B.NEF", root / "A.NEF"]
+    plan = D.plan_outputs(raws, root, out)
+    names = {
+        r.relative_to(root).as_posix(): plan[r][0].relative_to(out).as_posix()
+        for r in raws
+    }
+    assert names == {
+        "day1/A.ARW": "day1/A.ARW.jpg",
+        "day1/A.NEF": "day1/A.NEF.jpg",
+        "day1/A.NEF.DNG": "day1/A.NEF.DNG.jpg",
+        "day1/B.NEF": "day1/B.jpg",
+        "A.NEF": "A.jpg",  # different folder: no clash
+    }
+    assert plan[d / "B.NEF"][1] == out / "day1" / "B.develop.json"
+    assert len({p[0] for p in plan.values()}) == len(raws)
 
 
 def test_discover_skips_hidden_output_and_non_raw(tmp_path: Path) -> None:
@@ -310,7 +317,7 @@ def test_main_dry_run_writes_nothing(
     assert D.main([str(tmp_path), "--dry-run"]) == 0
     out = capsys.readouterr().out
     assert "2 RAWs, 0 already developed, 2 to do" in out
-    assert "a.NEF.jpg" in out and "a.ARW.jpg" in out
+    assert "a.NEF.jpg" in out and "a.ARW.jpg" in out  # same stem: full names
     assert not (tmp_path / "developed").exists()
 
 
@@ -458,3 +465,30 @@ def test_main_isolates_a_crashing_photo(
     assert seen == ["a.NEF", "b.NEF"]
     out = capsys.readouterr().out
     assert "done 1, partial 0, failed 1" in out and "$0.20 + unknown" in out
+
+
+def test_user_replacement_after_interrupt_is_not_overwritten(
+    raw: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    jpg, rec = _paths(raw)
+
+    def crash(*a: Any, **k: Any) -> bool:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(D, "write_rrdata", crash)
+    with pytest.raises(KeyboardInterrupt):
+        run(raw, FakeBackend([edit(), edit(), edit(done=True)]))
+    assert record(raw)["status"] == "pending"
+    jpg.write_bytes(b"user's own export")
+    assert not D.owns_output(raw, jpg, rec)
+
+
+def test_failed_redo_keeps_ownership_of_the_previous_output(raw: Path) -> None:
+    jpg, rec = _paths(raw)
+    run(raw, FakeBackend([edit(), edit(), edit(done=True)]))
+    before = jpg.read_bytes()
+    res = run(raw, FakeBackend([edit()]), BrokenRenderer())
+    assert res.status == "failed"
+    assert jpg.read_bytes() == before
+    assert D.owns_output(raw, jpg, rec)  # still ours: a later --force may replace it
+    assert not D.is_complete(raw, jpg, rec)  # and it gets retried

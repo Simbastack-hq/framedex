@@ -80,13 +80,15 @@ white conversion unless the photo calls for it.
 
 - **Originals are never modified, moved, or renamed.**
 - `<out>/<name>.jpg`: the edited copy, sRGB, quality 90. If two RAWs in one
-  folder share a name (`A.NEF` + `A.ARW`), outputs use the full file name
-  (`A.NEF.jpg`, `A.ARW.jpg`).
+  folder would get the same output name (`A.NEF` + `A.ARW`, or `A.NEF` +
+  `A.NEF.DNG`), those outputs use the full file name (`A.NEF.jpg`,
+  `A.ARW.jpg`, `A.NEF.DNG.jpg`).
 - `<out>/<name>.develop.json`: plain text. Status, source fingerprint (name,
   size, mtime), the output's SHA-256, engine and version, backend and model,
   every round's values, stats and cost, the final engine adjustments, the
-  crop. A `pending` record is written before the JPEG is published and
-  finalized after, so an interrupted run recovers. A re-run skips a photo only
+  crop. A `pending` record carrying the new JPEG's digest is written before
+  the JPEG is published and finalized after, so an interrupted run recovers;
+  a failed redo keeps the digest of the earlier output it left in place. A re-run skips a photo only
   if the record says `done`, the RAW is unchanged and the JPEG is byte-for-byte
   what framedex wrote. `failed` photos (no usable render) and `partial` ones (a
   later round failed; the best earlier render ships) are retried next run.

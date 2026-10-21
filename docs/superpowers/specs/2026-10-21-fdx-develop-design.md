@@ -208,3 +208,11 @@ Hermetic (repo convention): no engine, no network, no real photos.
 | First-render failure aborted the batch | Failed record per photo; `main` has a per-photo exception boundary |
 | A later-round failure was recorded `done` | Status `partial`: best earlier render ships, photo retried next run, exit code 1 |
 | A failed call was reported as free | Known spend summed; any failed or unpriced call marks cost incomplete (`+ unknown`) |
+
+## Codex final review (2026-10-21) and what changed
+
+| Finding | Resolution |
+|---|---|
+| A `pending` record authorized overwriting a JPEG the user replaced after an interrupt | Ownership is always digest-proven: the pending record carries the new output's SHA-256 (and the previous one); anything else is foreign |
+| A failed `--force` redo dropped ownership of the earlier output | Every record carries `previous_sha256` of the owned file left in place |
+| `A.NEF` and `A.NEF.DNG` could still share `A.NEF.jpg` | `plan_outputs` resolves names over the whole plan, switching every clashing RAW to its full file name until nothing clashes |

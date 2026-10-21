@@ -218,7 +218,8 @@ def web_exif(source_exif: Any, *, keep_gps: bool) -> Any:
     return out
 
 
-def _fit(w: int, h: int, long_edge: int) -> tuple[int, int]:
+def _fit(size: tuple[int, int], long_edge: int) -> tuple[int, int]:
+    w, h = size
     scale = min(1.0, long_edge / max(w, h))
     return max(1, round(w * scale)), max(1, round(h * scale))
 
@@ -231,12 +232,12 @@ def render_one(
         icc = im.info.get("icc_profile")
         exif = web_exif(im.info["fdx_exif"], keep_gps=keep_gps).tobytes()
         rgb = im if im.mode == "RGB" else im.convert("RGB")
-        web = rgb.resize(_fit(*rgb.size, WEB_LONG_EDGE), image_mod.Resampling.LANCZOS)
+        web = rgb.resize(_fit(rgb.size, WEB_LONG_EDGE), image_mod.Resampling.LANCZOS)
     opts: dict[str, Any] = {"optimize": True, "progressive": True, "exif": exif}
     if icc:
         opts["icc_profile"] = icc
     web.save(out_photo, "JPEG", quality=WEB_JPEG_QUALITY, **opts)
-    thumb = web.resize(_fit(*web.size, THUMB_LONG_EDGE), image_mod.Resampling.LANCZOS)
+    thumb = web.resize(_fit(web.size, THUMB_LONG_EDGE), image_mod.Resampling.LANCZOS)
     thumb.save(out_thumb, "JPEG", quality=THUMB_JPEG_QUALITY, **opts)
 
 

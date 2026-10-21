@@ -695,3 +695,17 @@ def test_main_dry_run_lists_groups_without_processing(
     assert "would process [burst: 3 files -> 1 vision call]: 1.NEF .. 3.NEF" in out
     assert "would process [image]: lone.NEF" in out
     assert calls == []
+
+
+def test_fdx_share_and_trips_dispatch_unless_a_folder_has_that_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from framedex.index_videos import subcommand
+
+    monkeypatch.chdir(tmp_path)
+    assert subcommand(["share", "/photos"]) == "share"
+    assert subcommand(["trips", "/photos"]) == "trips"
+    assert subcommand(["/photos"]) is None
+    assert subcommand([]) is None
+    (tmp_path / "share").mkdir()
+    assert subcommand(["share"]) is None  # `fdx share` still indexes ./share

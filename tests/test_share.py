@@ -441,11 +441,16 @@ def test_in_date_range() -> None:
 def _gallery() -> s.Gallery:
     return s.Gallery(
         title="Mara, November",
-        subtitle="8\u20139 November 2025 · Narok, Kenya",
+        subtitle="8\u20139 November",
         cover="day2/IMG_2.JPG",
+        captions=True,
         sections=[
             s.GallerySection(
-                "Saturday 8 November · Talek", [s.Item("day1/IMG_1.JPG", "")]
+                "Saturday 8 November · Talek",
+                [
+                    s.Item("day1/IMG_1.JPG", ""),
+                    s.Item("day1/IMG_5.JPG", "A tent.", hidden=True),
+                ],
             ),
             s.GallerySection(
                 "Sunday 9 November · Ewangan, Narok West",
@@ -455,37 +460,43 @@ def _gallery() -> s.Gallery:
                 ],
             ),
         ],
+        pool=[
+            (
+                s.Item("day2/IMG_4.JPG", "Same leopard."),
+                "near-duplicate of day2/IMG_2.JPG",
+            ),
+            (s.Item("day2/IMG_6.JPG", ""), "over the 40-photo cap"),
+        ],
     )
 
 
-def test_selection_round_trip() -> None:
+def test_selection_round_trip_keeps_hidden_photos_and_the_pool() -> None:
     g = _gallery()
-    pool = [
-        (s.Item("day2/IMG_4.JPG", "Same leopard."), "near-duplicate of day2/IMG_2.JPG")
-    ]
-    text = s.write_selection(g, pool)
-    parsed, warnings = s.parse_selection(text)
+    parsed, warnings = s.parse_selection(s.write_selection(g))
     assert warnings == []
-    assert parsed == g  # the pool is commented out
+    assert parsed == g  # an editor save (parse -> edit -> write) loses nothing
+    assert [i.rel for i in parsed.items] == [
+        "day1/IMG_1.JPG",
+        "day2/IMG_2.JPG",
+        "day2/IMG 3 #2.JPG",
+    ]  # the page: hidden photos are not on it
+    assert len(parsed.all_items) == 4
 
 
 def test_selection_edits_drop_reorder_recaption_and_add_back() -> None:
-    text = s.write_selection(
-        _gallery(),
-        [(s.Item("day2/IMG_4.JPG", "Same leopard."), "over the 40-photo cap")],
-    )
+    text = s.write_selection(_gallery())
     edited = (
-        text.replace("day1/IMG_1.JPG\n", "# day1/IMG_1.JPG\n")  # dropped
+        text.replace("day1/IMG_1.JPG\n", "# day1/IMG_1.JPG\n")  # dropped by hand
+        .replace("# day1/IMG_5.JPG | A tent.  # hidden", "day1/IMG_5.JPG | A tent.")
         .replace("A leopard crosses the track.", "Our first leopard!")
         .replace("title: Mara, November", "title: Mara with the kids")
-        .replace("# day2/IMG_4.JPG", "day2/IMG_4.JPG")  # added back
+        .replace("captions: on", "captions: off")
+        .replace("# day2/IMG_4.JPG", "day2/IMG_4.JPG")  # added back from the pool
     )
     parsed, _ = s.parse_selection(edited)
-    assert parsed.title == "Mara with the kids"
-    assert [sec.heading for sec in parsed.sections] == [
-        "Sunday 9 November · Ewangan, Narok West"
-    ]
-    items = parsed.sections[0].items
+    assert parsed.title == "Mara with the kids" and parsed.captions is False
+    assert [i.rel for i in parsed.sections[0].items] == ["day1/IMG_5.JPG"]  # restored
+    items = parsed.sections[1].items
     assert [i.rel for i in items] == [
         "day2/IMG_2.JPG",
         "day2/IMG 3 #2.JPG",
@@ -493,6 +504,16 @@ def test_selection_edits_drop_reorder_recaption_and_add_back() -> None:
     ]
     assert items[0].caption == "Our first leopard!"
     assert items[2].caption == "Same leopard."  # the "  # reason" note is stripped
+    assert [i.rel for i, _ in parsed.pool] == ["day2/IMG_6.JPG"]
+
+
+def test_selection_ignores_comments_that_are_not_photos() -> None:
+    text = (
+        s.SELECTION_HELP
+        + "## Day\na.JPG\n# just a note  # hidden\n# notes.txt  # hidden\n"
+    )
+    parsed, _ = s.parse_selection(text)
+    assert [i.rel for i in parsed.all_items] == ["a.JPG"]
 
 
 def test_selection_lines_without_sections_or_captions() -> None:
@@ -508,28 +529,77 @@ def test_empty_sections_are_dropped() -> None:
     assert [sec.heading for sec in parsed.sections] == ["Full"]
 
 
-def test_gallery_from_plan_picks_a_wide_cover_from_the_biggest_section() -> None:
+def test_write_selection_file_is_atomic(tmp_path: Path) -> None:
+    target = tmp_path / "work" / "selection.txt"
+    s.write_selection_file(target, _gallery())
+    assert s.parse_selection(target.read_text())[0] == _gallery()
+    assert [f.name for f in target.parent.iterdir()] == [
+        "selection.txt"
+    ]  # no temp left
+
+
+def test_gallery_from_plan_opens_on_the_strongest_frame() -> None:
+    strongest = _p("tall.JPG", 0, aspect=0.56, user_rated=True)  # a human keep
     plan = s.Plan(
         [
             s.Section("Saturday", [_p("lodge.JPG", -600, aspect=1.78)]),
             s.Section(
                 "Sunday",
                 [
-                    _p("tall.JPG", 0, aspect=0.56, user_rated=True),
-                    _p("square.JPG", 2, aspect=1.09),
-                    _p("wide.JPG", 5, scene="Elephants at a waterhole."),
+                    strongest,
+                    _p("wide.JPG", 5, subjects="One lion walking.", scene="Grass."),
                 ],
             ),
-        ]
+        ],
+        not_picked=[(_p("cut.JPG", 9), "over the 3-photo cap")],
     )
-    g, pool = s.gallery_from_plan(plan, title="T")
-    assert g.cover == "wide.JPG"  # not the tall one, not the near-square one
-    no_wide = s.Plan([s.Section("x", [_p("tall.JPG", 0, aspect=0.56)])])
-    assert s.pick_cover(no_wide) == ""
-    assert g.items[3].caption == "Elephants at a waterhole."
-    assert pool == []
-    g2, _ = s.gallery_from_plan(plan, title="T", captions=False)
-    assert all(i.caption == "" for i in g2.items)
+    g = s.gallery_from_plan(plan, title="T")
+    assert g.cover == "tall.JPG"  # never an inferior landscape just to have a wide one
+    assert g.captions is False
+    assert g.items[2].caption == "A lion walking."  # alt text is always there
+    assert g.pool == [(s.Item("cut.JPG", ""), "over the 3-photo cap")]
+    assert s.pick_cover(s.Plan([])) == ""
+
+
+def test_pick_with_closer_keeps_the_best_late_frame() -> None:
+    early = [_p(f"e{i}.JPG", i * 10) for i in range(6)]
+    late = [_p("late-soft.JPG", 70, focus="soft"), _p("late-great.JPG", 75)]
+    for p in late:
+        p.composition = "acceptable"
+    late[1].focus = "sharp"
+    chosen = s.pick_with_closer([*early, *late], 3)
+    assert len(chosen) == 3 and chosen[-1].rel == "late-great.JPG"
+    assert s.pick_with_closer(early, 10) == early  # nothing to cap
+
+
+def test_auto_title_from_place_and_month() -> None:
+    mara = [_p(f"m{i}.JPG", i) for i in range(5)]
+    assert s.auto_title(mara, "Folder") == "Narok · November 2025"
+    lisbon = "Alfama, Santa Maria Maior, Lisboa, Portugal"
+    algarve = "Odeceixe, Aljezur, Faro, Portugal"
+    mixed = [
+        _p("a", 0, place=lisbon),
+        _p("b", 1, place=algarve),
+        _p("c", 2, place=lisbon),
+    ]
+    assert s.trip_place(mixed) == "Portugal"
+    no_gps = [_p("x", 0, place=""), _p("y", 1, place="")]
+    assert s.auto_title(no_gps, "Moto Spain") == "Moto Spain · November 2025"
+    assert s.auto_title([_p("u", None, place="")], "Moto Spain") == "Moto Spain"
+    assert (
+        s.month_label([date(2025, 10, 30), date(2025, 11, 2)])
+        == "October \u2013 November 2025"
+    )
+    assert s.month_label([date(2025, 12, 30), date(2026, 1, 2)]) == (
+        "December 2025 \u2013 January 2026"
+    )
+    assert (
+        s.day_range_label([date(2025, 11, 8), date(2025, 11, 9)]) == "8\u20139 November"
+    )
+    assert s.day_range_label([date(2025, 11, 9)]) == "Sunday 9 November"
+    assert s.day_range_label([date(2025, 10, 30), date(2025, 11, 2)]) == (
+        "30 October \u2013 2 November"
+    )
 
 
 def test_resolve_item_refuses_paths_outside_the_folder(tmp_path: Path) -> None:

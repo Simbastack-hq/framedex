@@ -1,12 +1,14 @@
-"""Tests for framedex.share_site — the fdx-share page and web copies.
+"""Tests for framedex.share_site — the fdx share page and web copies.
 
 The page tests are pure string checks. The render tests need Pillow (the
-[images] extra) and skip without it; they build tiny JPEGs in tmp_path.
+[images] or [share] extra) and skip without it; they build tiny JPEGs in
+tmp_path.
 """
 
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 from typing import Any
 
@@ -21,16 +23,18 @@ def _rendered(rel: str, w: int = 2048, h: int = 1365) -> site.Rendered:
     return site.Rendered(rel, name, w, h, w // 2, h // 2, "#806040", 1000)
 
 
-def _gallery(**kw: str) -> Gallery:
+def _gallery(**kw: Any) -> Gallery:
     return Gallery(
-        title=kw.get("title", "Mara, November"),
-        subtitle=kw.get("subtitle", "9 November 2025 · Narok, Kenya"),
+        title=kw.get("title", "Narok · November 2025"),
+        subtitle=kw.get("subtitle", "8\u20139 November"),
         cover=kw.get("cover", ""),
+        captions=kw.get("captions", False),
         sections=[
             GallerySection(
                 "Sunday 9 November · Ewangan, Narok West",
                 [
                     Item("tall.JPG", "A giraffe."),
+                    Item("tall2.JPG", "A zebra.", hidden=kw.get("hide", False)),
                     Item("wide.JPG", kw.get("caption", "A leopard on the track.")),
                 ],
             )
@@ -40,23 +44,44 @@ def _gallery(**kw: str) -> Gallery:
 
 def _photos() -> dict[str, site.Rendered]:
     return {
-        "tall.JPG": _rendered("tall.JPG", 1365, 2048),
+        "tall.JPG": _rendered("tall.JPG", 1152, 2048),
+        "tall2.JPG": _rendered("tall2.JPG", 1152, 2048),
         "wide.JPG": _rendered("wide.JPG"),
     }
 
 
-def test_page_is_unlisted_and_credits_framedex() -> None:
+def test_page_is_unlisted_quiet_and_credits_framedex() -> None:
     html = site.page_html(_gallery(), _photos())
     assert (
         '<meta name="robots" content="noindex,nofollow,noimageindex,noarchive">' in html
     )
     assert '<meta name="referrer" content="no-referrer">' in html
     assert f'href="{site.FRAMEDEX_URL}">framedex</a>' in html
-    assert "<h2>Sunday 9 November</h2><p>Ewangan, Narok West</p>" in html
+    assert "<h2>Sunday 9 November<span> · Ewangan, Narok West</span></h2>" in html
     assert "og:image" not in html  # only a published page knows its absolute URL
-    assert 'class="banner"' not in html and 'class="tag"' not in html
+    assert "<figcaption>" not in html  # captions are alt text unless captions: on
+    assert 'alt="A leopard on the track."' in html
     # No third-party requests: every src/href is relative or the credit link.
     assert "https://" not in html.replace(site.FRAMEDEX_URL, "")
+
+
+def test_the_cover_opens_once_and_portraits_pair() -> None:
+    html = site.page_html(_gallery(), _photos())
+    wide = _photos()["wide.JPG"].name
+    hero = html.index('<div class="hero">')
+    assert html.count(f"photos/{wide} 2048w") == 1  # the cover is not repeated below
+    assert html.index(f"photos/{wide}") > hero
+    pair = re.search(r'<div class="pair" style="--sum:([0-9.]+)">', html)
+    assert pair is not None and float(pair.group(1)) == pytest.approx(
+        2 * 1152 / 2048, 1e-3
+    )
+
+
+def test_captions_on_shows_them_and_hidden_photos_stay_off_the_page() -> None:
+    html = site.page_html(_gallery(captions=True, hide=True), _photos())
+    assert "<figcaption>A giraffe.</figcaption>" in html
+    assert "A zebra." not in html
+    assert '<div class="pair"' not in html  # one portrait left: it hangs alone
 
 
 def test_page_escapes_everything_from_the_selection_file() -> None:
@@ -72,7 +97,7 @@ def test_asset_prefix_and_link_preview_for_the_published_page() -> None:
         _gallery(),
         photos,
         asset_prefix="mara-abc/",
-        page_url="https://p.example/g/mara-abc",
+        page_url="https://fdx.art/g/mara-abc",
     )
     wide = photos["wide.JPG"].name
     assert (
@@ -80,23 +105,32 @@ def test_asset_prefix_and_link_preview_for_the_published_page() -> None:
     )
     assert f'href="mara-abc/photos/{wide}"' in html
     assert (
-        f'<meta property="og:image" content="https://p.example/g/mara-abc/thumbs/{wide}">'
+        f'<meta property="og:image" content="https://fdx.art/g/mara-abc/thumbs/{wide}">'
         in html
     )
 
 
-def test_preview_page_shows_the_edit_banner_and_file_names(tmp_path: Path) -> None:
-    html = site.page_html(
-        _gallery(), _photos(), asset_prefix="site/", preview_of=tmp_path
+def test_edit_markup_keeps_hidden_photos_and_the_cover_slot() -> None:
+    html = site.gallery_markup(_gallery(hide=True), _photos(), edit=True)
+    assert 'class="ph solo off"' in html and 'data-rel="tall2.JPG"' in html
+    assert '<span class="slot" data-rel="wide.JPG" hidden></span>' in html
+    assert "<h1 contenteditable>" in html
+
+
+def test_sealed_markup_carries_no_plain_image_paths() -> None:
+    photos = _photos()
+    sealed = site.Sealed(
+        {rel: (f"photos/{rel}.bin", f"thumbs/{rel}.bin") for rel in photos}
     )
-    assert "selection.txt" in html and 'class="banner"' in html
-    assert '<span class="tag">wide.JPG</span>' in html
+    html = site.gallery_markup(_gallery(), photos, sealed=sealed)
+    assert ".jpg" not in html
+    assert 'data-photo="photos/wide.JPG.bin"' in html and "src=" not in html
 
 
-def test_cover_auto_named_and_none() -> None:
+def test_cover_rules() -> None:
     photos = _photos()
     items = _gallery().items
-    assert site.pick_cover(_gallery(), items, photos) == items[1]  # first wide photo
+    assert site.pick_cover(_gallery(), items, photos) == items[2]  # first wide one
     assert site.pick_cover(_gallery(cover="tall.JPG"), items, photos) == items[0]
     assert site.pick_cover(_gallery(cover="none"), items, photos) is None
     only_tall = {"tall.JPG": photos["tall.JPG"]}
@@ -123,13 +157,6 @@ def test_hang_pairs_consecutive_portraits_only() -> None:
         ["sq"],
     ]
     assert site.hang([], {}) == []
-
-
-def test_roman_and_clock_time() -> None:
-    assert [site.roman(n) for n in (1, 4, 9, 14, 40)] == ["I", "IV", "IX", "XIV", "XL"]
-    assert site.clock_time("2025:11:09 09:48:12") == "09:48"
-    assert site.clock_time("2025:11:09") == ""
-    assert site.clock_time("") == ""
 
 
 def test_split_heading() -> None:
@@ -193,7 +220,6 @@ def test_render_site_writes_upright_web_copies_without_gps(tmp_path: Path) -> No
     w, t = out.photos["wide.JPG"], out.photos["tall.JPG"]
     assert (w.width, w.height) == (2048, 1365)
     assert (t.width, t.height) == (1365, 2048)  # orientation applied
-    assert w.taken == "09:48"  # from the web copy's DateTimeOriginal
     assert max(w.thumb_width, w.thumb_height) == site.THUMB_LONG_EDGE
     exif = _exif(out.root / "photos" / w.name)
     assert exif.get(0x0110) == "NIKON Z 8"
@@ -203,7 +229,7 @@ def test_render_site_writes_upright_web_copies_without_gps(tmp_path: Path) -> No
     assert 0x0112 not in exif  # pixels are upright
     for f in (out.root / "thumbs").iterdir():
         assert not _exif(f).get_ifd(0x8825)
-    assert (out.root / "index.html").exists() and out.preview.exists()
+    assert (out.root / "index.html").exists()
     with pil.open(out.root / "photos" / t.name) as im:
         assert im.size == (1365, 2048)
 
@@ -226,6 +252,18 @@ def test_keep_gps_opts_in_and_renders_are_reused_then_pruned(tmp_path: Path) -> 
     assert plain.photos["wide.JPG"].name != name  # the GPS choice is in the name
     assert not (plain.root / "photos" / name).exists()  # stale render pruned
     mtime = (plain.root / "photos" / plain.photos["wide.JPG"].name).stat().st_mtime_ns
+
+    hidden = Gallery(
+        "T",
+        sections=[
+            GallerySection("", [Item("wide.JPG"), Item("tall.JPG", hidden=True)])
+        ],
+    )
+    kept_both = site.render_site(hidden, originals, work)
+    assert set(kept_both.photos) == {
+        "wide.JPG",
+        "tall.JPG",
+    }  # hidden: rendered, restorable
 
     smaller = Gallery("T", sections=[GallerySection("", [Item("wide.JPG")])])
     again = site.render_site(smaller, originals, work)

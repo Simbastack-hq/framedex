@@ -68,7 +68,7 @@ _SAFE_PREFIX = re.compile(r"^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$")
 CONFIG_TEMPLATE = """\
 # fdx share publish target (see docs/share.md). base_url is where the
 # target is served from; fdx.art is the planned domain, not live yet.
-target: ssh://deploy@your-server:/srv/fdx-galleries
+target: ssh://deploy@YOUR-SERVER:/srv/fdx-galleries
 base_url: https://fdx.art
 prefix: g                     # galleries live under <base_url>/g/ ("" for none)
 
@@ -189,6 +189,10 @@ def parse_config(cfg: Any, env: dict[str, str] | None = None) -> PublishConfig:
     prefix = str(cfg.get("prefix") or "").strip("/")
     if prefix and (not _SAFE_PREFIX.match(prefix) or ".." in prefix.split("/")):
         raise ConfigError(f"prefix may use letters, digits, . _ - and /: {prefix!r}")
+    if "YOUR" in target or "YOUR" in str(cfg.get("account_id") or ""):
+        raise ConfigError(
+            "replace the YOUR-... placeholder in the config with your own value"
+        )
     if target.startswith("ssh://"):
         host, path = parse_ssh_target(target)
         return PublishConfig("ssh", base_url, prefix, path=Path(str(path)), host=host)

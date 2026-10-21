@@ -72,7 +72,9 @@ def test_summarize_names_the_trip_and_drafts_a_gallery() -> None:
     assert (s.start, s.end) == (date(2025, 11, 7), date(2025, 11, 8))
     assert (s.photos, s.keeps, s.draft) == (7, 6, 6)
     assert s.folder == "2025-11-mara" and s.folder_is_trip
-    assert s.name == "narok-2025-11"
+    assert (
+        s.name == "narok-2025-11-07"
+    )  # the start date: two trips in a month never collide
     assert s.command(Path("/archive")) == (
         f"fdx-share /archive/2025-11-mara --name {s.name}"
     )

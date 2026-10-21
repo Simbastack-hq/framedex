@@ -63,8 +63,8 @@ SIGNATURE_SIZE = 16
 # Captions: one line from the sidecar's **Subjects:** sentence (what is in the
 # frame), or its **Scene:** sentence (the setting) when no subject is named.
 CAPTION_MAX_CHARS = 110
-# The opening photo is cropped to 21:9; only a photo at least this wide
-# (width / height) is picked for it automatically.
+# A frame at least this wide (width / height) wins a tie for the opening
+# photo, and opens a gallery whose selection.txt names no cover.
 COVER_MIN_RATIO = 1.2
 # A trip is titled after the region (or country) this share of its geotagged
 # photos have in common.
@@ -775,16 +775,18 @@ def gallery_from_plan(plan: Plan, *, title: str, captions: bool = False) -> Gall
 
 
 def pick_cover(plan: Plan) -> str:
-    """The opening photo: the strongest wide frame of the whole pick (ties
-    go to the bigger section, then the earlier frame); "" when none is wide
-    enough to open on."""
-    size = {id(p): len(s.photos) for s in plan.sections for p in s.photos}
-    wide = [p for p in plan.photos if (p.aspect or 0.0) >= COVER_MIN_RATIO]
-    if not wide:
+    """The opening photo: the strongest frame of the whole pick, whatever its
+    shape (it opens uncropped); ties go to a wide frame, then the bigger
+    section, then the earlier frame. "" for an empty plan."""
+    if not plan.photos:
         return ""
-    return min(
-        wide, key=lambda p: (-p.score, -size[id(p)], p.seconds or 0.0, p.rel)
-    ).rel
+    size = {id(p): len(s.photos) for s in plan.sections for p in s.photos}
+
+    def rank(p: Photo) -> tuple[int, bool, int, float, str]:
+        wide = (p.aspect or 0.0) >= COVER_MIN_RATIO
+        return (-p.score, not wide, -size[id(p)], p.seconds or 0.0, p.rel)
+
+    return min(plan.photos, key=rank).rel
 
 
 def _photo_line(item: Item) -> str:

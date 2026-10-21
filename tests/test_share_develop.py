@@ -123,6 +123,11 @@ def test_an_edit_that_resolves_outside_the_shoot_is_never_used(tmp_path: Path) -
     day.symlink_to(outside / "day1", target_is_directory=True)  # developed/day1 -> out
     assert share.developed_copy(raw, folder) is None
 
+    folder, raw, jpg = _shoot(tmp_path / "third")
+    jpg.unlink()
+    jpg.symlink_to(jpg.name)  # a loop: Python 3.12's resolve() raises RuntimeError
+    assert share.developed_copy(raw, folder) is None
+
 
 def test_only_raws_have_edits(tmp_path: Path) -> None:
     folder, _, _ = _shoot(tmp_path)

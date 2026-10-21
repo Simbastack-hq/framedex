@@ -1033,7 +1033,11 @@ def developed_copy(original: Path, folder: Path) -> Path | None:
             if rec.get("output_sha256") != hashlib.sha256(jpg.read_bytes()).hexdigest():
                 continue
             rank = (str(rec.get("created_at") or ""), record.stat().st_mtime_ns)
-        except (OSError, ValueError):
+        except (
+            OSError,
+            ValueError,
+            RuntimeError,
+        ):  # RuntimeError: a symlink loop (3.12)
             continue
         if best is None or rank > best[0]:
             best = (rank, jpg)

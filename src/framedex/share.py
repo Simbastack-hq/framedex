@@ -527,8 +527,8 @@ def place_label(place: str) -> str:
     return f"{first}, {area}"
 
 
-def day_label(d: date) -> str:
-    return f"{d:%A} {d.day} {d:%B}"
+def day_label(d: date, *, year: bool = False) -> str:
+    return f"{d:%A} {d.day} {d:%B}" + (f" {d.year}" if year else "")
 
 
 def _most_common(values: Iterable[str]) -> str:
@@ -576,9 +576,10 @@ def make_sections(photos: list[Photo]) -> list[Section]:
         else:
             merged.append((day, items))
 
+    years = {day.year for day, _ in merged if day}
     sections: list[Section] = []
     for day, items in merged:
-        when = day_label(day) if day else "Undated"
+        when = day_label(day, year=len(years) > 1) if day else "Undated"
         where = _most_common(place_label(p.place) for p in items)
         heading = f"{when} · {where}" if where else when
         if sections and sections[-1].heading == heading:

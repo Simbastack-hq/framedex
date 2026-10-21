@@ -321,6 +321,19 @@ def test_sections_break_on_day_and_place() -> None:
     ]
 
 
+def test_headings_carry_the_year_when_a_gallery_crosses_one() -> None:
+    photos = [
+        _p("a.JPG", 0),
+        _p("b.JPG", 1),
+        _p("c.JPG", 60 * 24 * 400),
+        _p("d.JPG", 60 * 24 * 400 + 1),
+    ]
+    assert [sec.heading.split(" · ")[0] for sec in s.make_sections(photos)] == [
+        "Sunday 9 November 2025",
+        "Monday 14 December 2026",
+    ]
+
+
 def test_photos_without_gps_stay_in_the_current_section() -> None:
     photos = [_p("a.JPG", 0), _p("nogps.JPG", 1, place=""), _p("b.JPG", 2)]
     secs = s.make_sections(photos)

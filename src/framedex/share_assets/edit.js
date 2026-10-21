@@ -14,6 +14,7 @@
   var code = bar.querySelector(".code"), show = bar.querySelector(".show");
   var go = bar.querySelector(".go"), link = bar.querySelector(".link"), copy = bar.querySelector(".copy");
   var cover = cfg.cover, queue = Promise.resolve(), dragRel = null, published = false;
+  var unsaved = false; // the last change did not reach selection.txt: Publish waits
 
   function say(text, err, withUndo) {
     clearTimeout(toastTimer);
@@ -50,13 +51,20 @@
     var before = anchor && q(anchor) ? q(anchor).getBoundingClientRect().top : null;
     var payload = { title: title(), cover: cover, sections: model() };
     if (edit) edit(payload);
-    queue = queue.then(function () { return post("api/save", payload); }).then(function (j) {
+    var done = queue.then(function () { return post("api/save", payload); }).then(function (j) {
+      unsaved = false;
       g.innerHTML = j.html; wire(); d.title = "Editing \u00b7 " + title();
       hid.textContent = j.hidden ? " " + j.hidden + " hidden." : "";
       if (before !== null && q(anchor)) window.scrollBy(0, q(anchor).getBoundingClientRect().top - before);
       hint.hidden = true; changed();
-    }, function (e) { say("Couldn’t save that change: " + e.message, true); });
-    return queue;
+      return true;
+    }, function (e) {
+      unsaved = true;
+      say("Couldn’t save that change (" + e.message + "). Make it again before publishing.", true);
+      return false;
+    });
+    queue = done;
+    return done;
   }
   function changed() {
     if (!published) return;
@@ -134,8 +142,8 @@
         if (hero) return;
         var hiding = !fig.classList.contains("off");
         fig.classList.toggle("off");
-        save(rel).then(function () {
-          if (hiding) { undoRel = rel; say("Photo hidden.", false, true); }
+        save(rel).then(function (ok) {
+          if (ok && hiding) { undoRel = rel; say("Photo hidden.", false, true); }
         });
       });
       a.addEventListener("keydown", function (e) {
@@ -187,10 +195,13 @@
     if (lockon.checked && code.value.length < 4) { say("Choose a passcode of at least 4 characters.", true); code.focus(); return; }
     var body = { passcode: lockon.checked ? code.value : null, open: !lockon.checked };
     go.disabled = true; go.textContent = "Publishing…"; say("");
-    queue.then(function () { return post("api/publish", body); }).then(function (j) {
+    queue.then(function () {
+      if (unsaved) throw new Error("Your last change wasn’t saved. Make it again, then publish.");
+      return post("api/publish", body);
+    }).then(function (j) {
       go.disabled = false;
       if (j.error) { go.textContent = "Try again"; say(j.error, true); return; }
-      published = true; cfg.protected = j.protected;
+      published = true;
       link.value = j.url; act.hidden = true; done.hidden = false;
       say(j.protected ? "Anyone with the link and the passcode can view it." : "Anyone with the link can view it.");
     }, function (e) { go.disabled = false; go.textContent = "Try again"; say(e.message, true); });

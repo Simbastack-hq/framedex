@@ -33,3 +33,14 @@
 5. Editor shifts layout — FOLD IN: 56px fixed toolbar over the top whitespace; 5 s Undo after hide; hint gone after first edit; Cover badge on hover; title underline affordance.
 - Cut: instructions after first edit, permanent Cover badge, weekday names — FOLD IN.
 - Memorable ending — FOLD IN (narrowed): the closer slot prefers a wide frame from the last quarter; 96px before the footer. No reordering (Codex round 1).
+
+## Round 3 — code review (Codex, gpt-6.1-sol high) — 2026-10-21
+1. Failed hide save still allows Publish — FOLD IN: failed save blocks Publish; "Photo hidden" only after a successful save.
+2. Protection lost after partial failure — FOLD IN: mark protected before remote writes; clear only after an open_ok publish succeeds.
+3. Remote symlink escapes deletion boundary — FOLD IN: remote rsync-path guard compares `pwd -P` of dest to resolved root + key; local check exact.
+4. Cleanup can delete originals via --out overlap — FOLD IN: refuse work dirs holding selected originals; cleanup only our own render/temp names.
+5. --keep-gps publishes GPS — REJECT: explicit opt-in the brief asked for; docs state it publishes coordinates.
+6. rsync may skip a changed page (same size/second) — FOLD IN: --checksum on the final pass.
+7. Unreadable publish.json silently resets — FOLD IN: only FileNotFoundError is a fresh start; other errors fail loud.
+8. CI skips crypto/pixel tests — FOLD IN: share-extra CI job.
+- Delete: Site.files, Rendered.bytes, Editor.folder, Published.sent/removed, editor JSON sections/protected — FOLD IN. --keep-gps — REJECT (see 5).

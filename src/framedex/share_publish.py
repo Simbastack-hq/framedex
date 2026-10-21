@@ -435,28 +435,38 @@ class SshTarget:
         return str(self.root / gallery_key)
 
     def commands(self, stage: Path, gallery_key: str) -> list[list[str]]:
+        """The two rsync calls. Over SSH the remote side first creates the
+        gallery folder and refuses to start unless that folder, with every
+        symlink resolved, is exactly <root>/<key> (a symlink planted on the
+        server can never point `--delete` somewhere else). The paths in it
+        are validated above, so nothing here is shell syntax from config.
+        The final pass compares checksums, so a page re-published within
+        the same second at the same size is still replaced."""
         dest = self.dest(gallery_key)
         remote = []
         if self.host:
-            remote = [
-                "-e",
-                "ssh -o BatchMode=yes",
-                f"--rsync-path=mkdir -p {dest} && rsync",
-            ]
+            guard = (
+                f"mkdir -p {dest} && "
+                f'[ "$(cd {dest} && pwd -P)" = "$(cd {self.root} && pwd -P)/{gallery_key}" ] && '
+                "rsync"
+            )
+            remote = ["-e", "ssh -o BatchMode=yes", f"--rsync-path={guard}"]
         target = f"{self.host}:{dest}/" if self.host else f"{dest}/"
         src = f"{stage}/"
         return [
             ["rsync", "-rt", *remote, "--exclude=/index.html", src, target],
-            ["rsync", "-rt", "--delete", *remote, src, target],
+            ["rsync", "-rt", "--checksum", "--delete", *remote, src, target],
         ]
 
     def _run(self, stage: Path, gallery_key: str) -> None:
         if not self.host:
             local = Path(self.dest(gallery_key))
             local.mkdir(parents=True, exist_ok=True)
-            root = Path(str(self.root)).resolve()
-            if root not in local.resolve().parents:
-                raise PublishError(f"{local} resolves outside {root}; refusing to sync")
+            expected = Path(str(self.root)).resolve() / gallery_key
+            if local.resolve() != expected:
+                raise PublishError(
+                    f"{local} is not {expected} once resolved; refusing to sync"
+                )
         for cmd in self.commands(stage, gallery_key):
             try:
                 result = subprocess.run(
@@ -592,12 +602,18 @@ def plan_sync(
 
 
 def read_state(work: Path) -> dict[str, Any]:
+    """publish.json, or a fresh state when there is none yet. Anything else
+    unreadable is an error: guessing would forget a passcode-protected link
+    (and publish it open) or forget files still online."""
+    path = work / STATE_FILE
     try:
-        data = json.loads((work / STATE_FILE).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
         return {"links": []}
+    except (OSError, ValueError) as e:
+        raise PublishError(f"{path} is unreadable ({e}); fix or move it first") from e
     if not isinstance(data, dict) or not isinstance(data.get("links"), list):
-        return {"links": []}
+        raise PublishError(f"{path} is not a publish record; fix or move it first")
     return data
 
 
@@ -648,8 +664,6 @@ def copy_to_clipboard(text: str) -> bool:
 class Published:
     url: str
     protected: bool
-    sent: int  # files uploaded (or synced)
-    removed: int  # files deleted
 
 
 def publish(
@@ -716,6 +730,10 @@ def publish(
     if fresh:
         state["links"].append(link)
     link["url"] = url
+    if passcode:
+        # Before any upload: if this publish dies halfway, the link already
+        # counts as protected and the next publish asks for the passcode.
+        link["protected"] = True
     try:
         if cfg.target == "ssh":
             assert cfg.path is not None
@@ -737,7 +755,7 @@ def publish(
     finally:
         link["uploaded"] = uploaded
         write_state(work, state)
-    return Published(url, bool(passcode), len(puts), len(deletes))
+    return Published(url, bool(passcode))
 
 
 def unpublish(work: Path, cfg: PublishConfig) -> list[str]:

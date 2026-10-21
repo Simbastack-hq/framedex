@@ -249,7 +249,7 @@ def _site(
         file = hashlib.sha1(n.encode()).hexdigest()[:16] + ".jpg"
         for kind in ("photos", "thumbs"):
             (root / kind / file).write_bytes(f"{kind}:{n}".encode())
-        s.photos[n] = Rendered(n, file, 2048, 1365, 1024, 683, "#000000", 10)
+        s.photos[n] = Rendered(n, file, 2048, 1365, 1024, 683, "#000000")
     return s, gallery
 
 
@@ -303,7 +303,16 @@ def test_rsync_goes_into_one_gallery_folder_only(tmp_path: Path) -> None:
     assert first[-1] == dest and second[-1] == dest
     assert "--exclude=/index.html" in first and "--delete" not in first  # assets first
     assert "--delete" in second and not any(a.startswith("--exclude") for a in second)
-    assert "--rsync-path=mkdir -p /srv/fdx/g/trip-abc && rsync" in first
+    assert "--checksum" in second  # a same-size page from the same second still lands
+    guard = next(a for a in first if a.startswith("--rsync-path="))
+    assert guard.startswith("--rsync-path=mkdir -p /srv/fdx/g/trip-abc && ")
+    assert (
+        '"$(cd /srv/fdx/g/trip-abc && pwd -P)" = "$(cd /srv/fdx && pwd -P)/g/trip-abc"'
+        in guard
+    )
+    assert (
+        guard.endswith(" && rsync") and guard in second
+    )  # both passes refuse a symlinked folder
     assert "ssh -o BatchMode=yes" in first
     for bad in ("../x", "g/../../etc", "g;rm", ""):
         with pytest.raises(pub.PublishError):
@@ -571,3 +580,60 @@ def test_dir_uploader_refuses_keys_that_escape(tmp_path: Path) -> None:
     up = pub.DirUploader(tmp_path / "www")
     with pytest.raises(ValueError):
         up.put("../outside.html", b"x", "t", "c")
+
+
+def test_a_symlinked_gallery_folder_is_refused_before_rsync_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "srv"
+    (root / "g").mkdir(parents=True)
+    (root / "g" / "other").mkdir()
+    (root / "g" / "trip").symlink_to(root / "g" / "other")
+
+    def boom(*a: Any, **kw: Any) -> Any:
+        raise AssertionError("rsync must not run")
+
+    monkeypatch.setattr("framedex.share_publish.subprocess.run", boom)
+    with pytest.raises(pub.PublishError, match="refusing"):
+        pub.SshTarget(None, PurePosixPath(str(root))).sync([], "g/trip")
+
+
+def test_an_unreadable_publish_record_stops_everything(tmp_path: Path) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    assert pub.read_state(work) == {"links": []}  # none yet: a fresh start
+    (work / pub.STATE_FILE).write_text("{not json")
+    with pytest.raises(pub.PublishError, match="unreadable"):
+        pub.read_state(work)
+    (work / pub.STATE_FILE).write_text('{"links": "nope"}')
+    with pytest.raises(pub.PublishError, match="not a publish record"):
+        pub.read_state(work)
+
+
+def test_protection_is_recorded_before_anything_uploads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("cryptography")
+    pytest.importorskip("PIL.Image")
+    import io
+
+    from PIL import Image
+
+    site, gallery = _site(tmp_path, ["a.JPG"])
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), (10, 20, 30)).save(buf, "JPEG")
+    for kind in ("photos", "thumbs"):
+        (site.root / kind / site.photos["a.JPG"].name).write_bytes(buf.getvalue())
+    work, cfg = tmp_path / "work", _dir_cfg(tmp_path)
+
+    def broken(
+        self: Any, key: str, data: bytes, content_type: str, cache_control: str
+    ) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(pub.DirUploader, "put", broken)
+    with pytest.raises(pub.PublishError, match="disk full"):
+        pub.publish(site, gallery, work, name="t", cfg=cfg, passcode="leopard2025")
+    assert pub.is_protected(work, cfg)  # a retry without the passcode is refused
+    with pytest.raises(pub.PublishError, match="protected"):
+        pub.publish(site, gallery, work, name="t", cfg=cfg, passcode=None)

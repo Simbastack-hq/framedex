@@ -1234,6 +1234,12 @@ def main(argv: list[str] | None = None) -> int:
     gallery.sections = [s for s in gallery.sections if s.items]
     if not gallery.items:
         return _err(f"{selection} lists no photos to show")
+    inside = [rel for rel, path in originals.items() if work.resolve() in path.parents]
+    if inside:
+        return _err(
+            f"the work folder {work} holds originals ({inside[0]}); pick an --out "
+            "outside the photos, or leave the default _share/ folder"
+        )
 
     tty = sys.stdout.isatty()
 
@@ -1269,7 +1275,7 @@ def main(argv: list[str] | None = None) -> int:
     from framedex import share_edit
 
     return share_edit.serve(
-        share_edit.Editor(folder, work, name, gallery, site, args.config),
+        share_edit.Editor(work, name, gallery, site, args.config),
         open_browser=not args.no_open,
     )
 

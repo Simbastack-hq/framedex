@@ -48,7 +48,7 @@ FRAMEDEX_URL = "https://github.com/Simbastack-hq/framedex"
 # Two consecutive photos at most this wide (width / height) hang side by side.
 PAIR_MAX_RATIO = 0.9
 SITE_DIR = "site"
-_RENDER_NAME_RE = re.compile(r"^[0-9a-f]{16}\.jpg$")
+_RENDER_NAME_RE = re.compile(r"^\.?[0-9a-f]{16}\.jpg$")  # a render, or its temp
 
 # EXIF tags carried into web copies (everything else, GPS included, is dropped).
 _TAG_MAKE = 0x010F
@@ -163,7 +163,6 @@ class Rendered:
     thumb_width: int
     thumb_height: int
     color: str  # average colour, the placeholder while the photo loads
-    bytes: int
 
     @property
     def ratio(self) -> float:
@@ -179,9 +178,6 @@ class Site:
     @property
     def total_bytes(self) -> int:
         return sum(f.stat().st_size for f in self.root.rglob("*") if f.is_file())
-
-    def files(self) -> list[Path]:
-        return sorted(f for f in self.root.rglob("*") if f.is_file())
 
 
 def render_name(rel: str, original: Path, keep_gps: bool) -> str:
@@ -258,7 +254,6 @@ def _describe(out_photo: Path, out_thumb: Path, rel: str) -> Rendered:
         tw,
         th,
         f"#{r:02x}{g:02x}{bl:02x}",
-        out_photo.stat().st_size + out_thumb.stat().st_size,
     )
 
 
@@ -298,8 +293,7 @@ def render_site(
     live = {r.name for r in site.photos.values()}
     for d in (photos_dir, thumbs_dir):
         for f in d.iterdir():
-            stale = _RENDER_NAME_RE.match(f.name) and f.name not in live
-            if stale or f.name.startswith("."):
+            if _RENDER_NAME_RE.match(f.name) and f.name not in live:
                 f.unlink()
     (root / "index.html").write_text(page_html(gallery, site.photos), encoding="utf-8")
     return site

@@ -20,7 +20,7 @@ from framedex.share import Gallery, GallerySection, Item
 
 def _rendered(rel: str, w: int = 2048, h: int = 1365) -> site.Rendered:
     name = hashlib.sha1(rel.encode()).hexdigest()[:16] + ".jpg"
-    return site.Rendered(rel, name, w, h, w // 2, h // 2, "#806040", 1000)
+    return site.Rendered(rel, name, w, h, w // 2, h // 2, "#806040")
 
 
 def _gallery(**kw: Any) -> Gallery:
@@ -265,11 +265,16 @@ def test_keep_gps_opts_in_and_renders_are_reused_then_pruned(tmp_path: Path) -> 
         "tall.JPG",
     }  # hidden: rendered, restorable
 
+    stray = plain.root / "photos" / ".private.JPG"  # not ours: never deleted
+    stray.write_bytes(b"someone else's file")
     smaller = Gallery("T", sections=[GallerySection("", [Item("wide.JPG")])])
     again = site.render_site(smaller, originals, work)
     kept = again.root / "photos" / again.photos["wide.JPG"].name
     assert kept.stat().st_mtime_ns == mtime  # re-used, not re-encoded
-    assert sorted(f.name for f in (again.root / "photos").iterdir()) == [kept.name]
+    assert sorted(f.name for f in (again.root / "photos").iterdir()) == [
+        ".private.JPG",
+        kept.name,
+    ]
 
 
 def test_signatures_match_for_the_same_picture(tmp_path: Path) -> None:

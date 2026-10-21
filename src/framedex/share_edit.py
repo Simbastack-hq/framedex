@@ -49,7 +49,6 @@ class EditError(ValueError):
 class Editor:
     """What the server edits: one gallery's work folder."""
 
-    folder: Path
     work: Path
     name: str
     gallery: Gallery
@@ -118,9 +117,7 @@ def editor_html(ed: Editor, token: str, *, protected: bool, configured: bool) ->
         {
             "token": token,
             "cover": g.cover,
-            "protected": protected,
             "configured": configured,
-            "sections": len(g.sections),
         }
     ).replace("</", "<\\/")
     return "".join(

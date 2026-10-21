@@ -72,7 +72,7 @@ def _site(tmp_path: Path) -> tuple[Site, Gallery]:
     for rel, name in names.items():
         for kind in ("photos", "thumbs"):
             (root / kind / name).write_bytes(_jpeg((200, 150, 90)))
-        photos[rel] = Rendered(rel, name, 64, 48, 64, 48, "#c89660", 100)
+        photos[rel] = Rendered(rel, name, 64, 48, 64, 48, "#c89660")
     gallery = Gallery(
         "Narok · November 2025",
         subtitle="8\u20139 November",

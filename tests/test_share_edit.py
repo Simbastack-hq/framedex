@@ -132,12 +132,11 @@ def server(tmp_path: Path) -> Iterator[tuple[ed.Editor, str, int]]:
         name = f"{n:016x}.jpg"
         (work / "site" / "photos" / name).write_bytes(b"jpeg " + rel.encode())
         (work / "site" / "thumbs" / name).write_bytes(b"jpeg " + rel.encode())
-        photos[rel] = Rendered(rel, name, 800, 600, 400, 300, "#123456", 10)
+        photos[rel] = Rendered(rel, name, 800, 600, 400, 300, "#123456")
     (tmp_path / "a.JPG").write_bytes(b"ORIGINAL")
     (tmp_path / "a.JPG.description.md").write_text("sidecar")
     gallery = _gallery()
     editor = ed.Editor(
-        tmp_path,
         work,
         "trip",
         gallery,

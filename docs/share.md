@@ -26,8 +26,13 @@ Published  https://fdx.art/g/narok-2025-11-k3j9x2q7m4pt/
 The browser opens on the gallery as visitors will see it, with a thin
 toolbar on top:
 
-- **Tap a photo** to hide it; it stays in place, dimmed, until you tap it
-  again. Hidden photos never leave your machine.
+- **Click a photo** to view it full screen, in the same viewer visitors get
+  (arrows to move on, Esc to close).
+- **Hide** what you don't want: the Hide button on a photo (it shows when you
+  point at it or tab to it), the Hide button in the viewer, or the H key. A
+  hidden photo stays in place, dimmed; click it to look at it again, or
+  **Restore** to bring it back (Undo works too). Hidden photos never leave
+  your machine.
 - **Drag** a photo to reorder it within its day (or focus it and press
   Alt+arrow).
 - **Click the title** to rename the gallery.

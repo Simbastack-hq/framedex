@@ -33,7 +33,7 @@
 }
 .copy { background: var(--fill); color: var(--ink); }
 .toast {
-  position: fixed; left: 50%; bottom: max(24px, env(safe-area-inset-bottom)); z-index: 40;
+  position: fixed; left: 50%; bottom: max(24px, env(safe-area-inset-bottom)); z-index: 60;
   transform: translateX(-50%); display: flex; align-items: center; gap: 12px; max-width: calc(100% - 32px);
   padding: 10px 16px; border-radius: 14px; background: #1d1d1f; color: #f5f5f7;
   font: 13px/18px var(--sf); box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18);
@@ -44,31 +44,40 @@
 
 .editing .top h1 { cursor: text; outline: none; text-underline-offset: 8px; text-decoration-thickness: 1px; }
 .editing .top h1:hover, .editing .top h1:focus { text-decoration-line: underline; text-decoration-color: var(--muted); }
-.editing .ph a { cursor: pointer; }
 .editing .ph[draggable="true"] { cursor: grab; }
+.ph .frame { position: relative; }
 .ph.off img { opacity: 0.28 !important; filter: grayscale(1); }
 .ph .badge {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 8px 14px;
-  border-radius: 999px; background: rgba(0, 0, 0, 0.62); color: #fff; font: 500 13px var(--sf);
-  white-space: nowrap; pointer-events: none;
+  border: 0; border-radius: 999px; background: rgba(0, 0, 0, 0.62); color: #fff; font: 500 13px var(--sf);
+  white-space: nowrap; cursor: pointer; transition: background 0.12s ease;
 }
+.ph .badge:hover { background: rgba(0, 0, 0, 0.8); }
 .ph .tools {
   position: absolute; top: 10px; right: 10px; display: flex; gap: 6px; opacity: 0;
   transition: opacity 0.12s ease;
 }
-.ph:hover .tools, .ph:focus-within .tools { opacity: 1; }
-.tools button {
+.ph .t-hide { position: absolute; right: 10px; bottom: 10px; opacity: 0; transition: opacity 0.12s ease; }
+.ph:hover .tools, .ph:focus-within .tools, .ph:hover .t-hide, .ph:focus-within .t-hide { opacity: 1; }
+.tools button, .ph .t-hide {
   height: 30px; padding: 0 12px; border: 0; border-radius: 15px; cursor: pointer;
   background: rgba(0, 0, 0, 0.6); color: #fff; font: 500 12px var(--sf);
   -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
 }
+.lb .lb-hide {
+  left: 50%; bottom: max(24px, env(safe-area-inset-bottom)); transform: translateX(-50%);
+  width: auto; height: 36px; padding: 0 16px; border-radius: 18px; opacity: 1;
+  background: rgba(0, 0, 0, 0.6); color: #fff; font: 500 13px/36px var(--sf);
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+}
+.lb .lb-hide:hover { background: rgba(0, 0, 0, 0.78); }
 .cover-tag {
   position: absolute; top: 10px; left: 10px; padding: 5px 10px; border-radius: 13px;
   background: rgba(0, 0, 0, 0.6); color: #fff; font: 500 12px var(--sf); pointer-events: none;
   opacity: 0; transition: opacity 0.12s ease;
 }
 .ph:hover .cover-tag, .ph:focus-within .cover-tag { opacity: 1; }
-@media (hover: none) { .ph .tools { opacity: 1; } }
+@media (hover: none) { .ph .tools, .ph .t-hide { opacity: 1; } }
 .ph.dragging { opacity: 0.35; }
 .ph.drop-before::before, .ph.drop-after::after {
   content: ""; position: absolute; z-index: 2; background: var(--focus); border-radius: 2px;

@@ -237,7 +237,7 @@ fdx-mcp makes no model calls; host inference may incur token or image charges, a
 
 ## Share a shoot as a gallery link (`fdx share`)
 
-The sidecars already know which frames are keepers, which ones are a burst, and when and where each was taken. `fdx share` uses that to curate a trip into one quiet web page: keep-rated photos, one frame per burst, near-duplicates dropped, about 40 at most with every day and place represented, the strongest frame opening it. It opens the gallery in your browser as an editor (tap to hide, drag to reorder, rename, choose the cover, optional passcode) and publishes it to your own server or bucket at an unlisted link.
+The sidecars already know which frames are keepers, which ones are a burst, and when and where each was taken. `fdx share` uses that to curate a trip into one quiet web page: keep-rated photos, one frame per burst, near-duplicates dropped, about 40 at most with every day and place represented, the strongest frame opening it. It opens the gallery in your browser as an editor (click to view, hide what you don't want, drag to reorder, rename, choose the cover, optional passcode) and publishes it to your own server or bucket at an unlisted link.
 
 ```bash
 uv pip install -e '.[share]'

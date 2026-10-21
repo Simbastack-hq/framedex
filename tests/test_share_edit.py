@@ -181,6 +181,9 @@ def test_editor_page_needs_the_token_and_the_right_host(
     _, token, port = server
     status, page = _req(port, "GET", f"/{token}/")
     assert status == 200 and b'class="bar"' in page and b"Trip" in page
+    # a click views a photo and hiding is its own action: a click that hid
+    # the photo read as a bug to a first-time user
+    assert "Click a photo to view it. Hide what you don&rsquo;t want." in page.decode()
     assert _req(port, "GET", "/")[0] == 404
     assert _req(port, "GET", "/wrong-token/")[0] == 404
     assert (

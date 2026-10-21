@@ -1,6 +1,8 @@
 // fdx share gallery: soft fade-in as photos load, and a chrome-less viewer
-// (arrows, swipe, Esc, tap to close). Locked galleries hand `fdx.load` an
-// async loader that turns an <img> into a decrypted blob URL.
+// (arrows, swipe, Esc, tap to close). Locked galleries hand `fdx.full` an
+// async loader that turns a photo link into a decrypted blob URL. The editor
+// opens the same viewer (`fdx.open`), adds its own `.keep` buttons to it and
+// hears which photo is showing (`fdx.onshow`).
 (function () {
   var d = document, fdx = (window.fdx = window.fdx || {});
   d.documentElement.classList.remove("no-js");
@@ -20,6 +22,7 @@
     var a = links[at];
     big.alt = a.querySelector("img").alt;
     full(a).then(function (src) { if (links[at] === a) big.src = src; });
+    if (fdx.onshow) fdx.onshow(a);
   }
   function open(n) {
     opener = links[n]; show(n);
@@ -45,6 +48,7 @@
       d.body.appendChild(lb); big = lb.querySelector("img");
       lb.addEventListener("click", function (e) {
         if (swiped) { swiped = false; return; }
+        if (e.target.closest(".keep")) return; // the editor's own buttons
         var c = e.target.classList;
         if (c.contains("prev")) show(at - 1);
         else if (c.contains("next")) show(at + 1);
@@ -66,7 +70,14 @@
       });
       addEventListener("popstate", function () { if (lb.classList.contains("open")) shut(); });
     }
+    // The editor rebinds after each save, maybe with the viewer open: stay on
+    // the same photo (its hrefs are unique per photo).
+    var cur = lb.classList.contains("open") ? links[at].getAttribute("href") : null;
     links = [].slice.call(root.querySelectorAll(".ph a"));
+    if (cur !== null) {
+      at = Math.max(0, links.findIndex(function (a) { return a.getAttribute("href") === cur; }));
+      opener = links[at];
+    }
     links.forEach(function (a, n) {
       a.addEventListener("click", function (e) {
         if (fdx.editing || e.metaKey || e.ctrlKey || e.shiftKey) return;
@@ -74,6 +85,8 @@
       });
     });
   };
+  fdx.open = function (a) { var n = links.indexOf(a); if (n >= 0) open(n); };
+  fdx.current = function () { return lb && lb.classList.contains("open") ? links[at] : null; };
 
   if (!fdx.locked) { fdx.reveal(d); fdx.bind(d); }
 })();

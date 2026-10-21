@@ -13,8 +13,8 @@ public surface (CLI flags, sidecar schema) can still shift between minor version
   burst/RAW+JPEG group, near-duplicates dropped by a thumbnail-correlation
   check, a `--max` cap spread so every day/place shows up and the last day
   keeps its best late frame), titles it from place and month, and opens it
-  in the browser as an editor: tap to hide, drag to reorder, rename, choose
-  the cover, Publish. Every edit is saved to a plain-text `selection.txt`.
+  in the browser as an editor: click to view, hide what you don't want,
+  drag to reorder, rename, choose the cover, Publish. Every edit is saved to a plain-text `selection.txt`.
   The page is one static file (system fonts, no external requests,
   `noindex`), with 2048 px web copies and GPS stripped unless
   `--keep-gps`; originals are only read. Publish targets: rsync over SSH into

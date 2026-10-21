@@ -2,8 +2,9 @@
 framedex.share_edit — the browser editor behind `fdx share <folder>`.
 
 A small HTTP server on 127.0.0.1 shows the gallery as it will look, with
-editing on top: tap a photo to hide or restore it, drag to reorder within its
-day, click the title to rename, choose the cover, toggle a passcode, Publish.
+editing on top: click a photo to view it, hide or restore it (on the photo, in
+the viewer, or with H), drag to reorder within its day, click the title to
+rename, choose the cover, toggle a passcode, Publish.
 Every edit is written straight to selection.txt (plain text stays the source
 of truth); the server re-renders the page markup and the browser swaps it in
 without losing its place.
@@ -127,7 +128,8 @@ def editor_html(ed: Editor, token: str, *, protected: bool, configured: bool) ->
             f"<style>{asset('gallery.css')}{asset('edit.css')}</style></head>",
             '<body class="editing">',
             '<div class="bar" role="toolbar" aria-label="Gallery editor">',
-            '<p class="hint">Tap a photo to hide it. Drag to reorder.'
+            '<p class="hint">Click a photo to view it. Hide what you don&rsquo;t want. '
+            "Drag to reorder."
             f'<span class="hid">{f" {hidden} hidden." if hidden else ""}</span></p>',
             '<div class="act">',
             '<label class="sw"><input type="checkbox" class="lockon"'

@@ -1,7 +1,9 @@
-// fdx share editor: the gallery itself is the workspace. Tap to hide or
-// restore, drag (or Alt+arrows) to reorder within a day, click the title to
-// rename, pick the cover, set a passcode, Publish. Every change is saved to
-// selection.txt by the local server, which returns the re-rendered page.
+// fdx share editor: the gallery itself is the workspace. Click a photo to
+// view it in the visitors' viewer; Hide is explicit (the button on the photo,
+// the one in the viewer, or H). Drag (or Alt+arrows) to reorder within a day,
+// click the title to rename, pick the cover, set a passcode, Publish. Every
+// change is saved to selection.txt by the local server, which returns the
+// re-rendered page.
 (function () {
   var d = document, fdx = window.fdx;
   var cfg = JSON.parse(d.getElementById("fdx-edit").textContent);
@@ -15,6 +17,11 @@
   var go = bar.querySelector(".go"), link = bar.querySelector(".link"), copy = bar.querySelector(".copy");
   var cover = cfg.cover, queue = Promise.resolve(), dragRel = null, published = false;
   var unsaved = false; // the last change did not reach selection.txt: Publish waits
+  var down = null, dragEnd = 0, DRAG_PX = 6; // a press that moved is a drag, not a click
+  var vb = null; // the viewer's Hide / Restore button
+  var keys = false; // the last input was the keyboard: keep focus on the photo across saves
+  d.addEventListener("keydown", function () { keys = true; }, true);
+  d.addEventListener("pointerdown", function () { keys = false; }, true);
 
   function say(text, err, withUndo) {
     clearTimeout(toastTimer);
@@ -49,6 +56,8 @@
 
   function save(anchor, edit) {
     var before = anchor && q(anchor) ? q(anchor).getBoundingClientRect().top : null;
+    var focused = keys && d.activeElement.closest && d.activeElement.closest(".ph[data-rel]");
+    var refocus = focused ? focused.dataset.rel : null;
     var payload = { title: title(), cover: cover, sections: model() };
     if (edit) edit(payload);
     var done = queue.then(function () { return post("api/save", payload); }).then(function (j) {
@@ -56,6 +65,7 @@
       g.innerHTML = j.html; wire(); d.title = "Editing \u00b7 " + title();
       hid.textContent = j.hidden ? " " + j.hidden + " hidden." : "";
       if (before !== null && q(anchor)) window.scrollBy(0, q(anchor).getBoundingClientRect().top - before);
+      if (refocus && !fdx.current() && q(refocus)) q(refocus).querySelector("a").focus({ preventScroll: true });
       hint.hidden = true; changed();
       return true;
     }, function (e) {
@@ -69,6 +79,23 @@
   function changed() {
     if (!published) return;
     done.hidden = true; act.hidden = false; go.textContent = "Publish changes";
+  }
+
+  function toggle(rel) {
+    var fig = q(rel);
+    if (!fig || fig.closest(".hero")) return; // the cover can't be hidden; Remove cover first
+    var hiding = !fig.classList.contains("off");
+    fig.classList.toggle("off"); label();
+    save(rel).then(function (ok) {
+      // in the viewer its own button reads "Hidden · Restore": no toast on top of it
+      if (ok && hiding && !fdx.current()) { undoRel = rel; say("Photo hidden.", false, true); }
+    });
+  }
+  function label(shown) {
+    var a = shown || fdx.current(), fig = a && a.closest(".ph[data-rel]");
+    if (!vb || !fig) return;
+    vb.hidden = !!fig.closest(".hero");
+    vb.textContent = fig.classList.contains("off") ? "Hidden \u00b7 Restore" : "Hide";
   }
 
   function move(rel, delta) {
@@ -104,7 +131,7 @@
   }
 
   function wire() {
-    fdx.reveal(g);
+    fdx.reveal(g); fdx.bind(g); label();
     var h1 = g.querySelector(".top h1"), was = h1.textContent;
     h1.setAttribute("spellcheck", "false");
     h1.addEventListener("keydown", function (e) {
@@ -118,33 +145,41 @@
     });
     [].forEach.call(g.querySelectorAll(".ph[data-rel]"), function (fig) {
       var rel = fig.dataset.rel, a = fig.querySelector("a"), hero = !!fig.closest(".hero");
+      var off = fig.classList.contains("off");
+      // Overlays sit on the photo itself, above any caption.
+      var frame = d.createElement("div"); frame.className = "frame";
+      a.parentNode.insertBefore(frame, a); frame.appendChild(a);
       var tools = d.createElement("div"); tools.className = "tools";
       if (hero) {
         tools.innerHTML = '<button type="button" class="t-uncover">Remove cover</button>';
         var tag = d.createElement("span"); tag.className = "cover-tag"; tag.textContent = "Cover";
-        fig.appendChild(tag);
-      } else if (!fig.classList.contains("off")) {
+        frame.appendChild(tag);
+      } else if (!off) {
         tools.innerHTML = '<button type="button" class="t-cover">Make cover</button>';
       }
-      fig.appendChild(tools);
-      if (fig.classList.contains("off")) {
-        var b = d.createElement("span"); b.className = "badge"; b.textContent = "Hidden · Tap to restore";
-        fig.appendChild(b);
+      frame.appendChild(tools);
+      if (off) {
+        var b = d.createElement("button"); b.type = "button"; b.className = "badge";
+        b.textContent = "Hidden \u00b7 Restore"; frame.appendChild(b);
+        a.setAttribute("aria-label", "Hidden: " + (a.querySelector("img").alt || "photo"));
+      } else if (!hero) {
+        var h = d.createElement("button"); h.type = "button"; h.className = "t-hide";
+        h.textContent = "Hide"; h.title = "Hide (H)"; frame.appendChild(h);
       }
-      a.setAttribute("aria-label", (fig.classList.contains("off") ? "Restore " : "Hide ") + "photo");
-      tools.addEventListener("click", function (e) {
-        e.stopPropagation();
-        if (e.target.classList.contains("t-cover")) { cover = rel; save(rel); }
-        if (e.target.classList.contains("t-uncover")) { cover = "none"; save(null); }
+      frame.addEventListener("click", function (e) {
+        var t = e.target.classList;
+        if (t.contains("t-cover")) { cover = rel; save(rel); }
+        else if (t.contains("t-uncover")) { cover = "none"; save(null); }
+        else if (t.contains("t-hide") || t.contains("badge")) toggle(rel);
       });
+      fig.addEventListener("pointerdown", function (e) { down = { x: e.clientX, y: e.clientY }; });
       a.addEventListener("click", function (e) {
+        if (e.metaKey || e.ctrlKey || e.shiftKey) return; // the browser's own new-tab click
         e.preventDefault();
-        if (hero) return;
-        var hiding = !fig.classList.contains("off");
-        fig.classList.toggle("off");
-        save(rel).then(function (ok) {
-          if (ok && hiding) { undoRel = rel; say("Photo hidden.", false, true); }
-        });
+        var moved = down && e.detail && Math.hypot(e.clientX - down.x, e.clientY - down.y) > DRAG_PX;
+        down = null;
+        if (moved || Date.now() - dragEnd < 300) return; // that was a drag
+        fdx.open(a);
       });
       a.addEventListener("keydown", function (e) {
         if (hero) return;
@@ -157,7 +192,9 @@
         dragRel = rel; fig.classList.add("dragging");
         e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", rel);
       });
-      fig.addEventListener("dragend", function () { fig.classList.remove("dragging"); clearMarks(); dragRel = null; });
+      fig.addEventListener("dragend", function () {
+        fig.classList.remove("dragging"); clearMarks(); dragRel = null; dragEnd = Date.now();
+      });
       fig.addEventListener("dragover", function (e) {
         if (!dragRel || dragRel === rel) return;
         var from = q(dragRel);
@@ -174,6 +211,14 @@
       });
     });
   }
+  // H hides or restores the photo in the viewer, else the focused photo.
+  d.addEventListener("keydown", function (e) {
+    if ((e.key !== "h" && e.key !== "H") || e.metaKey || e.ctrlKey || e.altKey) return;
+    var t = e.target;
+    if (t.isContentEditable || t.tagName === "INPUT" || t.tagName === "TEXTAREA") return;
+    var a = fdx.current(), fig = a ? a.closest(".ph[data-rel]") : t.closest && t.closest(".ph[data-rel]");
+    if (fig) { e.preventDefault(); toggle(fig.dataset.rel); }
+  });
   d.addEventListener("dragover", function (e) {
     if (!dragRel) return;
     if (e.clientY < 90) scrollBy(0, -18); else if (e.clientY > innerHeight - 90) scrollBy(0, 18);
@@ -214,4 +259,8 @@
   link.addEventListener("focus", function () { link.select(); });
 
   lockUi(); wire();
+  vb = d.createElement("button"); vb.type = "button"; vb.className = "keep lb-hide"; vb.title = "Hide (H)";
+  d.querySelector(".lb").appendChild(vb);
+  vb.addEventListener("click", function () { var a = fdx.current(); if (a) toggle(a.closest(".ph[data-rel]").dataset.rel); });
+  fdx.onshow = label;
 })();

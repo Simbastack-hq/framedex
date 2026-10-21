@@ -19,7 +19,9 @@ public surface (CLI flags, sidecar schema) can still shift between minor version
   `<out>/<name>.jpg` + a plain-text `<name>.develop.json` record (every round's
   values, the final engine adjustments, cost) and, only if absent, a RapidRAW
   `.rrdata` next to the RAW so the edit re-opens in RapidRAW. Backends: api,
-  local (OpenAI-compatible), cli. Needs the `[images]` extra (Pillow).
+  local (OpenAI-compatible), cli. `--files-from` develops only a listed
+  subset (e.g. a gallery's picks) with the same output names as a full run.
+  Needs the `[images]` extra (Pillow).
 
 ## [0.2.0] - 2026-09-09
 

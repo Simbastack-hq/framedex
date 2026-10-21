@@ -48,6 +48,7 @@ fdx-develop ~/shoots/mara --dry-run           # list + cost estimate, no calls, 
 fdx-develop ~/shoots/mara --examples ~/shoots/mara/hero-edits
 fdx-develop ~/shoots/mara --backend local --local-model gemma-4-27b
 fdx-develop ~/shoots/mara --rounds 4 --size 3000 --out ~/web/mara
+fdx-develop ~/shoots/mara --files-from picks.txt   # only the picked photos
 ```
 
 | Flag | Meaning |
@@ -60,6 +61,7 @@ fdx-develop ~/shoots/mara --rounds 4 --size 3000 --out ~/web/mara
 | `--rounds N` | Max look-and-adjust rounds, 1-4 (default 3) |
 | `--examples DIR` | Up to 3 pairs of `<name>.<raw>` + `<name>.jpg` (your finished export of that RAW) |
 | `--size PX` | Long edge of the edited copies (default 2048) |
+| `--files-from FILE` | Develop only the RAWs listed in FILE: one path per line, relative to the root (or absolute inside it), blank lines and `#` comments ignored. A path outside the root, missing, or not a RAW is an error naming the line. Output names are planned over the whole folder, so a photo gets the same name with or without the list |
 | `--max-files N` | Cap a run |
 | `--force` | Redo photos framedex already developed |
 | `--no-rrdata` | Don't write the RapidRAW sidecar |

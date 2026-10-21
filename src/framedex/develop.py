@@ -600,6 +600,33 @@ class PhotoResult:
     message: str = ""
 
 
+def read_files_from(listing: Path, root: Path, raws: Sequence[Path]) -> list[Path]:
+    """The RAWs named in `listing` (one path per line, relative to root or
+    absolute inside it; blank lines and # comments ignored), in discovery
+    order. Raises ValueError naming every bad line: outside root, missing, or
+    not a RAW that discovery would develop."""
+    by_resolved = {r.resolve(): r for r in raws}
+    chosen: set[Path] = set()
+    errors: list[str] = []
+    for n, line in enumerate(listing.read_text().splitlines(), 1):
+        entry = line.strip()
+        if not entry or entry.startswith("#"):
+            continue
+        path = Path(entry).expanduser()
+        resolved = (path if path.is_absolute() else root / path).resolve()
+        if not resolved.is_relative_to(root):
+            errors.append(f"line {n}: {entry}: outside {root}")
+        elif not resolved.is_file():
+            errors.append(f"line {n}: {entry}: no such file")
+        elif resolved not in by_resolved:
+            errors.append(f"line {n}: {entry}: not a RAW fdx-develop would process")
+        else:
+            chosen.add(by_resolved[resolved])
+    if errors:
+        raise ValueError(f"--files-from {listing}:\n  " + "\n  ".join(errors))
+    return [r for r in raws if r in chosen]
+
+
 def plan_outputs(
     raws: Sequence[Path], root: Path, out_dir: Path
 ) -> dict[Path, tuple[Path, Path]]:
@@ -950,6 +977,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=OUTPUT_LONG,
         help="Long edge of the edited copies in px",
     )
+    p.add_argument(
+        "--files-from",
+        help="Develop only the RAWs listed in this file (one path per line, relative "
+        "to root or absolute inside it; blank lines and # comments ignored)",
+    )
     p.add_argument("--max-files", type=int, default=None)
     p.add_argument(
         "--force", action="store_true", help="Redo photos framedex already developed"
@@ -981,14 +1013,24 @@ def main(argv: list[str] | None = None) -> int:
         sys.exit(f"--rounds must be 1-{MAX_ROUNDS}")
     out_dir = Path(args.out).expanduser().resolve() if args.out else root / OUT_DIRNAME
     raws = discover(root, out_dir)
+    # Names are planned over the whole folder, so a photo's output name is the
+    # same whether or not --files-from selects a subset.
     outputs = plan_outputs(raws, root, out_dir)
-    plan = [(r, *outputs[r]) for r in raws]
+    selected = raws
+    if args.files_from:
+        try:
+            selected = read_files_from(Path(args.files_from).expanduser(), root, raws)
+        except (OSError, ValueError) as e:
+            sys.exit(str(e))
+    plan = [(r, *outputs[r]) for r in selected]
     todo = [(r, j, c) for r, j, c in plan if args.force or not is_complete(r, j, c)]
     if args.max_files is not None:
         todo = todo[: args.max_files]
     est = len(todo) * EST_USD_PER_PHOTO if args.backend == "api" else 0.0
     print(
-        f"{len(raws)} RAWs, {len(plan) - len(todo)} already developed, {len(todo)} to do; est. ${est:.2f}"
+        f"{len(raws)} RAWs"
+        + (f", {len(plan)} listed" if args.files_from else "")
+        + f", {len(plan) - len(todo)} already developed, {len(todo)} to do; est. ${est:.2f}"
     )
     if args.dry_run:
         for r, j, _ in todo:

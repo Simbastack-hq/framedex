@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -492,3 +493,71 @@ def test_failed_redo_keeps_ownership_of_the_previous_output(raw: Path) -> None:
     assert jpg.read_bytes() == before
     assert D.owns_output(raw, jpg, rec)  # still ours: a later --force may replace it
     assert not D.is_complete(raw, jpg, rec)  # and it gets retried
+
+
+def _shoot(tmp_path: Path, names: Sequence[str]) -> Path:
+    root = tmp_path / "shoot"
+    for n in names:
+        p = root / n
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"x")
+    return root
+
+
+def test_files_from_develops_only_the_listed_subset(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _shoot(tmp_path, ["a.NEF", "b.NEF", "sub/c.NEF", "d.NEF"])
+    listing = tmp_path / "picks.txt"
+    listing.write_text(f"# picks\n\nsub/c.NEF\n  b.NEF  \n{root / 'sub' / 'c.NEF'}\n")
+    assert D.main([str(root), "--files-from", str(listing), "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "4 RAWs, 2 listed, 0 already developed, 2 to do" in out
+    planned = [
+        line.split(" -> ")[0].strip() for line in out.splitlines() if " -> " in line
+    ]
+    assert planned == ["b.NEF", "sub/c.NEF"]  # discovery order, deduplicated
+
+
+def test_files_from_keeps_full_run_output_names(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _shoot(tmp_path, ["A.NEF", "A.ARW", "B.NEF"])
+    listing = tmp_path / "picks.txt"
+    listing.write_text("A.NEF\nB.NEF\n")
+    D.main([str(root), "--files-from", str(listing), "--dry-run"])
+    subset = capsys.readouterr().out
+    D.main([str(root), "--dry-run"])
+    full = capsys.readouterr().out
+
+    def targets(out: str) -> dict[str, str]:
+        pairs = (
+            line.strip().split(" -> ") for line in out.splitlines() if " -> " in line
+        )
+        return {src: dst for src, dst in pairs}
+
+    assert targets(subset)["A.NEF"].endswith("developed/A.NEF.jpg")  # clash with A.ARW
+    assert targets(subset) == {
+        k: v for k, v in targets(full).items() if k in ("A.NEF", "B.NEF")
+    }
+
+
+@pytest.mark.parametrize(
+    ("entry", "why"),
+    [
+        ("../outside.NEF", "outside"),
+        ("missing.NEF", "no such file"),
+        ("notes.jpg", "not a RAW"),
+        ("developed/old.NEF", "not a RAW"),
+    ],
+)
+def test_files_from_rejects_bad_lines(tmp_path: Path, entry: str, why: str) -> None:
+    root = _shoot(tmp_path, ["a.NEF", "notes.jpg", "developed/old.NEF"])
+    (tmp_path / "outside.NEF").write_bytes(b"x")
+    listing = tmp_path / "picks.txt"
+    listing.write_text(f"a.NEF\n# fine so far\n{entry}\n")
+    with pytest.raises(SystemExit) as exc:
+        D.main([str(root), "--files-from", str(listing), "--dry-run"])
+    msg = str(exc.value.code)
+    assert f"line 3: {entry}" in msg and why in msg
+    assert not (root / "developed" / "a.jpg").exists()

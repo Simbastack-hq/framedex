@@ -51,7 +51,7 @@ main, .hero { width: var(--wide); margin: 0 auto; }
 .pair .ph { flex: var(--ar) 1 0; min-width: 0; margin: 0; }
 figcaption { margin: 12px 0 0; color: var(--muted); font-size: 13px; line-height: 1.38; }
 
-.day { margin: calc(var(--row) * 1.5) 0 24px; }
+.day { margin: calc(var(--row) * 1.5) 0 24px; text-align: center; }
 .day h2 { margin: 0; font-size: 15px; line-height: 1.33; font-weight: 600; }
 .day h2 span { color: var(--muted); font-weight: 400; }
 main > section:first-child .day { margin-top: 8px; }

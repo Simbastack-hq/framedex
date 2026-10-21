@@ -585,6 +585,9 @@ def test_auto_title_from_place_and_month() -> None:
     assert s.trip_place(mixed) == "Portugal"
     no_gps = [_p("x", 0, place=""), _p("y", 1, place="")]
     assert s.auto_title(no_gps, "Moto Spain") == "Moto Spain · November 2025"
+    assert s.auto_title(no_gps, "2025 11 Mara") == "Mara · November 2025"
+    assert s.auto_title(no_gps, "Mara July") == "Mara · November 2025"
+    assert s.auto_title(no_gps, "2025 11") == "November 2025"
     assert s.auto_title([_p("u", None, place="")], "Moto Spain") == "Moto Spain"
     assert (
         s.month_label([date(2025, 10, 30), date(2025, 11, 2)])

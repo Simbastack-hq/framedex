@@ -35,7 +35,9 @@
     return;
   }
   input.addEventListener("input", function () { go.disabled = !input.value; msg.textContent = ""; });
-  input.focus();
+  // Focus on desktops only: on a phone it would throw the keyboard up
+  // over the cover before anyone asked for it.
+  if (window.matchMedia && matchMedia("(hover: hover)").matches) input.focus();
 
   form.addEventListener("submit", function (e) {
     e.preventDefault();

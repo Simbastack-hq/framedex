@@ -689,13 +689,33 @@ def day_range_label(days: list[date]) -> str:
 
 
 def auto_title(photos: list[Photo], fallback: str) -> str:
-    """'Narok · November 2025' from the photos' places and dates; the place
-    alone, or the folder-name fallback, when one half is missing."""
-    place = trip_place(photos)
+    """'Narok · November 2025' from the photos' places and dates. Without GPS
+    the folder name stands in for the place, minus any dates in it
+    ('2025-11-mara' -> 'Mara · November 2025'); without dates, just the
+    place or the name."""
+    place = trip_place(photos) or strip_dates(fallback)
     when = month_label([trip_day(p.taken) for p in photos if p.taken])
     if place and when:
         return f"{place} · {when}"
-    return place or (f"{fallback} · {when}" if when else fallback)
+    return place or when or fallback
+
+
+_MONTHS = {
+    m.lower()
+    for i in range(1, 13)
+    for m in (date(2000, i, 1).strftime("%B"), date(2000, i, 1).strftime("%b"))
+}
+
+
+def strip_dates(name: str) -> str:
+    """A folder name without its date parts: years, month numbers, month
+    names ('2025_11 Mara July' -> 'Mara')."""
+    words = [
+        w
+        for w in name.split()
+        if not w.isdigit() and w.lower().rstrip(".") not in _MONTHS
+    ]
+    return " ".join(words)
 
 
 def title_from_name(name: str) -> str:

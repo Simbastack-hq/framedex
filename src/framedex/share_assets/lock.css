@@ -5,9 +5,9 @@
 }
 .lock::before {
   content: ""; position: absolute; inset: -80px; background: inherit;
-  filter: blur(36px) saturate(1.2) brightness(0.78); transform: scale(1.1);
+  filter: blur(36px) saturate(0.5); transform: scale(1.1);
 }
-.lock::after { content: ""; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.12); }
+.lock::after { content: ""; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.25); }
 .lock.gone { opacity: 0; visibility: hidden; }
 .gate { position: relative; z-index: 1; width: min(460px, 100%); padding: 24px; text-align: center; color: #fff; }
 .gate h1 {
@@ -15,11 +15,10 @@
   letter-spacing: -0.025em; text-wrap: balance; text-shadow: 0 1px 30px rgba(0, 0, 0, 0.18);
 }
 .gate p { margin: 8px 0 28px; font-size: 15px; color: rgba(255, 255, 255, 0.82); }
-.field { max-width: 340px; margin: 0 auto; }
 .field {
-  display: flex; align-items: center; gap: 8px; padding: 5px 5px 5px 18px;
-  border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.3);
-  background: rgba(255, 255, 255, 0.16);
+  display: flex; align-items: center; gap: 8px; max-width: 360px; height: 56px; margin: 0 auto;
+  padding: 0 6px 0 18px; border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.12);
   -webkit-backdrop-filter: blur(24px) saturate(1.6); backdrop-filter: blur(24px) saturate(1.6);
 }
 .field input {
@@ -28,11 +27,11 @@
 }
 .field input::placeholder { color: rgba(255, 255, 255, 0.62); letter-spacing: 0; }
 .field button {
-  flex: none; width: 38px; height: 38px; border: 0; border-radius: 12px; cursor: pointer;
-  background: #fff; color: #1d1d1f; font: 500 19px/1 var(--sf);
+  flex: none; width: 44px; height: 44px; border: 0; border-radius: 12px; cursor: pointer;
+  background: rgba(255, 255, 255, 0.9); color: #1d1d1f; font: 500 20px/1 var(--sf);
   transition: opacity 0.2s ease, transform 0.2s ease;
 }
-.field button:disabled { opacity: 0.35; cursor: default; }
+.field button:disabled { opacity: 0.55; cursor: default; }
 .field button:not(:disabled):active { transform: scale(0.94); }
 .gate .msg { min-height: 1.4em; margin: 14px 0 0; font-size: 14px; color: #fff; }
 .busy .field button { opacity: 0.35; }

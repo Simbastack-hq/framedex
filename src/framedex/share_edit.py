@@ -143,8 +143,9 @@ def editor_html(ed: Editor, token: str, *, protected: bool, configured: bool) ->
             '<div class="done" hidden><span class="ok">Published</span>',
             '<input class="link" readonly aria-label="Gallery link">',
             '<button type="button" class="copy">Copy</button></div>',
-            '<p class="note" role="status" aria-live="polite"></p>',
             "</div>",
+            '<div class="toast" role="status" aria-live="polite" hidden>'
+            '<span class="note"></span><button type="button" class="undo" hidden>Undo</button></div>',
             f'<div id="g">{gallery_markup(g, ed.site.photos, asset_prefix=f"{SITE_DIR}/", edit=True)}</div>',
             f'<script type="application/json" id="fdx-edit">{data}</script>',
             "<script>window.fdx={editing:true}</script>",

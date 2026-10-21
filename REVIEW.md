@@ -24,3 +24,12 @@
 - Unlock: frosted white (light) / black (dark) overlay, Show toggle, spinner, reserved error line — FOLD IN.
 - "No shake on wrong passcode" — REJECT: Apple's own password fields shake; disabled under reduced motion.
 - Cut closer choreography — REJECT (narrowed): no reordering; only a reserved pick slot when the cap bites (NJ asked for a good closer).
+
+## Round 2 — design critique of real screenshots (GPT-6 Astra) — 2026-10-21
+1. Title too big / landing-page feel — FOLD IN: 48/52 desktop, 72 top, 12 to subtitle, 40 to hero; phone 28/34, 40 top, 28 below.
+2. Centered singles feel unedited — FOLD IN: hero 1200px, other singles 960px, pairs 24px gutter, 64px rows; phone unchanged.
+3. Headings interrupt — FOLD IN: 13/18 weight 500, no weekday ("9 November").
+4. Passcode controls look disabled — FOLD IN: desaturate + 25% black overlay, 360/56/16 field, solid white 44px button, copy "Enter the passcode to view."; no mobile autofocus (already done).
+5. Editor shifts layout — FOLD IN: 56px fixed toolbar over the top whitespace; 5 s Undo after hide; hint gone after first edit; Cover badge on hover; title underline affordance.
+- Cut: instructions after first edit, permanent Cover badge, weekday names — FOLD IN.
+- Memorable ending — FOLD IN (narrowed): the closer slot prefers a wide frame from the last quarter; 96px before the footer. No reordering (Codex round 1).

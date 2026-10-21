@@ -1,6 +1,6 @@
 .bar {
-  position: sticky; top: 0; z-index: 30; display: flex; flex-wrap: wrap; align-items: center;
-  gap: 8px 16px; min-height: 64px; padding: 10px max(24px, env(safe-area-inset-right)) 10px max(24px, env(safe-area-inset-left));
+  position: fixed; top: 0; left: 0; right: 0; z-index: 30; display: flex; align-items: center;
+  gap: 16px; height: 56px; padding: 0 max(20px, env(safe-area-inset-right)) 0 max(20px, env(safe-area-inset-left));
   background: var(--bg); border-bottom: 1px solid var(--fill);
 }
 .hint { flex: 1 1 220px; margin: 0; font-size: 13px; line-height: 1.38; color: var(--muted); }
@@ -32,13 +32,18 @@
   background: var(--fill); color: var(--ink); font: 14px var(--sf);
 }
 .copy { background: var(--fill); color: var(--ink); }
-.note { flex-basis: 100%; margin: 0; font-size: 13px; color: var(--muted); }
-.note:empty { display: none; }
-.note.err { color: #d70015; }
-@media (prefers-color-scheme: dark) { .note.err { color: #ff6961; } .go { background: #0a84ff; } }
+.toast {
+  position: fixed; left: 50%; bottom: max(24px, env(safe-area-inset-bottom)); z-index: 40;
+  transform: translateX(-50%); display: flex; align-items: center; gap: 12px; max-width: calc(100% - 32px);
+  padding: 10px 16px; border-radius: 14px; background: #1d1d1f; color: #f5f5f7;
+  font: 13px/18px var(--sf); box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18);
+}
+.toast.err .note { color: #ff8a80; }
+.toast .undo { border: 0; background: none; padding: 0; color: #64d2ff; font: 600 13px var(--sf); cursor: pointer; }
+@media (prefers-color-scheme: dark) { .toast { background: #2c2c2e; } .go { background: #0a84ff; } }
 
-.editing .top h1 { border-radius: 10px; cursor: text; padding: 2px 8px; outline: none; }
-.editing .top h1:hover, .editing .top h1:focus { background: var(--fill); }
+.editing .top h1 { cursor: text; outline: none; text-underline-offset: 8px; text-decoration-thickness: 1px; }
+.editing .top h1:hover, .editing .top h1:focus { text-decoration-line: underline; text-decoration-color: var(--muted); }
 .editing .ph a { cursor: pointer; }
 .editing .ph[draggable="true"] { cursor: grab; }
 .ph.off img { opacity: 0.28 !important; filter: grayscale(1); }
@@ -60,7 +65,9 @@
 .cover-tag {
   position: absolute; top: 10px; left: 10px; padding: 5px 10px; border-radius: 13px;
   background: rgba(0, 0, 0, 0.6); color: #fff; font: 500 12px var(--sf); pointer-events: none;
+  opacity: 0; transition: opacity 0.12s ease;
 }
+.ph:hover .cover-tag, .ph:focus-within .cover-tag { opacity: 1; }
 @media (hover: none) { .ph .tools { opacity: 1; } }
 .ph.dragging { opacity: 0.35; }
 .ph.drop-before::before, .ph.drop-after::after {
@@ -71,8 +78,8 @@
 .pair .ph.drop-before::before { top: 0; bottom: 0; left: -14px; right: auto; width: 4px; height: auto; }
 .pair .ph.drop-after::after { top: 0; bottom: 0; right: -14px; left: auto; width: 4px; height: auto; }
 @media (max-width: 600px) {
-  .bar { padding: 8px 16px; }
-  .hint { flex-basis: 100%; }
+  .editing .top { padding-top: 76px; }
+  .hint { display: none; }
   .pass input { width: 110px; }
   .pair .ph.drop-before::before { left: 0; right: 0; top: -14px; bottom: auto; width: auto; height: 4px; }
   .pair .ph.drop-after::after { left: 0; right: 0; bottom: -14px; top: auto; width: auto; height: 4px; }

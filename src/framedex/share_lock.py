@@ -176,7 +176,7 @@ def locked_html(title: str, locked: Locked, *, asset_prefix: str = "") -> str:
             f"<title>{_e(title)}</title>",
             f"<style>{asset('gallery.css')}{asset('lock.css')}</style></head><body>",
             f'<div class="lock"{bg}><form class="gate" autocomplete="off">',
-            f"<h1>{_e(title)}</h1><p>This album is private.</p>",
+            f"<h1>{_e(title)}</h1><p>Enter the passcode to view.</p>",
             '<div class="field"><input type="password" name="passcode" '
             'aria-label="Passcode" placeholder="Passcode" autocapitalize="off" '
             'autocorrect="off" spellcheck="false" required>'

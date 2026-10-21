@@ -322,7 +322,7 @@ def _e(text: str) -> str:
 
 
 def split_heading(heading: str) -> tuple[str, str]:
-    """'Sunday 9 November · Ewangan, Narok West' -> (when, where)."""
+    """'9 November · Ewangan, Narok West' -> (when, where)."""
     when, _, where = heading.partition(" · ")
     return when.strip(), where.strip()
 

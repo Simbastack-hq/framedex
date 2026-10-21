@@ -179,7 +179,7 @@ subtitle: 8–9 November
 cover: IMG_0320.JPG
 captions: off
 
-## Sunday 9 November · Narok West
+## 9 November · Narok West
 IMG_0293.JPG | An impala, tan and dark-marked.
 # IMG_0302.JPG | An adult African elephant with a young calf.  # hidden
 

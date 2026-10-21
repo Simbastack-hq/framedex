@@ -272,8 +272,8 @@ def test_plan_gallery_end_to_end() -> None:
     assert "cull.JPG" not in picked and "review.JPG" not in picked
     assert "talek.JPG" in picked or "talek2.JPG" in picked  # every place shows up
     assert [sec.heading for sec in plan.sections] == [
-        "Sunday 9 November · Ewangan, Narok West",
-        "Sunday 9 November · Talek, Narok East",
+        "9 November · Ewangan, Narok West",
+        "9 November · Talek, Narok East",
     ]
     reasons = dict((p.rel, why) for p, why in plan.not_picked)
     assert reasons["dup.JPG"] == "near-duplicate of leopard9.JPG"
@@ -315,9 +315,9 @@ def test_sections_break_on_day_and_place() -> None:
     ]
     secs = s.make_sections(photos)
     assert [(sec.heading, _rels(sec.photos)) for sec in secs] == [
-        ("Saturday 8 November · Ewangan, Narok West", ["sat1.JPG", "sat2.JPG"]),
-        ("Sunday 9 November · Ewangan, Narok West", ["mara1.JPG", "mara2.JPG"]),
-        ("Sunday 9 November · Talek, Narok East", ["talek1.JPG", "talek2.JPG"]),
+        ("8 November · Ewangan, Narok West", ["sat1.JPG", "sat2.JPG"]),
+        ("9 November · Ewangan, Narok West", ["mara1.JPG", "mara2.JPG"]),
+        ("9 November · Talek, Narok East", ["talek1.JPG", "talek2.JPG"]),
     ]
 
 
@@ -329,8 +329,8 @@ def test_headings_carry_the_year_when_a_gallery_crosses_one() -> None:
         _p("d.JPG", 60 * 24 * 400 + 1),
     ]
     assert [sec.heading.split(" · ")[0] for sec in s.make_sections(photos)] == [
-        "Sunday 9 November 2025",
-        "Monday 14 December 2026",
+        "9 November 2025",
+        "14 December 2026",
     ]
 
 
@@ -612,7 +612,7 @@ def test_auto_title_from_place_and_month() -> None:
     assert (
         s.day_range_label([date(2025, 11, 8), date(2025, 11, 9)]) == "8\u20139 November"
     )
-    assert s.day_range_label([date(2025, 11, 9)]) == "Sunday 9 November"
+    assert s.day_range_label([date(2025, 11, 9)]) == "9 November"
     assert s.day_range_label([date(2025, 10, 30), date(2025, 11, 2)]) == (
         "30 October \u2013 2 November"
     )

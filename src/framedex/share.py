@@ -1,22 +1,17 @@
 #!/usr/bin/env python3
 """
-fdx-share — turn an indexed folder of photos into a shareable web gallery.
-
-    fdx-share ~/Pictures/2025-11-mara               # pick, render, open a preview
-    $EDITOR ~/Pictures/2025-11-mara/_share/mara/selection.txt
-    fdx-share ~/Pictures/2025-11-mara               # re-render from your edits
-    fdx-share ~/Pictures/2025-11-mara --publish     # upload, print + copy the URL
+fdx share — turn an indexed folder of photos into a gallery link.
 
 The sidecars do the curation: keep-rated photos only (a `user_rating` wins
-over the model's), one frame per burst, near-duplicates dropped, capped at
---max with every day/place section represented. The pick is written to a
-plain-text `selection.txt` you edit (drop, reorder, re-caption, re-title);
-that file, not the sidecars, drives every later render. Originals are only
-read: the gallery gets web-size copies (2048 px long edge) with GPS stripped
-unless --keep-gps, a noindex page, and nothing else from your archive.
+over the model's), one frame per burst, near-duplicates dropped, a cap
+spread over every day and place, the strongest frame opening. The pick lives
+in a plain-text `selection.txt` that the browser editor (`share_edit`)
+rewrites on every change and a person can edit by hand. Originals are only
+read; galleries get web copies with GPS stripped.
 
-This module is the pure half (selection, ordering, the selection file);
-pixels and HTML live in `share_site`, uploads in `share_publish`.
+This module is the pure half (selection, ordering, the selection file) and
+the CLI; pixels and HTML live in `share_site`, the editor in `share_edit`,
+passcodes in `share_lock`, uploads in `share_publish`.
 """
 
 from __future__ import annotations
@@ -416,7 +411,9 @@ def pick_with_closer(photos: list[Photo], k: int) -> list[Photo]:
     dated = sorted((p for p in photos if p.taken is not None), key=time_order)
     if k < 2 or k >= len(photos) or not dated:
         return pick_spread(photos, k)
-    closer = _best(dated[int(len(dated) * 0.75) :] or dated[-1:])
+    late = dated[int(len(dated) * 0.75) :] or dated[-1:]
+    wide = [p for p in late if (p.aspect or 0.0) >= COVER_MIN_RATIO]
+    closer = _best(wide or late)
     rest = pick_spread([p for p in photos if p is not closer], k - 1)
     return sorted([*rest, closer], key=time_order)
 
@@ -528,7 +525,8 @@ def place_label(place: str) -> str:
 
 
 def day_label(d: date, *, year: bool = False) -> str:
-    return f"{d:%A} {d.day} {d:%B}" + (f" {d.year}" if year else "")
+    """'9 November' (or '9 November 2025' in a gallery that crosses a year)."""
+    return f"{d.day} {d:%B}" + (f" {d.year}" if year else "")
 
 
 def _most_common(values: Iterable[str]) -> str:
@@ -683,7 +681,7 @@ def day_range_label(days: list[date]) -> str:
     if a.year != b.year:
         return date_range_label(days)
     if a == b:
-        return f"{a:%A} {a.day} {a:%B}"
+        return f"{a.day} {a:%B}"
     if a.month == b.month:
         return f"{a.day}{EN_DASH}{b.day} {b:%B}"
     return f"{a.day} {a:%B} {EN_DASH} {b.day} {b:%B}"
@@ -1004,10 +1002,21 @@ def _date_arg(text: str) -> date:
         raise argparse.ArgumentTypeError(f"not a YYYY-MM-DD date: {text!r}") from e
 
 
+CLI_HELP = """\
+Turn an indexed folder of photos into a gallery link.
+
+  fdx share ~/Pictures/2025-11-mara              pick, render, edit in the browser, Publish
+  fdx share ~/Pictures/2025-11-mara --publish    publish the current selection from here
+  fdx share ~/Pictures/2025-11-mara --unpublish  take it down
+
+More: docs/share.md
+"""
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="fdx share",
-        description=__doc__,
+        description=CLI_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -1019,6 +1028,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_MAX_PHOTOS,
         dest="max_photos",
+        metavar="N",
         help=f"Most photos in the gallery (default {DEFAULT_MAX_PHOTOS}).",
     )
     pick.add_argument(

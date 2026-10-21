@@ -6,14 +6,25 @@
   var d = document, fdx = window.fdx;
   var cfg = JSON.parse(d.getElementById("fdx-edit").textContent);
   var g = d.getElementById("g"), bar = d.querySelector(".bar");
-  var note = bar.querySelector(".note"), hid = bar.querySelector(".hid");
+  var toast = d.querySelector(".toast"), note = toast.querySelector(".note");
+  var undo = toast.querySelector(".undo"), hint = bar.querySelector(".hint");
+  var hid = bar.querySelector(".hid"), toastTimer = null, undoRel = null;
   var act = bar.querySelector(".act"), done = bar.querySelector(".done");
   var lockon = bar.querySelector(".lockon"), pass = bar.querySelector(".pass");
   var code = bar.querySelector(".code"), show = bar.querySelector(".show");
   var go = bar.querySelector(".go"), link = bar.querySelector(".link"), copy = bar.querySelector(".copy");
   var cover = cfg.cover, queue = Promise.resolve(), dragRel = null, published = false;
 
-  function say(text, err) { note.textContent = text || ""; note.classList.toggle("err", !!err); }
+  function say(text, err, withUndo) {
+    clearTimeout(toastTimer);
+    note.textContent = text || ""; toast.classList.toggle("err", !!err);
+    undo.hidden = !withUndo; toast.hidden = !text;
+    if (text && !err) toastTimer = setTimeout(function () { toast.hidden = true; undoRel = null; }, 5000);
+  }
+  undo.addEventListener("click", function () {
+    var rel = undoRel; undoRel = null; say("");
+    if (rel && q(rel)) { q(rel).classList.remove("off"); save(rel); }
+  });
   function q(rel) { return g.querySelector('[data-rel="' + CSS.escape(rel) + '"]'); }
   function post(path, body) {
     return fetch(path, {
@@ -43,7 +54,7 @@
       g.innerHTML = j.html; wire(); d.title = "Editing \u00b7 " + title();
       hid.textContent = j.hidden ? " " + j.hidden + " hidden." : "";
       if (before !== null && q(anchor)) window.scrollBy(0, q(anchor).getBoundingClientRect().top - before);
-      say(""); changed();
+      hint.hidden = true; changed();
     }, function (e) { say("Couldn’t save that change: " + e.message, true); });
     return queue;
   }
@@ -121,7 +132,11 @@
       a.addEventListener("click", function (e) {
         e.preventDefault();
         if (hero) return;
-        fig.classList.toggle("off"); save(rel);
+        var hiding = !fig.classList.contains("off");
+        fig.classList.toggle("off");
+        save(rel).then(function () {
+          if (hiding) { undoRel = rel; say("Photo hidden.", false, true); }
+        });
       });
       a.addEventListener("keydown", function (e) {
         if (hero) return;

@@ -56,12 +56,14 @@
 
   function save(anchor, edit) {
     var before = anchor && q(anchor) ? q(anchor).getBoundingClientRect().top : null;
-    var focused = keys && d.activeElement.closest && d.activeElement.closest(".ph[data-rel]");
-    var refocus = focused ? focused.dataset.rel : null;
     var payload = { title: title(), cover: cover, sections: model() };
     if (edit) edit(payload);
     var done = queue.then(function () { return post("api/save", payload); }).then(function (j) {
       unsaved = false;
+      // keyboard focus on a photo survives the re-render (and only that: focus
+      // that moved to the toolbar meanwhile stays there)
+      var focused = keys && g.contains(d.activeElement) && d.activeElement.closest(".ph[data-rel]");
+      var refocus = focused ? focused.dataset.rel : null;
       g.innerHTML = j.html; wire(); d.title = "Editing \u00b7 " + title();
       hid.textContent = j.hidden ? " " + j.hidden + " hidden." : "";
       if (before !== null && q(anchor)) window.scrollBy(0, q(anchor).getBoundingClientRect().top - before);
@@ -88,14 +90,16 @@
     fig.classList.toggle("off"); label();
     save(rel).then(function (ok) {
       // in the viewer its own button reads "Hidden · Restore": no toast on top of it
-      if (ok && hiding && !fdx.current()) { undoRel = rel; say("Photo hidden.", false, true); }
+      if (ok && hiding && !fdx.current()) { undoRel = rel; say("Hidden from the published gallery.", false, true); }
     });
   }
   function label(shown) {
     var a = shown || fdx.current(), fig = a && a.closest(".ph[data-rel]");
     if (!vb || !fig) return;
+    var off = fig.classList.contains("off");
     vb.hidden = !!fig.closest(".hero");
-    vb.textContent = fig.classList.contains("off") ? "Hidden \u00b7 Restore" : "Hide";
+    vb.textContent = off ? "Hidden \u00b7 Restore" : "Hide";
+    vb.parentNode.classList.toggle("is-off", off); // dimmed, still there to judge
   }
 
   function move(rel, delta) {
@@ -213,7 +217,7 @@
   }
   // H hides or restores the photo in the viewer, else the focused photo.
   d.addEventListener("keydown", function (e) {
-    if ((e.key !== "h" && e.key !== "H") || e.metaKey || e.ctrlKey || e.altKey) return;
+    if ((e.key !== "h" && e.key !== "H") || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
     var t = e.target;
     if (t.isContentEditable || t.tagName === "INPUT" || t.tagName === "TEXTAREA") return;
     var a = fdx.current(), fig = a ? a.closest(".ph[data-rel]") : t.closest && t.closest(".ph[data-rel]");

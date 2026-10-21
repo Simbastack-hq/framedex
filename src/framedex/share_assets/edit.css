@@ -71,6 +71,9 @@
   -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
 }
 .lb .lb-hide:hover { background: rgba(0, 0, 0, 0.78); }
+.lb > img { transition: opacity 0.12s ease; }
+.lb.is-off > img { opacity: 0.5; }
+@media (prefers-reduced-motion: reduce) { .lb > img { transition: none; } }
 .cover-tag {
   position: absolute; top: 10px; left: 10px; padding: 5px 10px; border-radius: 13px;
   background: rgba(0, 0, 0, 0.6); color: #fff; font: 500 12px var(--sf); pointer-events: none;

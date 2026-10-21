@@ -6,7 +6,25 @@ public surface (CLI flags, sidecar schema) can still shift between minor version
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **`fdx-share`: a gallery link from an indexed shoot.** One command curates a
+  folder from its sidecars (keep-rated by effective rating, one frame per
+  burst/RAW+JPEG group, near-duplicates dropped by a thumbnail signature, a
+  `--max` cap spread so every day/place section shows up), orders it by time
+  in sections by day and place, captions each photo from its sidecar, and
+  renders one static page (no framework, no external requests, `noindex`)
+  with 2048 px web copies and 1024 px grid copies. Originals are only read;
+  GPS is stripped from the copies unless `--keep-gps`. The pick is written to
+  a plain-text `selection.txt` to drop, reorder, re-caption and re-title
+  before re-rendering; a local `preview.html` shows file names. `--publish`
+  uploads to Cloudflare R2 or any S3-compatible bucket (SigV4 on `requests`,
+  no new dependency) or a local folder, after a confirmation, at an
+  unguessable `<name>-<random>` link that survives re-publishing;
+  `--unpublish` deletes it. See `docs/share.md`.
+- **`fdx-trips`**: lists the trips in an indexed archive (split on time gaps
+  and long GPS jumps) with a draft gallery size and the `fdx-share` command
+  for each.
 
 ## [0.2.0] - 2026-09-09
 

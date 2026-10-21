@@ -39,6 +39,7 @@ The README covers the core workflow. Deeper or edge-case topics live in `docs/`:
 - **[Tuning and advanced config](docs/tuning.md)**: folder-context priors, proper-noun biasing, languages, speaker-diarization setup.
 - **[Troubleshooting](docs/troubleshooting.md)**: common errors and their fixes.
 - **[fdx-mcp](docs/mcp.md)**: serve an indexed archive to Claude Desktop, LM Studio, or any MCP host; the tool contract, host setup, what leaves the machine.
+- **[fdx-develop](docs/develop.md)** (experimental): a vision model edits your RAWs through the external RapidRAW engine; style from your own before/after examples.
 
 ## Install
 
@@ -234,6 +235,17 @@ Six tools: `list_roots`; `query_media` (a subset of `fdx-query`'s metadata filte
 
 fdx-mcp makes no model calls; host inference may incur token or image charges, and each `contact_sheet` call is one bounded image (at most 20 thumbnails, about 1600 px wide). Tool results can include thumbnails, paths, GPS, names, notes, and transcripts, and the host may forward them to its model provider; keeping them local requires a host configured for local inference that does not forward results (LM Studio with a local vision model). Host setup and the full tool contract: [docs/mcp.md](docs/mcp.md).
 
+## Edit RAWs with a model (`fdx-develop`, experimental)
+
+`fdx-develop` makes the vision model the editor and an external RAW engine the darkroom. For each RAW the model looks at a neutral render (plus a calibration sheet showing what the engine's sliders do to that photo, and optionally your own before/after edits as the style target), returns slider values, the engine renders them, and the model looks again and revises, for a fixed 3 rounds by default. No slider UI.
+
+```bash
+fdx-develop ~/shoots/mara-2026-07 --examples ~/shoots/mara-2026-07/my-edits   # RAW + your exported JPEG pairs
+fdx-develop ~/shoots/mara-2026-07 --dry-run                                   # list + cost estimate, no calls
+```
+
+The engine is [RapidRAW](https://github.com/CyberTimon/RapidRAW) 1.6+, installed separately and run headless as its own program (framedex never bundles or links it). Output: `<root>/developed/<name>.jpg` plus a plain-text `<name>.develop.json` with every round's values and the final engine adjustments, and (only if none exists) a RapidRAW `.rrdata` next to the RAW so the edit re-opens in RapidRAW. Originals are never modified. Lightroom crops in `.xmp` sidecars are honored. Cost is fixed per photo (≤ rounds calls; about $0.20-0.35 on Claude Opus 5.5 with examples), and `--backend local` runs it on your own model. Details, limits, and what leaves the machine: [docs/develop.md](docs/develop.md).
+
 ## Apple Photos library (macOS)
 
 `fdx-photos` indexes videos **and** stills straight from an Apple Photos library: no export, no metadata loss. The common case is one command:
@@ -288,6 +300,7 @@ The `cli` backend runs `claude -p` locked down: `--permission-mode dontAsk` plus
 | Vision (`--backend cli`/`api`) | Cloud: sends 5 JPEG frames + a transcript snippet per clip |
 | Vision (`--backend local`) | Fully local |
 | Face DB (`~/.framedex/faces.db`) | Local only, never uploaded |
+| `fdx-develop` (`--backend api`/`cli`) | Cloud: sends downscaled renders of each photo (and your example pairs) per round. `--backend local` keeps it local |
 
 ## Resumable + idempotent
 
@@ -308,6 +321,7 @@ A burst or RAW+JPEG pair is done only when every member's sidecar belongs to tha
 | `fdx-query` | `query.py` | Filter sidecars by rating, lighting, person, keyword, location, language; `--folder`, `--offset`/`--limit` |
 | `fdx-xmp` | `xmp_export.py` | Export ratings/keywords/caption to `.xmp` sidecars for Lightroom (RAW) |
 | `fdx-mcp` | `mcp_server.py` | Serve the archive as MCP tools over stdio (query, read, overview, contact sheet, user rating); `[mcp]` extra |
+| `fdx-develop` | `develop.py` | Experimental: a vision model edits RAWs through the external RapidRAW engine; `[images]` extra |
 
 ```bash
 fdx-query /Volumes/SSD-2024 --rating keep --time-of-day golden_hour

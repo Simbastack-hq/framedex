@@ -66,6 +66,7 @@ fdx-query = "framedex.query:main"
 fdx-photos = "framedex.photos_indexer:main"
 fdx-xmp = "framedex.xmp_export:main"
 fdx-mcp = "framedex.mcp_server:main"
+fdx-develop = "framedex.develop:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/framedex"]

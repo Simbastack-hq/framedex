@@ -25,13 +25,13 @@
   flex: 1; min-width: 0; height: 42px; border: 0; outline: 0; background: none; color: #fff;
   font: 400 17px var(--sf); letter-spacing: 0.02em;
 }
-.field input::placeholder { color: rgba(255, 255, 255, 0.62); letter-spacing: 0; }
+.field input::placeholder { color: rgba(255, 255, 255, 0.75); letter-spacing: 0; }
 .field button {
   flex: none; width: 44px; height: 44px; border: 0; border-radius: 12px; cursor: pointer;
-  background: rgba(255, 255, 255, 0.9); color: #1d1d1f; font: 500 20px/1 var(--sf);
+  background: rgba(255, 255, 255, 0.92); color: #303028; font: 500 20px/1 var(--sf);
   transition: opacity 0.2s ease, transform 0.2s ease;
 }
-.field button:disabled { opacity: 0.55; cursor: default; }
+.field button:disabled { opacity: 0.8; cursor: default; }
 .field button:not(:disabled):active { transform: scale(0.94); }
 .gate .msg { min-height: 1.4em; margin: 14px 0 0; font-size: 14px; color: #fff; }
 .busy .field button { opacity: 0.35; }

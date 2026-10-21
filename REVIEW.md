@@ -44,3 +44,9 @@
 7. Unreadable publish.json silently resets — FOLD IN: only FileNotFoundError is a fresh start; other errors fail loud.
 8. CI skips crypto/pixel tests — FOLD IN: share-extra CI job.
 - Delete: Site.files, Rendered.bytes, Editor.folder, Published.sent/removed, editor JSON sections/protected — FOLD IN. --keep-gps — REJECT (see 5).
+
+## Round 4 — final design pass (GPT-6 Astra) — 2026-10-21 — verdict: SHIP
+1. Passcode controls still muted — FOLD IN: white 92% button, #303028 arrow, 75% white placeholder, disabled at 0.8.
+2. Explicit 1200/960 widths — NO CHANGE: implemented (hero 1200, singles 960, pairs to 1200); the screenshot set has no portrait pairs to show it.
+3. Mobile editor bottom bar — REJECT: the editor binds 127.0.0.1, it runs on the machine running fdx; a phone can't reach it.
+4. Mobile discovery cue — REJECT: same reason.

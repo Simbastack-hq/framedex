@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import json
 import re
 import shutil
 import tempfile
@@ -27,6 +28,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from framedex.images import HEIF_EXTENSIONS, RAW_EXTENSIONS, _extract_raw_preview
+from framedex.pipeline import atomic_write_text
 from framedex.share import COVER_MIN_RATIO
 
 if TYPE_CHECKING:
@@ -48,7 +50,9 @@ FRAMEDEX_URL = "https://github.com/Simbastack-hq/framedex"
 # Two consecutive photos at most this wide (width / height) hang side by side.
 PAIR_MAX_RATIO = 0.9
 SITE_DIR = "site"
-_RENDER_NAME_RE = re.compile(r"^\.?[0-9a-f]{16}\.jpg$")  # a render, or its temp
+# The renders a work folder holds, as recorded by render_site: the only
+# files it ever deletes (a file it did not make is never touched).
+RENDERS_FILE = "renders.json"
 
 # EXIF tags carried into web copies (everything else, GPS included, is dropped).
 _TAG_MAKE = 0x010F
@@ -257,6 +261,20 @@ def _describe(out_photo: Path, out_thumb: Path, rel: str) -> Rendered:
     )
 
 
+def _owned_renders(work: Path) -> set[str]:
+    """Names this work folder's earlier renders recorded. Missing or
+    unreadable means none: nothing is deleted on a guess."""
+    try:
+        names = json.loads((work / RENDERS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    if not isinstance(names, list):
+        return set()
+    return {
+        n for n in names if isinstance(n, str) and re.fullmatch(r"[0-9a-f]{16}\.jpg", n)
+    }
+
+
 def render_site(
     gallery: Gallery,
     originals: dict[str, Path],
@@ -291,10 +309,13 @@ def render_site(
             tmp_thumb.replace(out_thumb)
         site.photos[item.rel] = _describe(out_photo, out_thumb, item.rel)
     live = {r.name for r in site.photos.values()}
+    owned = _owned_renders(work)
     for d in (photos_dir, thumbs_dir):
-        for f in d.iterdir():
-            if _RENDER_NAME_RE.match(f.name) and f.name not in live:
-                f.unlink()
+        for name in owned - live:
+            (d / name).unlink(missing_ok=True)
+        for name in live:
+            (d / f".{name}").unlink(missing_ok=True)  # an interrupted render's temp
+    atomic_write_text(work / RENDERS_FILE, json.dumps(sorted(live), indent=0) + "\n")
     (root / "index.html").write_text(page_html(gallery, site.photos), encoding="utf-8")
     return site
 

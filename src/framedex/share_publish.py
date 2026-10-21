@@ -731,9 +731,16 @@ def publish(
         state["links"].append(link)
     link["url"] = url
     if passcode:
-        # Before any upload: if this publish dies halfway, the link already
-        # counts as protected and the next publish asks for the passcode.
+        # On disk before any upload: if this publish dies halfway (even
+        # killed), the link already counts as protected and the next publish
+        # asks for the passcode.
         link["protected"] = True
+        try:
+            write_state(work, state)
+        except OSError as e:
+            raise PublishError(
+                f"cannot record the protection in {work / STATE_FILE}: {e}"
+            ) from e
     try:
         if cfg.target == "ssh":
             assert cfg.path is not None

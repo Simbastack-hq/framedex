@@ -50,3 +50,8 @@
 2. Explicit 1200/960 widths — NO CHANGE: implemented (hero 1200, singles 960, pairs to 1200); the screenshot set has no portrait pairs to show it.
 3. Mobile editor bottom bar — REJECT: the editor binds 127.0.0.1, it runs on the machine running fdx; a phone can't reach it.
 4. Mobile discovery cue — REJECT: same reason.
+
+## Round 5 — final PR review (Codex, gpt-6.1-sol high) — 2026-10-21 — verdict: request changes -> fixed
+- Round-3 items verified fixed: 1, 3, 6, 7, 8, deletions. Not fully: 2, 4 (below).
+1. Protection only in memory before upload — FOLD IN: publish.json written with protected=True before the first remote write; abort if that write fails. Test simulates a kill mid-upload.
+2. Cleanup trusted a filename pattern — FOLD IN: render_site records its renders in work/renders.json and deletes only recorded names (plus temps of live names). Test: an unrelated hex-named file survives.

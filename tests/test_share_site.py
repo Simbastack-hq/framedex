@@ -267,14 +267,17 @@ def test_keep_gps_opts_in_and_renders_are_reused_then_pruned(tmp_path: Path) -> 
 
     stray = plain.root / "photos" / ".private.JPG"  # not ours: never deleted
     stray.write_bytes(b"someone else's file")
+    lookalike = (
+        plain.root / "photos" / "0123456789abcdef.jpg"
+    )  # our pattern, not our file
+    lookalike.write_bytes(b"an unrelated original")
     smaller = Gallery("T", sections=[GallerySection("", [Item("wide.JPG")])])
     again = site.render_site(smaller, originals, work)
     kept = again.root / "photos" / again.photos["wide.JPG"].name
     assert kept.stat().st_mtime_ns == mtime  # re-used, not re-encoded
-    assert sorted(f.name for f in (again.root / "photos").iterdir()) == [
-        ".private.JPG",
-        kept.name,
-    ]
+    assert sorted(f.name for f in (again.root / "photos").iterdir()) == sorted(
+        [".private.JPG", "0123456789abcdef.jpg", kept.name]
+    )  # only renders this work folder recorded were removed
 
 
 def test_signatures_match_for_the_same_picture(tmp_path: Path) -> None:

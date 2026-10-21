@@ -1041,10 +1041,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--from",
         type=_date_arg,
         dest="date_from",
-        help="Only photos from this day (YYYY-MM-DD).",
+        metavar="DAY",
+        help="Only photos from this day on (YYYY-MM-DD).",
     )
     pick.add_argument(
-        "--to", type=_date_arg, dest="date_to", help="Only photos up to this day."
+        "--to",
+        type=_date_arg,
+        dest="date_to",
+        metavar="DAY",
+        help="Only photos up to this day (YYYY-MM-DD).",
     )
     pick.add_argument(
         "--captions",

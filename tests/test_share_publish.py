@@ -631,6 +631,19 @@ def test_protection_is_recorded_before_anything_uploads(
     ) -> None:
         raise OSError("disk full")
 
+    def killed(
+        self: Any, key: str, data: bytes, content_type: str, cache_control: str
+    ) -> None:
+        # The process dies mid-upload: nothing after this line ever runs.
+        assert (
+            json.loads((work / pub.STATE_FILE).read_text())["links"][0]["protected"]
+            is True
+        )
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(pub.DirUploader, "put", killed)
+    with pytest.raises(KeyboardInterrupt):
+        pub.publish(site, gallery, work, name="t", cfg=cfg, passcode="leopard2025")
     monkeypatch.setattr(pub.DirUploader, "put", broken)
     with pytest.raises(pub.PublishError, match="disk full"):
         pub.publish(site, gallery, work, name="t", cfg=cfg, passcode="leopard2025")

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-fdx-trips — find the trips in an indexed photo archive.
+fdx trips — find the trips in an indexed photo archive.
 
-    fdx-trips /Volumes/SSD-2025              # one line per trip, with a draft
-    fdx-trips /Volumes/SSD-2025 --json       # the same as JSON
+    fdx trips /Volumes/SSD-2025              # one line per trip, with a draft
+    fdx trips /Volumes/SSD-2025 --json       # the same as JSON
 
 A trip is a run of photos with no gap longer than TRIP_GAP_HOURS between
 consecutive captures; a long GPS jump after a shorter gap (home from one
@@ -139,7 +139,7 @@ def summarize(trip: list[Photo], all_photos: list[Photo]) -> Trip:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="fdx-trips",
+        prog="fdx trips",
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

@@ -561,3 +561,46 @@ def test_files_from_rejects_bad_lines(tmp_path: Path, entry: str, why: str) -> N
     msg = str(exc.value.code)
     assert f"line 3: {entry}" in msg and why in msg
     assert not (root / "developed" / "a.jpg").exists()
+
+
+def test_files_from_symlink_aliases_stay_distinct(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _shoot(tmp_path, ["a.NEF", "notes.txt"])
+    os.symlink(root / "a.NEF", root / "z.NEF")
+    os.symlink(root / "a.NEF", root / "alias.jpg")
+    listing = tmp_path / "picks.txt"
+    listing.write_text("a.NEF\n")
+    D.main([str(root), "--files-from", str(listing), "--dry-run"])
+    planned = [
+        ln.split(" -> ")[0].strip()
+        for ln in capsys.readouterr().out.splitlines()
+        if " -> " in ln
+    ]
+    assert planned == ["a.NEF"]  # not its alias z.NEF
+    listing.write_text("alias.jpg\n")  # a non-RAW name pointing at a RAW
+    with pytest.raises(SystemExit, match=r"line 1: alias\.jpg: not a RAW"):
+        D.main([str(root), "--files-from", str(listing), "--dry-run"])
+
+
+def test_files_from_case_variant_matches_only_the_same_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _shoot(tmp_path, ["A.NEF"])
+    listing = tmp_path / "picks.txt"
+    listing.write_text("a.nef\n")
+    if not (
+        root / "a.nef"
+    ).exists():  # case-sensitive volume: a different (missing) file
+        with pytest.raises(SystemExit, match="no such file"):
+            D.main([str(root), "--files-from", str(listing), "--dry-run"])
+        return
+    D.main([str(root), "--files-from", str(listing), "--dry-run"])
+    out = capsys.readouterr().out
+    assert "A.NEF -> " in out  # the discovered name, not the listed casing
+
+
+def test_files_from_empty_name_is_an_error_not_a_full_run(tmp_path: Path) -> None:
+    root = _shoot(tmp_path, ["a.NEF"])
+    with pytest.raises(SystemExit, match="needs a file name"):
+        D.main([str(root), "--files-from", "", "--dry-run"])

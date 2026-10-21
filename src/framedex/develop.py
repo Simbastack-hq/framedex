@@ -604,8 +604,20 @@ def read_files_from(listing: Path, root: Path, raws: Sequence[Path]) -> list[Pat
     """The RAWs named in `listing` (one path per line, relative to root or
     absolute inside it; blank lines and # comments ignored), in discovery
     order. Raises ValueError naming every bad line: outside root, missing, or
-    not a RAW that discovery would develop."""
-    by_resolved = {r.resolve(): r for r in raws}
+    not a RAW that discovery would develop.
+
+    Matching uses the listed path itself, not a symlink's target: directories
+    are resolved (so `..` can't escape and /var vs /private/var both work), the
+    file name is taken as written, and a different-case name only matches when
+    it is the same file (case-insensitive volumes)."""
+
+    def key(p: Path) -> Path:
+        return p.parent.resolve() / p.name
+
+    by_key = {key(r): r for r in raws}
+    by_folded: dict[tuple[Path, str], list[Path]] = {}
+    for r in raws:
+        by_folded.setdefault((r.parent.resolve(), r.name.casefold()), []).append(r)
     chosen: set[Path] = set()
     errors: list[str] = []
     for n, line in enumerate(listing.read_text().splitlines(), 1):
@@ -613,15 +625,25 @@ def read_files_from(listing: Path, root: Path, raws: Sequence[Path]) -> list[Pat
         if not entry or entry.startswith("#"):
             continue
         path = Path(entry).expanduser()
-        resolved = (path if path.is_absolute() else root / path).resolve()
-        if not resolved.is_relative_to(root):
+        cand = key(path if path.is_absolute() else root / path)
+        match = by_key.get(cand)
+        if match is None and cand.exists():
+            match = next(
+                (
+                    r
+                    for r in by_folded.get((cand.parent, cand.name.casefold()), [])
+                    if os.path.samefile(r, cand)
+                ),
+                None,
+            )
+        if not cand.parent.is_relative_to(root):
             errors.append(f"line {n}: {entry}: outside {root}")
-        elif not resolved.is_file():
+        elif not cand.exists():
             errors.append(f"line {n}: {entry}: no such file")
-        elif resolved not in by_resolved:
+        elif cand.suffix.lower() not in RAW_EXTENSIONS or match is None:
             errors.append(f"line {n}: {entry}: not a RAW fdx-develop would process")
         else:
-            chosen.add(by_resolved[resolved])
+            chosen.add(match)
     if errors:
         raise ValueError(f"--files-from {listing}:\n  " + "\n  ".join(errors))
     return [r for r in raws if r in chosen]
@@ -1017,7 +1039,9 @@ def main(argv: list[str] | None = None) -> int:
     # same whether or not --files-from selects a subset.
     outputs = plan_outputs(raws, root, out_dir)
     selected = raws
-    if args.files_from:
+    if args.files_from is not None:
+        if not args.files_from.strip():
+            sys.exit("--files-from needs a file name")
         try:
             selected = read_files_from(Path(args.files_from).expanduser(), root, raws)
         except (OSError, ValueError) as e:
@@ -1029,7 +1053,7 @@ def main(argv: list[str] | None = None) -> int:
     est = len(todo) * EST_USD_PER_PHOTO if args.backend == "api" else 0.0
     print(
         f"{len(raws)} RAWs"
-        + (f", {len(plan)} listed" if args.files_from else "")
+        + (f", {len(plan)} listed" if args.files_from is not None else "")
         + f", {len(plan) - len(todo)} already developed, {len(todo)} to do; est. ${est:.2f}"
     )
     if args.dry_run:
